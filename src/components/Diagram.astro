@@ -1,0 +1,46 @@
+---
+// Build-time D2 diagram rendered as inline SVG, themed via src/styles/diagrams.css.
+// Optional `steps` become an <ol class="dg-steps"> whose items name the
+// diagram elements (by data-k key) that each step highlights.
+import { renderD2 } from '../lib/diagram/render.mjs';
+import { claimId } from '../lib/diagram/page-ids.mjs';
+import { checkSteps } from '../lib/diagram/steps.mjs';
+
+interface Step {
+  hl: string[];
+  caption: string;
+}
+
+interface Props {
+  id: string;
+  title: string;
+  code: string;
+  steps?: Step[];
+}
+
+const { id, title, code, steps } = Astro.props;
+
+claimId(Astro.request, id);
+
+const { svg, keys } = await renderD2(code, { id });
+
+checkSteps(id, steps ?? [], keys);
+---
+
+<figure class="dg" id={id}>
+  <div class="dg-svg"><Fragment set:html={svg} /></div>
+  {
+    steps && steps.length > 0 && (
+      <ol class="dg-steps">
+        {steps.map((s) => (
+          <li data-hl={s.hl.join(' ')}>{s.caption}</li>
+        ))}
+      </ol>
+    )
+  }
+  <figcaption>{title}</figcaption>
+</figure>
+
+<script>
+  import '../scripts/walkthrough.ts';
+</script>
