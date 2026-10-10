@@ -62,6 +62,13 @@ test('walkthrough: steps highlight, dim, and navigate', async ({ page }) => {
   await expect(caption(page)).toContainText('4/4');
   await expect(next).toBeDisabled();
   await check(3);
+
+  // Focus moves off the now-disabled Next so arrow keys keep working.
+  await expect(prev).toBeFocused();
+  await page.keyboard.press('ArrowLeft');
+  await expect(caption(page)).toContainText('3/4');
+
+  await expect(flow(page).getByRole('group', { name: 'Diagram steps' })).toBeVisible();
 });
 
 test('walkthrough: nav sits between the steps and the figcaption', async ({ page }) => {

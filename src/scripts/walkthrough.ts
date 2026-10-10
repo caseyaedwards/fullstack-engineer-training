@@ -7,6 +7,8 @@ document.querySelectorAll<HTMLElement>('figure.dg').forEach((fig) => {
   const els = Array.from(fig.querySelectorAll<SVGElement>('[data-k]'));
   const nav = document.createElement('div');
   nav.className = 'dg-nav';
+  nav.setAttribute('role', 'group');
+  nav.setAttribute('aria-label', 'Diagram steps');
   const btn = (label: string, d: number) => {
     const b = document.createElement('button');
     b.type = 'button';
@@ -32,8 +34,12 @@ document.querySelectorAll<HTMLElement>('figure.dg').forEach((fig) => {
       el.classList.toggle('dg-dim', !on);
     }
     status.textContent = `${i + 1}/${steps.length}: ${steps[i].textContent}`;
+    const active = document.activeElement;
     prev.disabled = i === 0;
     next.disabled = i === steps.length - 1;
+    // A disabled button drops focus (and arrow keys with it): hand it to the other one.
+    if (active === prev && prev.disabled) next.focus();
+    else if (active === next && next.disabled) prev.focus();
   }
   ol.hidden = true;
   ol.after(nav);
