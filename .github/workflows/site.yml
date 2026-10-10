@@ -10,9 +10,10 @@ permissions:
   pages: write
   id-token: write
 
+# Main deploys queue in order; a newer PR push cancels that PR's older run.
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: pages-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   BASE_PATH: /${{ github.event.repository.name }}/
@@ -46,6 +47,7 @@ jobs:
       - run: npm run test:e2e
 
       - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
         with:
           path: dist
 
