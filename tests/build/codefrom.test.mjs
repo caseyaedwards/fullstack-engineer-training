@@ -42,8 +42,8 @@ import CodeFrom from '../../../components/CodeFrom.astro';
 }
 
 for (const [name, props, expected] of [
-  ['zz-codefrom-region', 'file="go/week04/trace.go" region="missing"', [/missing/, /go\/week04\/trace\.go/]],
-  ['zz-codefrom-file', 'file="go/week04/nope.go" region="timings"', [/go\/week04\/nope\.go/]],
+  ['zz-codefrom-region', 'file="go/week04/trace.go" region="missing"', [/region "missing" not found in examples\/go\/week04\/trace\.go/]],
+  ['zz-codefrom-file', 'file="go/week04/nope.go" region="timings"', [/no file at examples\/go\/week04\/nope\.go/]],
   ['zz-codefrom-escape', 'file="../package.json" region="timings"', [/\.\.\/package\.json/, /stay inside the examples\/ directory/]],
 ]) {
   test(`${name}: a bad <CodeFrom> fails the build and names what is wrong`, { timeout: 300_000 }, () => {

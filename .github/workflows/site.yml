@@ -36,6 +36,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: examples/go/go.mod
+          cache-dependency-path: examples/go/go.mod
 
       - name: Install d2
         run: |
