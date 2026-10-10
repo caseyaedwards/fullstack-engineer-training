@@ -53,6 +53,12 @@
   max-width: none;
 }
 
+/* A box that scrolls is focusable (src/scripts/walkthrough.ts), so arrow keys scroll it. */
+.dg .dg-svg:focus-visible {
+  outline: 2px solid var(--sl-color-accent);
+  outline-offset: 2px;
+}
+
 .dg figcaption {
   margin-top: 0.5rem;
   text-align: center;

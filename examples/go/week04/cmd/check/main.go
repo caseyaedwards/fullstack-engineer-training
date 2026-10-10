@@ -1,4 +1,5 @@
 // Command check requests one URL and prints how long each phase took.
+// Run it from the examples/go directory:
 //
 //	go run ./week04/cmd/check -url https://example.com
 package main

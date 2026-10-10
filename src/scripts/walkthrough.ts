@@ -1,8 +1,30 @@
-// Progressive enhancement for <Diagram steps>: swap the <ol class="dg-steps">
-// for Prev/Next controls that highlight each step's data-k elements.
+// Progressive enhancement for <Diagram>:
+// - a diagram too wide for its box scrolls sideways, so its box becomes focusable
+//   and keyboard users can scroll it with the arrow keys;
+// - <Diagram steps> swaps the <ol class="dg-steps"> for Prev/Next controls that
+//   highlight each step's data-k elements and scroll them into view inside the box.
 document.querySelectorAll<HTMLElement>('figure.dg').forEach((fig) => {
+  const box = fig.querySelector<HTMLElement>('.dg-svg');
+  if (box) {
+    const label = `${fig.querySelector('figcaption')?.textContent ?? 'Diagram'} (scrolls sideways)`;
+    const focusable = () => {
+      const scrolls = box.scrollWidth > box.clientWidth;
+      if (scrolls) {
+        box.tabIndex = 0;
+        box.setAttribute('role', 'region');
+        box.setAttribute('aria-label', label);
+      } else {
+        box.removeAttribute('tabindex');
+        box.removeAttribute('role');
+        box.removeAttribute('aria-label');
+      }
+    };
+    focusable();
+    new ResizeObserver(focusable).observe(box);
+  }
+
   const ol = fig.querySelector<HTMLElement>('ol.dg-steps');
-  const steps = ol ? Array.from(ol.children) as HTMLElement[] : [];
+  const steps = ol ? (Array.from(ol.children) as HTMLElement[]) : [];
   if (!ol || !steps.length) return;
   const els = Array.from(fig.querySelectorAll<SVGElement>('[data-k]'));
   const nav = document.createElement('div');
@@ -24,15 +46,36 @@ document.querySelectorAll<HTMLElement>('figure.dg').forEach((fig) => {
     const d = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
     if (d) (e.preventDefault(), show(i + d));
   };
+
+  // Scroll the box sideways (never the page) so the elements in focus are in view:
+  // all of them when they fit, otherwise their left edge.
+  const reveal = (lit: SVGElement[]) => {
+    if (!box || !lit.length || box.scrollWidth <= box.clientWidth) return;
+    const b = box.getBoundingClientRect();
+    const rects = lit.map((el) => el.getBoundingClientRect());
+    const left = Math.min(...rects.map((r) => r.left)) - b.left;
+    const right = Math.max(...rects.map((r) => r.right)) - b.left;
+    const pad = 8;
+    if (left < pad || right - left + 2 * pad > b.width) box.scrollLeft += left - pad;
+    else if (right > b.width - pad) box.scrollLeft += right - b.width + pad;
+  };
+
   let i = 0;
+  let before: string[] = [];
   function show(n: number) {
     i = Math.max(0, Math.min(steps.length - 1, n));
     const hl = (steps[i].dataset.hl ?? '').split(/\s+/);
+    const lit: SVGElement[] = [];
     for (const el of els) {
       const on = hl.includes(el.dataset.k!);
       el.classList.toggle('dg-hl', on);
       el.classList.toggle('dg-dim', !on);
+      if (on) lit.push(el);
     }
+    // Focus on the shapes this step adds (the new actor), else on everything lit.
+    const added = lit.filter((el) => !before.includes(el.dataset.k!) && !/->|<-|--/.test(el.dataset.k!));
+    reveal(added.length ? added : lit);
+    before = hl;
     status.textContent = `${i + 1}/${steps.length}: ${steps[i].textContent}`;
     const active = document.activeElement;
     prev.disabled = i === 0;

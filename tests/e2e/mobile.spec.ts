@@ -44,3 +44,29 @@ test('at 375px a wide diagram stays legible and scrolls in its box; a narrow one
   expect(narrow.scroll).toBeLessThanOrEqual(narrow.box);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
 });
+
+test('at 375px a scrolling diagram is focusable, and each step scrolls its highlights into view without moving the page', async ({ page }) => {
+  await page.goto('weeks/04-networking/');
+  const fig = page.locator('figure.dg#dns-lookup');
+  const box = fig.locator('.dg-svg');
+  await expect(box).toHaveAttribute('tabindex', '0');
+  await expect(box).toHaveAttribute('role', 'region');
+  await expect(box).toHaveAttribute('aria-label', /scrolls sideways/);
+  // A diagram that fits is not a tab stop.
+  await expect(page.locator('figure.dg#request-path .dg-svg')).not.toHaveAttribute('tabindex', /.*/);
+
+  await fig.scrollIntoViewIfNeeded();
+  const scrollY = await page.evaluate(() => window.scrollY);
+  const next = fig.getByRole('button', { name: 'Next' });
+  // Step 4 highlights the authoritative server, the right-most actor.
+  for (let i = 0; i < 3; i++) await next.evaluate((b: HTMLButtonElement) => b.click());
+  await expect(fig.locator('.dg-nav [aria-live]')).toContainText('4/5');
+  const view = await box.evaluate((el) => {
+    const b = el.getBoundingClientRect();
+    const a = el.querySelector('[data-k="auth"]')!.getBoundingClientRect();
+    return { scrollLeft: el.scrollLeft, inside: a.left >= b.left - 1 && a.right <= b.right + 1 };
+  });
+  expect(view.scrollLeft).toBeGreaterThan(0);
+  expect(view.inside, 'the highlighted actor is inside the visible box').toBe(true);
+  expect(await page.evaluate(() => window.scrollY)).toBe(scrollY);
+});

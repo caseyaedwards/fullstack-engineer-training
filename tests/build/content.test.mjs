@@ -26,6 +26,7 @@ test('each week file matches the registry: week number, filename slug, phase and
     // "Week N: " keeps week titles apart from track titles such as "Networking" in tabs and search.
     // The sidebar and timeline use the registry title, so the page title must not drift from it.
     assert.equal(fm.title, `Week ${w.n}: ${w.title}`, `${w.slug}: title`);
+    assert.doesNotMatch(w.title, /:/, `${w.slug}: a registry title with a colon gives "Week N: A: B"`);
   }
 });
 

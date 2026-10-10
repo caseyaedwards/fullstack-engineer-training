@@ -61,6 +61,8 @@ func Check(ctx context.Context, url string) (Timings, int, error) {
 
 	// region: timings
 	start := time.Now()
+	// The Connect hooks fire once per address tried (Go may race IPv4
+	// and IPv6, "Happy Eyeballs"), so Connect may reflect only the last.
 	trace := &httptrace.ClientTrace{
 		DNSStart:             func(httptrace.DNSStartInfo) { begin(&dnsStart) },
 		DNSDone:              func(httptrace.DNSDoneInfo) { end(&t.DNS, &dnsStart) },
