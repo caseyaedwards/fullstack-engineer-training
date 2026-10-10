@@ -41,7 +41,7 @@ done:
 Body.
 `,
     );
-    const r = spawnSync('npm', ['run', 'build', '--', '--outDir', outDir], { cwd: root, encoding: 'utf8' });
+    const r = spawnSync('npm', ['run', 'build', '--', '--outDir', outDir], { cwd: root, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' } });
     assert.notEqual(r.status, 0, 'build should fail');
     const out = r.stdout + r.stderr;
     assert.match(out, /zz-bad-week/, 'error should name the file');
@@ -73,7 +73,7 @@ done:
 Body.
 `,
     );
-    const r = spawnSync('npm', ['run', 'build', '--', '--outDir', outDir], { cwd: root, encoding: 'utf8' });
+    const r = spawnSync('npm', ['run', 'build', '--', '--outDir', outDir], { cwd: root, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' } });
     assert.notEqual(r.status, 0, 'build should fail');
     const out = r.stdout + r.stderr;
     assert.match(out, /zz-bad-hours/, 'error should name the file');
@@ -90,7 +90,7 @@ function buildWith(name, source) {
   const outDir = mkdtempSync(join(tmpdir(), 'schema-done-'));
   try {
     writeFileSync(fixture, source);
-    const r = spawnSync('npm', ['run', 'build', '--', '--outDir', outDir], { cwd: root, encoding: 'utf8' });
+    const r = spawnSync('npm', ['run', 'build', '--', '--outDir', outDir], { cwd: root, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' } });
     return { status: r.status, out: r.stdout + r.stderr };
   } finally {
     rmSync(fixture, { force: true });

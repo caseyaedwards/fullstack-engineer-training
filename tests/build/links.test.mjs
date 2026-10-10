@@ -103,7 +103,7 @@ for (const customBase of ['/fsp/', '/fsp']) {
       const r = spawnSync('npm', ['run', 'build', '--', '--outDir', outDir], {
         cwd: root,
         encoding: 'utf8',
-        env: { ...process.env, BASE_PATH: customBase },
+        env: { ...process.env, NO_COLOR: '1', BASE_PATH: customBase },
       });
       assert.equal(r.status, 0, r.stdout + r.stderr);
       const b = normalizeBase(customBase);

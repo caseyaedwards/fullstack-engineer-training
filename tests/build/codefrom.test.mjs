@@ -33,7 +33,7 @@ import CodeFrom from '../../../components/CodeFrom.astro';
 <CodeFrom ${props} lang="go" />
 `,
     );
-    const r = spawnSync('npm', ['run', 'build', '--', '--outDir', outDir], { cwd: root, encoding: 'utf8' });
+    const r = spawnSync('npm', ['run', 'build', '--', '--outDir', outDir], { cwd: root, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' } });
     return { status: r.status, out: r.stdout + r.stderr };
   } finally {
     rmSync(fixture, { force: true });
