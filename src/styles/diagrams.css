@@ -1,7 +1,50 @@
-/* Build-time diagrams ship a light and a dark variant; follow Starlight's theme. */
-:root[data-theme='dark'] .diagram-light {
-  display: none;
+/*
+ * D2 diagrams are rendered at build time with D2's default theme, then every
+ * palette colour is rewritten to var(--d2-<code>) (src/lib/diagram/render.mjs).
+ * Map those codes onto Starlight's colour variables once: Starlight already
+ * swaps its variables when the data-theme toggle changes, so the diagrams
+ * follow the site theme with no light/dark duplication here.
+ *
+ * Roles in D2's default theme: N1 text, N2 secondary text (edge labels),
+ * N3-N6 neutral greys, N7 canvas; B1/B2 strokes, B3-B6 container/shape fills
+ * (B6 = plain shapes, B4/B5 = nested containers, sequence actors);
+ * AA/AB accents.
+ */
+.dg {
+  --d2-N1: var(--sl-color-white);
+  --d2-N2: var(--sl-color-gray-2);
+  --d2-N3: var(--sl-color-gray-3);
+  --d2-N4: var(--sl-color-gray-4);
+  --d2-N5: var(--sl-color-gray-5);
+  --d2-N6: var(--sl-color-gray-6);
+  --d2-N7: var(--sl-color-bg);
+  --d2-B1: var(--sl-color-accent);
+  --d2-B2: var(--sl-color-accent);
+  --d2-B3: var(--sl-color-gray-5);
+  --d2-B4: var(--sl-color-gray-5);
+  --d2-B5: var(--sl-color-gray-6);
+  --d2-B6: var(--sl-color-accent-low);
+  --d2-AA2: var(--sl-color-accent);
+  --d2-AA4: var(--sl-color-accent-low);
+  --d2-AA5: var(--sl-color-gray-6);
+  --d2-AB4: var(--sl-color-accent-low);
+  --d2-AB5: var(--sl-color-gray-6);
 }
-:root:not([data-theme='dark']) .diagram-dark {
-  display: none;
+
+.dg .dg-svg {
+  overflow-x: auto;
+}
+
+.dg svg {
+  display: block;
+  margin-inline: auto;
+  max-width: 100%;
+  height: auto;
+}
+
+.dg figcaption {
+  margin-top: 0.5rem;
+  text-align: center;
+  font-size: var(--sl-text-sm);
+  color: var(--sl-color-gray-3);
 }

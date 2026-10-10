@@ -1,14 +1,33 @@
 ---
 title: Diagram fixtures
-description: Build-time diagram rendering fixture page.
+description: Build-time D2 diagram rendering fixture page.
 sidebar:
   hidden: true
 ---
 
-```mermaid
-sequenceDiagram
-  participant Browser
-  participant Server
-  Browser->>Server: GET /
-  Server-->>Browser: 200 OK
-```
+import Diagram from '../../../components/Diagram.astro';
+
+<Diagram
+  id="dns-lookup"
+  title="Resolving a name, then connecting"
+  code={`browser -> resolver -> root
+resolver -> tld: cache miss
+browser -> server
+`}
+  steps={[
+    { hl: ['browser', 'resolver', 'browser->resolver'], caption: 'The browser asks its resolver for the address.' },
+    { hl: ['resolver', 'root', 'resolver->root'], caption: 'The resolver asks a root server which servers handle the TLD.' },
+    { hl: ['resolver', 'tld', 'resolver->tld'], caption: 'Still a cache miss, so the resolver asks the TLD server next.' },
+    { hl: ['browser', 'server', 'browser->server'], caption: 'With an IP address, the browser connects to the server.' },
+  ]}
+/>
+
+<Diagram
+  id="tcp-handshake"
+  title="TCP three-way handshake"
+  code={`shape: sequence_diagram
+browser -> server: SYN
+server -> browser: SYN-ACK
+browser -> server: ACK
+`}
+/>
