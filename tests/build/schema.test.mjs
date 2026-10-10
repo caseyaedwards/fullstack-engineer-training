@@ -78,7 +78,7 @@ Body.
   }
 });
 
-const frontmatter = (file) => {
+const rawFrontmatter = (file) => {
   const m = readFileSync(file, 'utf8').match(/^---\n([\s\S]*?)\n---/);
   assert.ok(m, `${file} has no frontmatter`);
   return m[1];
@@ -88,7 +88,7 @@ test('aiStage in each week stub matches the ladder (0-5 -> 1, 6-12 -> 2, 13-18 -
   const files = readdirSync(weeksDir).filter((f) => f.endsWith('.mdx'));
   assert.equal(files.length, 19);
   for (const f of files) {
-    const fm = frontmatter(join(weeksDir, f));
+    const fm = rawFrontmatter(join(weeksDir, f));
     const week = Number(fm.match(/^week:\s*(\d+)\s*$/m)?.[1]);
     const stage = Number(fm.match(/^aiStage:\s*(\d)\s*$/m)?.[1]);
     assert.equal(week, Number(f.slice(0, 2)), `${f}: week number does not match the filename`);

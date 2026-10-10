@@ -1,0 +1,43 @@
+---
+// The 19 weeks grouped by phase. The week pages' <DoneWhen> checklists are counted at build
+// time so the client script (src/scripts/progress.ts) can tell when a week is complete.
+import { getCollection } from 'astro:content';
+import { phases, weeks } from '../data/weeks';
+import { weekHref } from '../lib/links';
+
+const docs = await getCollection('docs');
+const totalFor = (n: number) => {
+  const body = docs.find((d) => d.data.week === n)?.body ?? '';
+  const checklist = body.match(/<DoneWhen[\s\S]*?\/>/)?.[0] ?? '';
+  return (checklist.match(/\bid:\s*['"]/g) ?? []).length;
+};
+---
+
+<div class="week-timeline not-content">
+  {
+    phases.map((phase) => (
+      <section data-phase={phase.id} aria-label={phase.label}>
+        <h3>{phase.label}</h3>
+        <ol>
+          {weeks
+            .filter((w) => w.phase === phase.id)
+            .map((w) => (
+              <li data-week={w.n} data-total={totalFor(w.n)}>
+                <a href={weekHref(w.n)}>
+                  <span class="tl-n">{w.n}</span>
+                  <span class="tl-title">{w.title}</span>
+                  <span class="tl-done">
+                    <span class="tl-sr">complete</span>
+                  </span>
+                </a>
+              </li>
+            ))}
+        </ol>
+      </section>
+    ))
+  }
+</div>
+
+<script>
+  import '../scripts/progress.ts';
+</script>

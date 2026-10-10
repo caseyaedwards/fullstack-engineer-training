@@ -1,0 +1,32 @@
+---
+// Checklist for the end of a week. Ticks are saved in the browser by src/scripts/progress.ts;
+// data-total lets the home-page timeline know when the week is complete.
+interface Props {
+  items: { id: string; text: string }[];
+}
+const { items } = Astro.props;
+const { week } = Astro.locals.starlightRoute.entry.data;
+if (week === undefined) {
+  throw new Error('<DoneWhen> is for week pages: week is required in the frontmatter.');
+}
+// The "## Done when" heading stays in the page markdown; Starlight gives it this id.
+---
+
+<div class="done-when not-content" role="group" aria-labelledby="done-when" data-week={week} data-total={items.length}>
+  <ul>
+    {
+      items.map((item) => (
+        <li>
+          <label>
+            <input type="checkbox" value={item.id} />
+            <span>{item.text}</span>
+          </label>
+        </li>
+      ))
+    }
+  </ul>
+</div>
+
+<script>
+  import '../scripts/progress.ts';
+</script>

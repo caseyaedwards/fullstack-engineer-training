@@ -13,6 +13,7 @@ import OperateIt from '../../../components/OperateIt.astro';
 import AiThisWeek from '../../../components/AiThisWeek.astro';
 import SideLab from '../../../components/SideLab.astro';
 import ReadWith from '../../../components/ReadWith.astro';
+import DoneWhen from '../../../components/DoneWhen.astro';
 
 <WeekHeader />
 
@@ -54,7 +55,13 @@ Coming soon.
 
 ## Done when
 
-Coming soon.
+<DoneWhen
+  items={[
+    { id: 'item-1', text: 'Placeholder checklist item 1 (coming soon)' },
+    { id: 'item-2', text: 'Placeholder checklist item 2 (coming soon)' },
+    { id: 'item-3', text: 'Placeholder checklist item 3 (coming soon)' },
+  ]}
+/>
 
 ## Read with this week
 
