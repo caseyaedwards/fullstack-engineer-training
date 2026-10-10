@@ -31,3 +31,11 @@ server -> browser: SYN-ACK
 browser -> server: ACK
 `}
 />
+
+## Wide table
+
+| Record | Name | Type | TTL | Value | Notes |
+| ------ | ---- | ---- | --- | ----- | ----- |
+| Apex | example.com | A | 300 | 93.184.216.34 | Points the bare domain at the web server, so a browser typing example.com lands here |
+| WWW | www.example.com | CNAME | 3600 | example.com | Alias to the apex record, which keeps both names in step when the address changes |
+| Mail | example.com | MX | 3600 | 10 mail.example.com | Mail exchanger with priority 10, lowest number tried first by sending servers |

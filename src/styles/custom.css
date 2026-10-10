@@ -202,10 +202,3 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
-
-/* Wide tables scroll inside their own box, never the page. Diagrams already do (.dg-svg in diagrams.css). */
-.sl-markdown-content table {
-  display: block;
-  max-width: 100%;
-  overflow-x: auto;
-}

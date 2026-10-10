@@ -5,6 +5,13 @@ phase: build
 hours: [5, 8]
 aiStage: 2
 tracks: [databases, storage, backups]
+done:
+  - id: item-1
+    text: Placeholder checklist item 1 (coming soon)
+  - id: item-2
+    text: Placeholder checklist item 2 (coming soon)
+  - id: item-3
+    text: Placeholder checklist item 3 (coming soon)
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -55,13 +62,7 @@ Coming soon.
 
 ## Done when
 
-<DoneWhen
-  items={[
-    { id: 'item-1', text: 'Placeholder checklist item 1 (coming soon)' },
-    { id: 'item-2', text: 'Placeholder checklist item 2 (coming soon)' },
-    { id: 'item-3', text: 'Placeholder checklist item 3 (coming soon)' },
-  ]}
-/>
+<DoneWhen />
 
 ## Read with this week
 

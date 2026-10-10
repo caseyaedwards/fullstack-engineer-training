@@ -9,7 +9,7 @@ const key = (week: number) => `fsp:done:week-${String(week).padStart(2, '0')}`;
 export function loadDone(week: number): string[] {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(key(week)) ?? 'null');
-    if (Array.isArray(parsed)) return parsed.filter((id): id is string => typeof id === 'string');
+    if (Array.isArray(parsed)) return [...new Set(parsed.filter((id): id is string => typeof id === 'string'))];
   } catch {
     // Storage unavailable or the value is not JSON: use the session copy below.
   }
@@ -25,6 +25,11 @@ export function saveDone(week: number, ids: string[]): void {
   }
 }
 
-export function weekComplete(week: number, total: number): boolean {
-  return total > 0 && loadDone(week).length >= total;
+/**
+ * True when `total` distinct items are ticked. Pass `current` (the week's present item ids) to
+ * count only ids that still exist, so items removed or renamed since they were ticked don't count.
+ */
+export function weekComplete(week: number, total: number, current?: string[]): boolean {
+  const ticked = current ? loadDone(week).filter((id) => current.includes(id)) : loadDone(week);
+  return total > 0 && ticked.length >= total;
 }

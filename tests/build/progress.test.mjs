@@ -17,6 +17,7 @@ test('every week page has a Done when checklist whose data-total matches its che
     assert.equal(Number(block.match(/data-week="(\d+)"/)?.[1]), w.n, `${w.slug}: data-week`);
     assert.equal((block.match(/type="checkbox"/g) ?? []).length, total, `${w.slug}: checkbox count vs data-total`);
     assert.ok(total >= 1, `${w.slug}: empty checklist`);
+    assert.match(html, /<h2 id="done-when"/, `${w.slug}: the checklist is labelled by #done-when, which has no heading`);
   }
 });
 
@@ -27,6 +28,9 @@ test('the home timeline has one node per week, with the same total as that week 
     const timelineTotal = Number(li.match(/data-total="(\d+)"/)?.[1]);
     const pageTotal = Number(dist(`weeks/${w.slug}`).match(/class="done-when[^>]*data-total="(\d+)"/)?.[1]);
     assert.equal(timelineTotal, pageTotal, `week ${w.n}: timeline total drifted from the page`);
+    const ids = JSON.parse(li.match(/data-ids="([^"]*)"/)[1].replaceAll('&#34;', '"').replaceAll('&quot;', '"'));
+    const boxes = [...dist(`weeks/${w.slug}`).matchAll(/type="checkbox" value="([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(ids, boxes, `week ${w.n}: timeline ids differ from the page's checkboxes`);
     assert.ok(li.includes(`href="${base}weeks/${w.slug}/"`), `week ${w.n}: link is not ${base}weeks/${w.slug}/`);
   }
 });
@@ -44,4 +48,10 @@ test('callout asides are labelled by a heading that exists on the page', () => {
     for (const id of refs) assert.match(html, new RegExp(`<h2 id="${id}"`), `${w.slug}: no heading #${id}`);
     assert.ok(!/<aside[^>]*aria-label="/.test(html), `${w.slug}: aside still has a duplicate aria-label`);
   }
+});
+
+test('each timeline phase section is labelled by a heading on the home page', () => {
+  const refs = [...home.matchAll(/<section[^>]*aria-labelledby="([^"]+)"/g)].map((m) => m[1]);
+  assert.equal(refs.length, 4);
+  for (const id of refs) assert.match(home, new RegExp(`<h3 id="${id}"`));
 });

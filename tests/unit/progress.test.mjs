@@ -71,3 +71,19 @@ test('when the localStorage getter itself throws, it still works in memory', asy
   p.saveDone(7, ['z']);
   assert.deepEqual(p.loadDone(7), ['z']);
 });
+
+test('loadDone drops duplicate ids', async () => {
+  const s = memoryStorage();
+  const p = await load(s);
+  s.raw.set('fsp:done:week-03', '["a","a","b","a"]');
+  assert.deepEqual(p.loadDone(3), ['a', 'b']);
+});
+
+test('weekComplete with current ids ignores ticked ids that no longer exist', async () => {
+  const s = memoryStorage();
+  const p = await load(s);
+  s.raw.set('fsp:done:week-06', '["a","b","old"]');
+  assert.equal(p.weekComplete(6, 3), true, 'without current, every stored id counts');
+  assert.equal(p.weekComplete(6, 3, ['a', 'b', 'c']), false);
+  assert.equal(p.weekComplete(6, 2, ['a', 'b']), true);
+});

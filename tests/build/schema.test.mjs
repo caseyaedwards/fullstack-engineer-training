@@ -33,6 +33,9 @@ phase: foundations
 hours: [5, 8]
 aiStage: 1
 tracks: [nope]
+done:
+  - id: a
+    text: A
 ---
 
 Body.
@@ -62,6 +65,9 @@ phase: foundations
 hours: [8, 5]
 aiStage: 1
 tracks: [networking]
+done:
+  - id: a
+    text: A
 ---
 
 Body.
@@ -77,6 +83,45 @@ Body.
     rmSync(outDir, { recursive: true, force: true });
   }
 });
+
+/** Build with one bad week file and return the combined output; the fixture is always removed. */
+function buildWith(name, source) {
+  const fixture = join(weeksDir, `${name}.mdx`);
+  const outDir = mkdtempSync(join(tmpdir(), 'schema-done-'));
+  try {
+    writeFileSync(fixture, source);
+    const r = spawnSync('npm', ['run', 'build', '--', '--outDir', outDir], { cwd: root, encoding: 'utf8' });
+    return { status: r.status, out: r.stdout + r.stderr };
+  } finally {
+    rmSync(fixture, { force: true });
+    rmSync(outDir, { recursive: true, force: true });
+  }
+}
+
+const weekWith = (done) => `---
+title: Bad done
+week: 3
+phase: foundations
+hours: [5, 8]
+aiStage: 1
+tracks: [networking]
+${done}---
+
+Body.
+`;
+
+for (const [name, done, expected] of [
+  ['zz-no-done', '', /done: Required on week pages/],
+  ['zz-empty-done', 'done: []\n', /done: Too small/],
+  ['zz-dup-done', 'done:\n  - id: same\n    text: One\n  - id: same\n    text: Two\n', /Duplicate done item id "same"/],
+]) {
+  test(`${name}: a week with a missing, empty or duplicate-id done list fails the build and names the file`, { timeout: 300_000 }, () => {
+    const r = buildWith(name, weekWith(done));
+    assert.notEqual(r.status, 0, 'build should fail');
+    assert.match(r.out, new RegExp(name), 'error should name the file');
+    assert.match(r.out, expected, 'error should name the problem');
+  });
+}
 
 const rawFrontmatter = (file) => {
   const m = readFileSync(file, 'utf8').match(/^---\n([\s\S]*?)\n---/);

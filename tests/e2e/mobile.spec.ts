@@ -16,3 +16,13 @@ for (const [name, path] of PAGES) {
     expect(width).toBeLessThanOrEqual(375);
   });
 }
+
+test('a wide table scrolls inside its own box at 375px, not the page', async ({ page }) => {
+  await page.goto('dev/diagrams/');
+  const m = await page.evaluate(() => {
+    const t = document.querySelector('.sl-markdown-content table')!;
+    return { table: [t.scrollWidth, t.clientWidth], page: document.documentElement.scrollWidth };
+  });
+  expect(m.table[0], 'table should be wider than its box').toBeGreaterThan(m.table[1]);
+  expect(m.page).toBeLessThanOrEqual(375);
+});

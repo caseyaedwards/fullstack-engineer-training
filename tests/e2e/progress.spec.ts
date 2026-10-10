@@ -57,6 +57,26 @@ test('the start link goes to week 0', async ({ page }) => {
   await expect(page).toHaveURL(/weeks\/00-setup\/$/);
 });
 
+test('only ids in the week\'s current list count toward completion', async ({ page }) => {
+  await page.goto('');
+  await page.evaluate(() => localStorage.setItem('fsp:done:week-04', JSON.stringify(['item-1', 'item-1', 'item-2', 'gone'])));
+  await page.reload();
+  await expect(node(page, 4)).not.toHaveAttribute('data-complete', '');
+  await page.evaluate(() => localStorage.setItem('fsp:done:week-04', JSON.stringify(['item-1', 'item-2', 'item-3'])));
+  await page.reload();
+  await expect(node(page, 4)).toHaveAttribute('data-complete', '');
+});
+
+test('a page restored from the back/forward cache re-reads progress', async ({ page }) => {
+  await page.goto('');
+  await expect(node(page, 4)).not.toHaveAttribute('data-complete', '');
+  await page.evaluate(() => {
+    localStorage.setItem('fsp:done:week-04', JSON.stringify(['item-1', 'item-2', 'item-3']));
+    dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+  });
+  await expect(node(page, 4)).toHaveAttribute('data-complete', '');
+});
+
 test.describe('when storage throws (private window)', () => {
   test('week renders, ticking works for the session, and no page error is logged', async ({ page }) => {
     const errors: string[] = [];
