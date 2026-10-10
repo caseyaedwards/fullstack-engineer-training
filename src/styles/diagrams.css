@@ -1,0 +1,7 @@
+/* Build-time diagrams ship a light and a dark variant; follow Starlight's theme. */
+:root[data-theme='dark'] .diagram-light {
+  display: none;
+}
+:root:not([data-theme='dark']) .diagram-dark {
+  display: none;
+}

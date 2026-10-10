@@ -2,6 +2,7 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import rehypeMermaid from 'rehype-mermaid';
+import rehypeDiagramThemes from './src/plugins/rehype-diagram-themes.mjs';
 
 const site = process.env.SITE_URL ?? 'http://localhost:4321';
 const base = process.env.BASE_PATH ?? '/';
@@ -26,11 +27,13 @@ export default defineConfig({
           ...(executablePath ? { launchOptions: { executablePath } } : {}),
         },
       ],
+      rehypeDiagramThemes,
     ],
   },
   integrations: [
     starlight({
       title: 'Full-Stack Engineer Path',
+      customCss: ['./src/styles/diagrams.css'],
     }),
   ],
 });
