@@ -18,11 +18,14 @@ test('every file under weeks/ has a week key (a wek: typo would silently make it
   }
 });
 
-test('each week file matches the registry: week number, filename slug and phase', () => {
+test('each week file matches the registry: week number, filename slug, phase and title', () => {
   for (const w of weeks) {
     const fm = frontmatter(join(weeksDir, `${w.slug}.mdx`));
     assert.equal(fm.week, w.n, `${w.slug}: week is ${fm.week}, registry says ${w.n}`);
     assert.equal(fm.phase, w.phase, `${w.slug}: phase is "${fm.phase}", registry says "${w.phase}"`);
+    // "Week N: " keeps week titles apart from track titles such as "Networking" in tabs and search.
+    // The sidebar and timeline use the registry title, so the page title must not drift from it.
+    assert.equal(fm.title, `Week ${w.n}: ${w.title}`, `${w.slug}: title`);
   }
 });
 

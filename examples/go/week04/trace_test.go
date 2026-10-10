@@ -86,3 +86,21 @@ func TestCheckDoesNotFollowRedirects(t *testing.T) {
 		t.Errorf("status = %d, want 302", status)
 	}
 }
+
+func TestCheckOpensFreshConnectionEachTime(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+	useClient(t, srv.Client())
+
+	// A monitor checks the same URL again and again. If the second check reused
+	// the first one's connection, it would skip connect and TLS and report zero.
+	for i := range 2 {
+		timings, _, err := Check(context.Background(), srv.URL)
+		if err != nil {
+			t.Fatalf("check %d: %v", i+1, err)
+		}
+		if timings.Connect <= 0 || timings.TLS <= 0 {
+			t.Errorf("check %d: Connect = %v, TLS = %v, want both > 0", i+1, timings.Connect, timings.TLS)
+		}
+	}
+}

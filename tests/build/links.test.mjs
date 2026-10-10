@@ -66,8 +66,9 @@ test('every week page links exactly the tracks in its frontmatter, in order', ()
 test('week header shows phase, hours as a range, AI stage and the previous week', () => {
   const html = page(dist, weekPath(4));
   const header = headerText(html);
+  const [low, high] = frontmatter(join(weeksDir, '04-networking.mdx')).hours;
   assert.match(header, /Foundations/);
-  assert.match(header, /5–8 h/);
+  assert.ok(header.includes(`${low}–${high} h`), `header should show ${low}–${high} h`);
   assert.match(header, /Explain only/);
   assert.deepEqual(headerHrefs(html), [`${base}${weekPath(3)}`]);
 });
@@ -83,9 +84,9 @@ test('every week page renders the header, three callouts, a side lab and a Read 
     const html = page(dist, weekPath(w.n));
     assert.equal((html.match(/<header class="week-header /g) ?? []).length, 1, `${w.slug}: week header`);
     for (const cls of ['callout-observe', 'callout-operate', 'callout-ai']) {
-      assert.equal((html.match(new RegExp(`class="callout ${cls} `, 'g')) ?? []).length, 1, `${w.slug}: ${cls}`);
+      assert.equal((html.match(new RegExp(`class="callout ${cls}"`, 'g')) ?? []).length, 1, `${w.slug}: ${cls}`);
     }
-    assert.match(html, /<details class="side-lab /, `${w.slug}: side lab`);
+    assert.match(html, /<details class="side-lab"/, `${w.slug}: side lab`);
   }
 });
 

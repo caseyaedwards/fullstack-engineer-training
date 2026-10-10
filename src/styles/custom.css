@@ -30,6 +30,11 @@
   font-weight: 600;
 }
 
+/*
+ * Callouts and the side lab hold the page's own markdown, so unlike the other
+ * components they are not .not-content: Starlight spaces their paragraphs and
+ * styles their inline code, lists and tables like the rest of the page.
+ */
 .callout {
   --callout-color: var(--sl-color-gray-3);
   --callout-bg: var(--sl-color-gray-6);
@@ -186,11 +191,11 @@
 .tl-done::before {
   content: '\2713';
 }
-[data-complete] > a {
+.week-timeline [data-complete] > a {
   border-color: var(--sl-color-green);
   background-color: var(--sl-color-green-low);
 }
-[data-complete] .tl-done {
+.week-timeline [data-complete] .tl-done {
   display: inline;
 }
 /* Visually hidden, still read by screen readers. */

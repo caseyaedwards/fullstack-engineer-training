@@ -43,10 +43,12 @@ test('the home page has the start link under the site base', () => {
 test('callout asides are labelled by a heading that exists on the page', () => {
   for (const w of weeks) {
     const html = dist(`weeks/${w.slug}`);
-    const refs = [...html.matchAll(/<aside[^>]*aria-labelledby="([^"]+)"/g)].map((m) => m[1]);
-    assert.equal(refs.length, 3, `${w.slug}: expected 3 labelled callouts`);
+    // Only the site's own callouts; Starlight's :::note asides carry their own aria-label.
+    const callouts = [...html.matchAll(/<aside class="callout [^>]*>/g)].map((m) => m[0]);
+    const refs = callouts.map((a) => a.match(/aria-labelledby="([^"]+)"/)?.[1]);
+    assert.equal(refs.length, 3, `${w.slug}: expected 3 callouts`);
     for (const id of refs) assert.match(html, new RegExp(`<h2 id="${id}"`), `${w.slug}: no heading #${id}`);
-    assert.ok(!/<aside[^>]*aria-label="/.test(html), `${w.slug}: aside still has a duplicate aria-label`);
+    assert.ok(!callouts.some((a) => /aria-label="/.test(a)), `${w.slug}: a callout still has a duplicate aria-label`);
   }
 });
 

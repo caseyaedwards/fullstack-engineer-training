@@ -16,5 +16,9 @@ const mark = () =>
     li.toggleAttribute('data-complete', weekComplete(Number(li.dataset.week), ids.length, ids));
   });
 mark();
-// Back/forward cache restores the page without re-running scripts; progress may have changed since.
-if (nodes.length) addEventListener('pageshow', (e) => e.persisted && mark());
+if (nodes.length) {
+  // Back/forward cache restores the page without re-running scripts; progress may have changed since.
+  addEventListener('pageshow', (e) => e.persisted && mark());
+  // A week ticked in another tab. A null key means that tab cleared all of storage.
+  addEventListener('storage', (e) => (e.key === null || e.key.startsWith('fsp:done:')) && mark());
+}
