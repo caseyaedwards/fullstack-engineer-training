@@ -29,6 +29,13 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            examples/web/package-lock.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: examples/go/go.mod
 
       - name: Install d2
         run: |
@@ -39,6 +46,19 @@ jobs:
           d2 --version
 
       - run: npm ci
+
+      - name: Go examples
+        working-directory: examples/go
+        run: |
+          go vet ./...
+          go test -race ./...
+
+      - name: Web examples
+        working-directory: examples/web
+        run: |
+          npm ci
+          npx vitest run
+
       - run: npm run test:unit
       - run: npm run build
       - run: npm run test:build

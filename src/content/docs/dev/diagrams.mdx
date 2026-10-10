@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import Diagram from '../../../components/Diagram.astro';
+import CodeFrom from '../../../components/CodeFrom.astro';
 
 <Diagram
   id="dns-lookup"
@@ -31,6 +32,10 @@ server -> browser: SYN-ACK
 browser -> server: ACK
 `}
 />
+
+## Code from a tested example
+
+<CodeFrom file="go/week04/trace.go" region="timings" lang="go" title="trace.go" />
 
 ## Wide table
 

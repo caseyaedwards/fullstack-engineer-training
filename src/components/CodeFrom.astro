@@ -1,0 +1,75 @@
+---
+// Shows one named region of a tested example file, so the code on the page is the
+// code the examples/ tests run. Regions are marked in the source with
+//   // region: <name>   ...   // endregion: <name>
+// (or `#` comments). Marker lines are not shown. Any problem throws, which fails
+// the build and names the file and region.
+import { posix } from 'node:path';
+import { Code } from '@astrojs/starlight/components';
+
+interface Props {
+  /** Path relative to the repo's examples/ directory, e.g. "go/week04/trace.go". */
+  file: string;
+  region: string;
+  lang: string;
+  title?: string;
+}
+
+const { file, region, lang, title } = Astro.props;
+
+// Vite resolves this glob from the project root, so it does not depend on the cwd
+// or on where Astro puts the bundled component. node_modules are left out.
+const sources = import.meta.glob('/examples/**/*', {
+  query: '?raw',
+  import: 'default',
+  eager: false,
+}) as Record<string, () => Promise<string>>;
+
+const where = `<CodeFrom file="${file}" region="${region}">`;
+
+const normalized = posix.normalize(file);
+if (file.includes('\\') || posix.isAbsolute(normalized) || normalized === '..' || normalized.startsWith('../')) {
+  throw new Error(`${where}: file must stay inside the examples/ directory.`);
+}
+const key = `/examples/${normalized}`;
+const load = key.includes('/node_modules/') ? undefined : sources[key];
+if (!load) {
+  throw new Error(`${where}: no file at examples/${normalized}.`);
+}
+
+const marker = /^\s*(?:\/\/|#)\s*(region|endregion):\s*(\S+)\s*$/;
+const lines = (await load()).split(/\r?\n/);
+
+let start = -1;
+let end = -1;
+const known: string[] = [];
+lines.forEach((line, i) => {
+  const m = marker.exec(line);
+  if (!m) return;
+  const [, kind, name] = m;
+  if (kind === 'region') known.push(name);
+  if (name !== region) return;
+  if (kind === 'region') {
+    if (start !== -1) throw new Error(`${where}: region "${region}" is defined twice in examples/${normalized}.`);
+    start = i;
+  } else if (end === -1) {
+    end = i;
+  }
+});
+
+if (start === -1) {
+  throw new Error(
+    `${where}: region "${region}" not found in examples/${normalized}. Regions there: ${known.join(', ') || '(none)'}.`,
+  );
+}
+if (end === -1 || end < start) {
+  throw new Error(`${where}: region "${region}" in examples/${normalized} has no matching "endregion: ${region}" marker.`);
+}
+
+// Drop marker lines of nested regions, then remove the common indentation.
+const body = lines.slice(start + 1, end).filter((line) => !marker.test(line));
+const indent = Math.min(...body.filter((l) => l.trim()).map((l) => /^\s*/.exec(l)![0].length));
+const code = body.map((l) => l.slice(Number.isFinite(indent) ? indent : 0)).join('\n');
+---
+
+<Code code={code} lang={lang} title={title} />
