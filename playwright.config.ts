@@ -7,6 +7,7 @@ const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE;
 export default defineConfig({
   testDir: 'tests/e2e',
   fullyParallel: true,
+  forbidOnly: !!process.env.CI,
   reporter: 'list',
   use: {
     // Trailing slash so page.goto('dev/diagrams/') resolves under the base.

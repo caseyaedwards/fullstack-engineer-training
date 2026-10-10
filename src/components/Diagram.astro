@@ -4,6 +4,7 @@
 // diagram elements (by data-k key) that each step highlights.
 import { renderD2 } from '../lib/diagram/render.mjs';
 import { claimId } from '../lib/diagram/page-ids.mjs';
+import { checkSteps } from '../lib/diagram/steps.mjs';
 
 interface Step {
   hl: string[];
@@ -23,15 +24,7 @@ claimId(Astro.request, id);
 
 const { svg, keys } = await renderD2(code, { id });
 
-for (const [i, step] of (steps ?? []).entries()) {
-  for (const k of step.hl) {
-    if (!keys.has(k)) {
-      throw new Error(
-        `Diagram "${id}" step ${i + 1}: unknown highlight key "${k}". Known keys: ${[...keys].join(', ')}`,
-      );
-    }
-  }
-}
+checkSteps(id, steps ?? [], keys);
 ---
 
 <figure class="dg" id={id}>

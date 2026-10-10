@@ -135,7 +135,7 @@ test('renderD2: d2 exiting before reading stdin rejects with its stderr (no EPIP
 });
 
 test('renderD2: a hung d2 is killed and rejects with a timeout error', async () => {
-  const bin = fakeD2('if [ "$1" = "--version" ]; then echo v0.0.0; exit 0; fi\nsleep 30');
+  const bin = fakeD2('if [ "$1" = "--version" ]; then echo v0.0.0; exit 0; fi\nexec sleep 30');
   const mod = await import('../../src/lib/diagram/render.mjs?timeout');
   await withEnv({ D2_BIN: bin, D2_TIMEOUT_MS: '300' }, async () => {
     const t = Date.now();
@@ -151,4 +151,15 @@ test('renderD2: a failed d2 --version is not cached forever', async () => {
   });
   const { keys } = await mod.renderD2('a -> b', { id: 'ver' });
   assert.ok(keys.has('a'));
+});
+
+test('checkSteps: unknown keys and keys with whitespace fail the build', async () => {
+  const { checkSteps } = await import('../../src/lib/diagram/steps.mjs');
+  const keys = new Set(['cli', 'load balancer', 'cli->load balancer']);
+  assert.doesNotThrow(() => checkSteps('ok', [{ hl: ['cli'], caption: '' }], keys));
+  assert.throws(() => checkSteps('d', [{ hl: ['nope'], caption: '' }], keys), /step 1: unknown highlight key "nope"/);
+  assert.throws(
+    () => checkSteps('d', [{ hl: ['cli'] }, { hl: ['load balancer'], caption: '' }], keys),
+    /step 2: highlight key "load balancer" contains whitespace/,
+  );
 });
