@@ -42,6 +42,23 @@
   height: auto;
 }
 
+/*
+ * A wide diagram (a sequence diagram with many actors) would shrink until its
+ * labels are unreadable on a phone. Shrink it to fit, but never below 75% of
+ * its own size; past that it scrolls sideways inside .dg-svg instead.
+ * --dg-w is the SVG's width, set by Diagram.astro.
+ */
+.dg .dg-svg[style*='--dg-w'] svg {
+  width: min(var(--dg-w), max(100%, calc(var(--dg-w) * 0.75)));
+  max-width: none;
+}
+
+/* A box that scrolls is focusable (src/scripts/walkthrough.ts), so arrow keys scroll it. */
+.dg .dg-svg:focus-visible {
+  outline: 2px solid var(--sl-color-accent);
+  outline-offset: 2px;
+}
+
 .dg figcaption {
   margin-top: 0.5rem;
   text-align: center;

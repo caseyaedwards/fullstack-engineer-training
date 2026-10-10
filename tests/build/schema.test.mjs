@@ -123,6 +123,29 @@ for (const [name, done, expected] of [
   });
 }
 
+test('a week number above 18 fails the build and names the file and the field', { timeout: 300_000 }, () => {
+  const r = buildWith(
+    'zz-week-19',
+    `---
+title: Week 19
+week: 19
+phase: run
+hours: [5, 8]
+aiStage: 3
+tracks: [sre]
+done:
+  - id: a
+    text: A
+---
+
+Body.
+`,
+  );
+  assert.notEqual(r.status, 0, 'build should fail');
+  assert.match(r.out, /zz-week-19/, 'error should name the file');
+  assert.match(r.out, /week: Too big.*<=18/, 'error should name the field and the limit');
+});
+
 const rawFrontmatter = (file) => {
   const m = readFileSync(file, 'utf8').match(/^---\n([\s\S]*?)\n---/);
   assert.ok(m, `${file} has no frontmatter`);

@@ -3,6 +3,7 @@ package week04
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -84,5 +85,36 @@ func TestCheckDoesNotFollowRedirects(t *testing.T) {
 	// never mix two servers.
 	if status != http.StatusFound {
 		t.Errorf("status = %d, want 302", status)
+	}
+}
+
+func TestCheckOpensFreshConnectionEachTime(t *testing.T) {
+	for _, http2 := range []bool{false, true} {
+		t.Run(fmt.Sprintf("http2=%v", http2), func(t *testing.T) {
+			proto := make(chan int, 2)
+			srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				proto <- r.ProtoMajor
+			}))
+			srv.EnableHTTP2 = http2
+			srv.StartTLS()
+			defer srv.Close()
+			useClient(t, srv.Client())
+
+			// A monitor checks the same URL again and again. If the second check
+			// reused the first one's connection, it would skip connect and TLS
+			// and report zero.
+			for i := range 2 {
+				timings, _, err := Check(context.Background(), srv.URL)
+				if err != nil {
+					t.Fatalf("check %d: %v", i+1, err)
+				}
+				if timings.Connect <= 0 || timings.TLS <= 0 {
+					t.Errorf("check %d: Connect = %v, TLS = %v, want both > 0", i+1, timings.Connect, timings.TLS)
+				}
+				if want := map[bool]int{false: 1, true: 2}[http2]; <-proto != want {
+					t.Errorf("check %d: server saw a different HTTP version than HTTP/%d", i+1, want)
+				}
+			}
+		})
 	}
 }

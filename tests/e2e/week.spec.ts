@@ -10,7 +10,7 @@ const setTheme = (page: Page, theme: 'light' | 'dark') =>
 
 test('week page: header, backlinks and Read with links resolve', async ({ page }) => {
   await page.goto(WEEK);
-  await expect(page.locator('.week-header')).toContainText('5–8 h');
+  await expect(page.locator('.week-header')).toContainText(/\d+–\d+ h/);
   await page.locator('.week-header a').click();
   await expect(page).toHaveURL(/weeks\/03-linux-processes\/$/);
 
@@ -18,7 +18,7 @@ test('week page: header, backlinks and Read with links resolve', async ({ page }
   await page.locator('.read-with a', { hasText: 'DNS' }).click();
   await expect(page).toHaveURL(/tracks\/foundations\/dns\/$/);
   await expect(page.locator('.used-in-weeks')).toContainText('Used in weeks');
-  await page.locator('.used-in-weeks a', { hasText: '4' }).click();
+  await page.locator('.used-in-weeks a', { hasText: /^4$/ }).click();
   await expect(page).toHaveURL(/weeks\/04-networking\/$/);
 });
 

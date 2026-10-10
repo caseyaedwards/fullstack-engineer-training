@@ -25,10 +25,13 @@ claimId(Astro.request, id);
 const { svg, keys } = await renderD2(code, { id });
 
 checkSteps(id, steps ?? [], keys);
+
+// The SVG's own width, so the CSS can stop a wide diagram shrinking past legibility.
+const width = Number(/^<svg[^>]*\swidth="([\d.]+)"/.exec(svg)?.[1]);
 ---
 
 <figure class="dg" id={id}>
-  <div class="dg-svg"><Fragment set:html={svg} /></div>
+  <div class="dg-svg" style={width ? `--dg-w: ${width}px` : undefined}><Fragment set:html={svg} /></div>
   {
     steps && steps.length > 0 && (
       <ol class="dg-steps">

@@ -66,8 +66,11 @@ if (end === -1 || end < start) {
   throw new Error(`${where}: region "${region}" in examples/${normalized} has no matching "endregion: ${region}" marker.`);
 }
 
-// Drop marker lines of nested regions, then remove the common indentation.
+// Drop marker lines of nested regions and blank lines at either end (a blank line
+// keeps a marker out of a Go doc comment), then remove the common indentation.
 const body = lines.slice(start + 1, end).filter((line) => !marker.test(line));
+while (body.length && !body[0].trim()) body.shift();
+while (body.length && !body.at(-1)!.trim()) body.pop();
 const indent = Math.min(...body.filter((l) => l.trim()).map((l) => /^\s*/.exec(l)![0].length));
 const code = body.map((l) => l.slice(Number.isFinite(indent) ? indent : 0)).join('\n');
 ---

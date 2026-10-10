@@ -12,63 +12,96 @@ import (
 	"time"
 )
 
-// Timings holds how long each phase took. A phase that did not happen
-// (DNS for an IP address, TLS for plain http, any of them on a reused
-// connection) is zero.
+// region: types
+
+// Timings holds how long each phase took. A phase that did not
+// happen (DNS for an IP address, TLS for plain http) is zero.
+// FirstByte and Total count from the start of the request, so
+// they include the phases before them.
 type Timings struct {
 	DNS, Connect, TLS, FirstByte, Total time.Duration
 }
 
-// client sends the request. Tests swap it for a client that trusts their server.
+// client sends the request. Tests swap in one that trusts
+// their test server.
 var client = http.DefaultClient
 
-// Check makes a GET request to url and reports how long each phase took, the
-// HTTP status code, and any error. Redirects are not followed. Cancelling ctx
-// stops the request.
+// endregion: types
+
+// region: helpers
+
+// Check makes a GET request to url and reports how long each
+// phase took, the HTTP status code, and any error. Redirects are
+// not followed. Cancelling ctx stops the request.
 func Check(ctx context.Context, url string) (Timings, int, error) {
 	var (
-		mu                               sync.Mutex // guards t and the start times, see below
+		mu                               sync.Mutex // guards the values below
 		t                                Timings
 		dnsStart, connectStart, tlsStart time.Time
 	)
-	// The transport dials in its own goroutine, which can still be running after
-	// Check returns when ctx is cancelled. These helpers keep that safe.
-	begin := func(from *time.Time) { mu.Lock(); *from = time.Now(); mu.Unlock() }
-	end := func(d *time.Duration, from *time.Time) { mu.Lock(); *d = time.Since(*from); mu.Unlock() }
-	result := func() Timings { mu.Lock(); defer mu.Unlock(); return t }
-
-	start := time.Now()
+	// The HTTP client calls the hooks from its own goroutine, which
+	// can still be running after a timeout has made Check return.
+	// Every read and write of t and the start times takes the lock.
+	begin := func(from *time.Time) {
+		mu.Lock()
+		defer mu.Unlock()
+		*from = time.Now()
+	}
+	end := func(d *time.Duration, from *time.Time) {
+		mu.Lock()
+		defer mu.Unlock()
+		*d = time.Since(*from)
+	}
+	result := func() Timings {
+		mu.Lock()
+		defer mu.Unlock()
+		return t
+	}
+	// endregion: helpers
 
 	// region: timings
+	start := time.Now()
+	// The Connect hooks fire once per address tried (Go may race IPv4
+	// and IPv6, "Happy Eyeballs"), so Connect may reflect only the last.
 	trace := &httptrace.ClientTrace{
 		DNSStart:             func(httptrace.DNSStartInfo) { begin(&dnsStart) },
 		DNSDone:              func(httptrace.DNSDoneInfo) { end(&t.DNS, &dnsStart) },
-		ConnectStart:         func(network, addr string) { begin(&connectStart) },
-		ConnectDone:          func(network, addr string, err error) { end(&t.Connect, &connectStart) },
+		ConnectStart:         func(string, string) { begin(&connectStart) },
+		ConnectDone:          func(string, string, error) { end(&t.Connect, &connectStart) },
 		TLSHandshakeStart:    func() { begin(&tlsStart) },
 		TLSHandshakeDone:     func(tls.ConnectionState, error) { end(&t.TLS, &tlsStart) },
 		GotFirstResponseByte: func() { end(&t.FirstByte, &start) },
 	}
 	// endregion: timings
 
-	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodGet, url, nil)
+	// region: request
+	ctx = httptrace.WithClientTrace(ctx, trace)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return result(), 0, err
 	}
-	// Don't follow redirects: report the status this URL returned, and keep the
-	// timings to one request on one connection.
+	// Open a new connection every time. Reusing one would skip DNS,
+	// connect and TLS, and a monitor wants all of them on every check.
+	req.Close = true
+
+	// Don't follow redirects: report the status this URL returned,
+	// and keep the timings to one request on one connection.
 	c := *client
-	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	c.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 	resp, err := c.Do(req)
 	if err != nil {
 		return result(), 0, err
 	}
 	defer resp.Body.Close()
 
-	// Read the whole body so Total covers the full download, not just the headers.
+	// Read the whole body so Total covers the full download.
 	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
 		return result(), resp.StatusCode, err
 	}
 	end(&t.Total, &start)
 	return result(), resp.StatusCode, nil
 }
+
+// endregion: request
