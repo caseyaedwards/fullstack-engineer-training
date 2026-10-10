@@ -1,0 +1,79 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = fileURLToPath(new URL('../../', import.meta.url));
+const weeksDir = join(root, 'src/content/docs/weeks');
+const tracksDir = join(root, 'src/content/docs/tracks');
+const base = (process.env.BASE_PATH ?? '/').replace(/\/?$/, '/');
+
+const pagesIn = (dir) => readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory() && existsSync(join(dir, e.name, 'index.html')));
+
+test('dist has 19 week pages and 25 track pages', () => {
+  assert.equal(pagesIn(join(root, 'dist/weeks')).length, 19);
+  const groups = readdirSync(join(root, 'dist/tracks'), { withFileTypes: true }).filter((e) => e.isDirectory());
+  const tracks = groups.flatMap((g) => pagesIn(join(root, 'dist/tracks', g.name)));
+  assert.equal(tracks.length, 25);
+});
+
+test('a typo in a week frontmatter track slug fails the build and names the file and the slug', { timeout: 300_000 }, () => {
+  const fixture = join(weeksDir, 'zz-bad-week.mdx');
+  const outDir = mkdtempSync(join(tmpdir(), 'schema-bad-'));
+  try {
+    writeFileSync(
+      fixture,
+      `---
+title: Bad week
+week: 3
+phase: foundations
+hours: [5, 8]
+aiStage: 1
+tracks: [nope]
+---
+
+Body.
+`,
+    );
+    const r = spawnSync('npm', ['run', 'build', '--', '--outDir', outDir], { cwd: root, encoding: 'utf8' });
+    assert.notEqual(r.status, 0, 'build should fail');
+    const out = r.stdout + r.stderr;
+    assert.match(out, /zz-bad-week/, 'error should name the file');
+    assert.match(out, /nope/, 'error should name the bad slug');
+  } finally {
+    rmSync(fixture, { force: true });
+    rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
+const frontmatter = (file) => {
+  const m = readFileSync(file, 'utf8').match(/^---\n([\s\S]*?)\n---/);
+  assert.ok(m, `${file} has no frontmatter`);
+  return m[1];
+};
+
+test('aiStage in each week stub matches the ladder (0-5 -> 1, 6-12 -> 2, 13-18 -> 3)', () => {
+  const files = readdirSync(weeksDir).filter((f) => f.endsWith('.mdx'));
+  assert.equal(files.length, 19);
+  for (const f of files) {
+    const fm = frontmatter(join(weeksDir, f));
+    const week = Number(fm.match(/^week:\s*(\d+)\s*$/m)?.[1]);
+    const stage = Number(fm.match(/^aiStage:\s*(\d)\s*$/m)?.[1]);
+    assert.equal(week, Number(f.slice(0, 2)), `${f}: week number does not match the filename`);
+    const expected = week <= 5 ? 1 : week <= 12 ? 2 : 3;
+    assert.equal(stage, expected, `${f}: aiStage ${stage}, expected ${expected}`);
+  }
+});
+
+test('every sidebar link on the home page respects BASE_PATH and covers all weeks and tracks', () => {
+  const html = readFileSync(join(root, 'dist/start-here/index.html'), 'utf8');
+  const hrefs = [...html.matchAll(/<a href="([^"]+)"/g)].map((m) => m[1]);
+  const nav = hrefs.filter((h) => /\/(weeks|tracks)\//.test(h));
+  assert.equal(nav.filter((h) => h.includes('/weeks/')).length >= 19, true, 'expected 19 week links in the sidebar');
+  assert.equal(nav.filter((h) => h.includes('/tracks/')).length >= 25, true, 'expected 25 track links in the sidebar');
+  for (const h of nav) assert.ok(h.startsWith(base), `${h} does not start with ${base}`);
+  assert.ok(!hrefs.some((h) => h.includes('/dev/')), 'hidden dev fixture page leaked into the sidebar');
+});
