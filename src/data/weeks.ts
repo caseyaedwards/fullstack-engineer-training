@@ -16,7 +16,7 @@ export const weeks: readonly Week[] = [
   { n: 3, slug: '03-linux-processes', title: 'Linux and Processes', phase: 'foundations' },
   { n: 4, slug: '04-networking', title: 'Networking', phase: 'foundations' },
   { n: 5, slug: '05-concurrency', title: 'Concurrency', phase: 'foundations' },
-  { n: 6, slug: '06-architecture-repo', title: 'Frontend vs Backend, Repo Skeleton', phase: 'build' },
+  { n: 6, slug: '06-architecture-repo', title: 'Frontend vs Backend and the Repo Skeleton', phase: 'build' },
   { n: 7, slug: '07-backend-api', title: 'Backend HTTP API', phase: 'build' },
   { n: 8, slug: '08-backend-postgres', title: 'Backend Postgres', phase: 'build' },
   { n: 9, slug: '09-jobs-alerts', title: 'Background Jobs and Alerts', phase: 'build' },

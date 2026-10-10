@@ -9,7 +9,7 @@ const words = (text) => matchLine(text).map((p) => p.word.toLowerCase());
 const rules = (src, opts) => lintSource(src, opts).map((p) => `${p.line}:${p.rule}:${p.word}`);
 
 test('matchLine finds banned words and hedges case-insensitively, on word boundaries only', () => {
-  assert.deepEqual(words('The cache May hold it.'), ['may']);
+  assert.deepEqual(words('The cache MAY hold it.'), ['may']);
   assert.deepEqual(words('It might work, and it usually does.'), ['might', 'usually']);
   assert.deepEqual(words('This tends to happen in most cases.'), ['tends to', 'in most cases']);
   assert.deepEqual(words('Kind of slow, sort of fast.'), ['kind of', 'sort of']);
@@ -158,5 +158,99 @@ test('lintSource names the line of each problem across frontmatter, headings, pr
     '11:link-text:here',
     "13:contraction:you'll",
     '15:latin:e.g.',
+  ]);
+});
+
+test('matchLine bans the Axibase terms admin, deselect, uncheck, ingest, epoch time and datacenter', () => {
+  assert.deepEqual(words('An admin can deselect or uncheck it, ingest logs, read Epoch time in the datacenter.'), [
+    'admin', 'deselect', 'uncheck', 'ingest', 'epoch time', 'datacenter',
+  ]);
+});
+
+test('matchLine finds the wider set of hedges and contractions', () => {
+  assert.deepEqual(words('It sometimes, almost, mostly, normally and in general works.'), ['sometimes', 'almost', 'mostly', 'normally', 'in general']);
+  assert.deepEqual(words('Commonly, frequently, occasionally, potentially, ideally, presumably, hopefully.'), [
+    'commonly', 'frequently', 'occasionally', 'potentially', 'ideally', 'presumably', 'hopefully',
+  ]);
+  assert.deepEqual(words("How's it going, why's that, when's it due, y'all?"), ["how's", "why's", "when's", "y'all"]);
+});
+
+test('matchLine allows flag next to feature, SYN, ACK, FIN, RST, TCP, Go and command-line, and nothing else', () => {
+  assert.deepEqual(words('Turn on the feature flag. The SYN flag, ACK flags, FIN flag, RST flag and TCP flags are set.'), []);
+  assert.deepEqual(words('Go flags and command-line flags work.'), []);
+  assert.deepEqual(words('Set the flag in the settings.'), ['flag']);
+});
+
+test('matchLine allows rather than, so far and if so, but not rather or so alone', () => {
+  assert.deepEqual(words('Use TCP rather than UDP. So far it works; if so, stop.'), []);
+  assert.deepEqual(words('It is rather slow, so it fails.'), ['rather', 'so']);
+});
+
+test('matchLine reads a capitalized May or Will after a lowercase word as a month or a name', () => {
+  assert.deepEqual(words('The release ships in May, and Will reviews it.'), []);
+  assert.deepEqual(words('The certificate expires on May 5, 2027.'), []);
+  // At the start of a sentence, May and Will are the verbs.
+  assert.deepEqual(words('May it fail? Will it work?'), ['may', 'will']);
+});
+
+test('matchLine keeps kill, terminate, sample and abort banned', () => {
+  assert.deepEqual(words('Kill the process, terminate the job, sample a metric, abort the transaction.'), ['kill', 'terminate', 'sample', 'abort']);
+});
+
+test('a prose-allow comment suppresses the named words on its own line and the next line only', () => {
+  const src = [
+    '{/* prose-allow: kill, sample */}', // 1
+    'Send kill to the process and take a sample.', // 2
+    'Then kill it again.', // 3
+    'Postgres marks the transaction as aborted. {/* prose-allow: aborted */}', // 4
+    'Terminate it {/* prose-allow: kill */}', // 5
+  ].join('\n');
+  assert.deepEqual(rules(src), ['3:banned:kill', '5:banned:Terminate']);
+});
+
+test('frontmatterProse reads folded, literal and wrapped multi-line values, one entry per line', () => {
+  const src = [
+    '---', // 1
+    'title: Week 1', // 2
+    'description: >-', // 3
+    '  It may run', // 4
+    '  and it might stop.', // 5
+    'done:', // 6
+    '  - id: a', // 7
+    '    text: |', // 8
+    '      First line.', // 9
+    '      Second line.', // 10
+    '  - id: b', // 11
+    '    text: A plain value that', // 12
+    '      wraps here.', // 13
+    'week: 1', // 14
+    '---',
+  ].join('\n');
+  assert.deepEqual(frontmatterProse(src), [
+    { line: 2, key: 'title', text: 'Week 1' },
+    { line: 4, key: 'description', text: 'It may run' },
+    { line: 5, key: 'description', text: 'and it might stop.' },
+    { line: 9, key: 'done.text', text: 'First line.' },
+    { line: 10, key: 'done.text', text: 'Second line.' },
+    { line: 12, key: 'done.text', text: 'A plain value that' },
+    { line: 13, key: 'done.text', text: 'wraps here.' },
+  ]);
+  assert.deepEqual(rules(src), ['4:hedge:may', '5:hedge:might']);
+});
+
+test('checkHeading allows mixed-case names and commas only in a list', () => {
+  const bad = (h) => checkHeading(h).map((p) => `${p.rule}:${p.word}`);
+  assert.deepEqual(bad('Call gRPC from an iPhone on macOS'), []);
+  assert.deepEqual(bad('Addresses, Ports and Round Trips'), []);
+  assert.deepEqual(bad('Tests, Builds or Releases'), []);
+  assert.deepEqual(bad('Frontend vs Backend, Repo Skeleton'), ['heading-punctuation:,']);
+});
+
+test('strip hands back Badge text and card description props', () => {
+  const { props } = strip('<Badge text="It would fail" />\n<LinkCard title="Go" description="A lot of it" />');
+  assert.deepEqual(props, [
+    { line: 1, text: 'It would fail' },
+    { line: 2, text: 'Go' },
+    { line: 2, text: 'A lot of it' },
   ]);
 });

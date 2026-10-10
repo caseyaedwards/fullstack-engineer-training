@@ -10,13 +10,13 @@
 export const BANNED = [
   { words: ['should'], fix: 'must, or remove' },
   { words: ['could', 'would'], fix: 'rewrite to state what happens' },
-  // "May" followed by a number is the month, as in "May 5".
-  { words: ['may'], fix: 'can', except: /\bMay\s+\d/g },
+  { words: ['may'], fix: 'can' },
   { words: ['will', 'was', 'were', 'had'], fix: 'present tense' },
-  { words: ['abort', 'aborts', 'aborted', 'kill', 'kills', 'killed', 'terminate', 'terminates', 'terminated'], fix: 'stop or cancel' },
-  { words: ['so', 'a lot'], fix: 'formal style: therefore, because, to, many' },
-  // A Go command-line flag is the correct term for the flag package.
-  { words: ['flag', 'flags'], fix: 'option', except: /\b(?:Go|command-line)\s+flags?\b/gi },
+  // For a Unix signal, name it (SIGTERM, SIGKILL) or add a prose-allow comment: "stop" means SIGSTOP there.
+  { words: ['kill', 'kills', 'killed', 'terminate', 'terminates', 'terminated'], fix: 'stop or cancel; for a Unix signal, name it: SIGTERM, SIGKILL' },
+  { words: ['abort', 'aborts', 'aborted'], fix: 'stop or cancel; for a Postgres aborted transaction, add a prose-allow comment' },
+  { words: ['so', 'a lot'], fix: 'because, to, a colon, or two sentences; many' },
+  { words: ['flag', 'flags'], fix: 'option or setting, except a Go command-line flag, a feature flag or a TCP flag' },
   { words: ['lets', 'please'], fix: 'remove' },
   { words: ['regex', 'regexes'], fix: 'regular expression' },
   { words: ['and/or'], fix: 'clarify: and, or, or one of' },
@@ -25,16 +25,36 @@ export const BANNED = [
   { words: ['end-point'], fix: 'endpoint' },
   { words: ['click on'], fix: 'click' },
   { words: ['robust'], fix: 'say what it withstands' },
-  { words: ['sample', 'samples'], fix: 'example' },
+  { words: ['sample', 'samples'], fix: 'example; for a metric sample, add a prose-allow comment' },
   { words: ['follow these steps'], fix: 'remove the filler' },
+  { words: ['admin', 'admins'], fix: 'administrator' },
+  { words: ['deselect', 'uncheck'], fix: 'clear' },
+  { words: ['ingest', 'ingests', 'ingested'], fix: 'load or import' },
+  { words: ['epoch time'], fix: 'Unix time' },
+  { words: ['datacenter', 'datacenters'], fix: 'data center' },
 ];
 
 /** Conditional and hedging language. Rewrite the sentence to state what happens, with a number, condition or example. */
 export const HEDGES = [
   'may', 'might', 'perhaps', 'maybe', 'possibly', 'probably', 'likely', 'could', 'would', 'should',
   'generally', 'usually', 'typically', 'often', 'somewhat', 'fairly', 'quite', 'rather', 'arguably',
+  'sometimes', 'almost', 'mostly', 'normally', 'commonly', 'frequently', 'occasionally', 'potentially',
+  'ideally', 'presumably', 'hopefully', 'in general',
   'tends to', 'tend to', 'in most cases', 'it depends', 'kind of', 'sort of', 'seem', 'seems', 'seemed', 'appears to', 'appear to',
 ];
+
+/**
+ * Exact forms that are not the banned word: a match inside one of these ranges is skipped.
+ * A capitalized May or Will after a lowercase word, a digit or a comma is a month or a name.
+ */
+export const EXCEPT = {
+  may: /\bMay\s+\d|(?<=[\p{Ll}\d,;]\s+)May\b/gu,
+  will: /(?<=[\p{Ll}\d,;]\s+)Will\b/gu,
+  so: /\bso\s+far\b|\bif\s+so\b/gi,
+  flag: /\b(?:Go|command-line|feature|SYN|ACK|FIN|RST|TCP)\s+flags?\b/gi,
+  rather: /\brather\s+than\b/gi,
+};
+EXCEPT.flags = EXCEPT.flag;
 
 /** Words that stay lowercase in Title Case unless they are the first or last word. */
 export const SMALL_WORDS = new Set(
@@ -45,13 +65,14 @@ const escape = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 const wordRegex = (w) => new RegExp(`(?<![\\w'’-])${w.split(' ').map(escape).join('\\s+')}(?![\\w'’-])`, 'gi');
 
 const RULES = [
-  ...HEDGES.map((w) => ({ re: wordRegex(w), rule: 'hedge', fix: 'state what happens, with a number, condition or example', except: w === 'may' ? /\bMay\s+\d/g : undefined })),
-  ...BANNED.flatMap(({ words, fix, except }) =>
-    words.filter((w) => !HEDGES.includes(w)).map((w) => ({ re: wordRegex(w), rule: 'banned', fix, except })),
+  ...HEDGES.map((w) => ({ re: wordRegex(w), rule: 'hedge', fix: 'state what happens, with a number, condition or example', except: EXCEPT[w] })),
+  ...BANNED.flatMap(({ words, fix }) =>
+    words.filter((w) => !HEDGES.includes(w)).map((w) => ({ re: wordRegex(w), rule: 'banned', fix, except: EXCEPT[w] })),
   ),
   { re: /\b\w+n['’]t\b/gi, rule: 'contraction', fix: 'write it out: is not, do not' },
   { re: /\b\w+['’](?:re|ve|ll|d)\b/gi, rule: 'contraction', fix: 'write it out' },
-  { re: /\b(?:it|that|let|here|there|what|who|where|he|she)['’]s\b/gi, rule: 'contraction', fix: 'write it out: it is, that is' },
+  { re: /\b(?:it|that|let|here|there|what|who|where|he|she|how|why|when)['’]s\b/gi, rule: 'contraction', fix: 'write it out: it is, that is' },
+  { re: /\by['’]all\b/gi, rule: 'contraction', fix: 'you, all of you' },
   { re: /\b(?:e\.g|i\.e)\.?/gi, rule: 'latin', fix: 'for example' },
   { re: /\bclick\s+here\b/gi, rule: 'link-text', fix: 'describe the target' },
 ];
@@ -125,12 +146,12 @@ function skipTag(src, i) {
   return src.length;
 }
 
-/** String props that render as visible text: Diagram titles and step captions, SideLab titles. */
+/** String props that render as visible text: Diagram titles and step captions, SideLab titles, Badge text, card descriptions. */
 function propText(tag, offset, src) {
   // Template literals hold D2 code, not prose: hide them first.
   const t = tag.replace(/`(?:\\.|[^`\\])*`/g, blank);
   const out = [];
-  for (const m of t.matchAll(/\b(title|caption)\s*[:=]\s*(['"])((?:\\.|(?!\2)[^\\])*)\2/g)) {
+  for (const m of t.matchAll(/\b(title|caption|text|description)\s*[:=]\s*(['"])((?:\\.|(?!\2)[^\\])*)\2/g)) {
     const at = offset + m.index;
     out.push({ line: src.slice(0, at).split('\n').length, text: m[3].replace(/\\(.)/g, '$1') });
   }
@@ -253,6 +274,13 @@ export function checkHeading(raw, codeWords = new Set()) {
     .replace(/[*_]/g, '');
   if (/\.\s*$/.test(text)) problems.push({ rule: 'heading-punctuation', word: '.', fix: 'no trailing period' });
   for (const m of text.matchAll(/[?!;()"“”]/g)) problems.push({ rule: 'heading-punctuation', word: m[0], fix: 'colons only' });
+  // A comma is allowed only in a list, which ends with "and" or "or": Addresses, Ports and Round Trips.
+  for (const segment of text.split(':')) {
+    const last = segment.lastIndexOf(',');
+    if (last !== -1 && !/\b(?:and|or)\b/i.test(segment.slice(last + 1))) {
+      problems.push({ rule: 'heading-punctuation', word: ',', fix: 'a comma only between list items that end in and or or' });
+    }
+  }
   if (/^\d+\.\s/.test(text)) problems.push({ rule: 'heading-punctuation', word: text.split(' ')[0], fix: 'write Step N: instead of N.' });
 
   for (const segment of text.split(':')) {
@@ -262,6 +290,7 @@ export function checkHeading(raw, codeWords = new Set()) {
       if (!word || !/^\p{L}/u.test(word)) return; // numbers, +trace, punctuation
       if (codeWords.has(word)) return; // a program or code name keeps its case
       if (/\p{L}[./]\p{L}/u.test(word) && word === word.toLowerCase()) return; // file names and hosts: trace.go, example.com
+      if (/^\p{Ll}.*\p{Lu}/u.test(word)) return; // mixed-case names keep their case: gRPC, iPhone, macOS
       const edge = idx === 0 || idx === tokens.length - 1;
       const small = SMALL_WORDS.has(word.toLowerCase());
       const upper = word[0] !== word[0].toLowerCase();
@@ -285,22 +314,41 @@ const unquote = (s) => {
   return t;
 };
 
-/** The prose strings in frontmatter: [{ line, key, text }] for title, description and done[].text. */
+/**
+ * The prose strings in frontmatter: [{ line, key, text }] for title, description and done[].text.
+ * A multi-line value, folded (>), literal (|) or a plain scalar that wraps, gives one entry per line.
+ */
 export function frontmatterProse(src) {
   const fm = /^---\n([\s\S]*?)\n---/.exec(src);
   if (!fm) return [];
+  const lines = fm[1].split('\n');
+  const indent = (l) => /^\s*/.exec(l)[0].length;
   const out = [];
   let inDone = false;
-  fm[1].split('\n').forEach((line, n) => {
+  for (let n = 0; n < lines.length; n++) {
+    const line = lines[n];
+    let key = null;
+    let value = '';
     const top = /^([A-Za-z][\w-]*):\s*(.*)$/.exec(line);
+    const item = /^\s+(?:-\s+)?text:\s*(.*)$/.exec(line);
     if (top) {
       inDone = top[1] === 'done';
-      if (top[1] === 'title' || top[1] === 'description') out.push({ line: n + 2, key: top[1], text: unquote(top[2]) });
-      return;
+      if (top[1] === 'title' || top[1] === 'description') [key, value] = [top[1], top[2]];
+    } else if (inDone && item) {
+      [key, value] = ['done.text', item[1]];
     }
-    const item = /^\s+(?:-\s+)?text:\s*(.*)$/.exec(line);
-    if (inDone && item) out.push({ line: n + 2, key: 'done.text', text: unquote(item[1]) });
-  });
+    if (!key) continue;
+    // A continuation line is indented past the key: past column 0, or past `text:` in a list item.
+    const keyIndent = key === 'done.text' ? indent(line.replace('-', ' ')) : 0;
+    const block = /^[>|][-+]?\d*\s*$/.test(value);
+    if (!block && value !== '') out.push({ line: n + 2, key, text: unquote(value) });
+    while (n + 1 < lines.length && (lines[n + 1].trim() === '' || indent(lines[n + 1]) > keyIndent)) {
+      const next = lines[n + 1];
+      if (!block && /^\s*(?:-\s+)?[A-Za-z][\w-]*:(?:\s|$)/.test(next)) break; // the next key, not a continuation
+      n++;
+      if (next.trim()) out.push({ line: n + 2, key, text: next.trim().replace(/^["']|["']$/g, '') });
+    }
+  }
   return out;
 }
 
@@ -324,7 +372,18 @@ export function lintSource(src, { codeWords = new Set() } = {}) {
   for (const { line, text } of links) {
     if (/^\s*here\s*$/i.test(text)) add(line, [{ word: text.trim(), rule: 'link-text', fix: 'describe the target' }]);
   }
-  return problems.sort((a, b) => a.line - b.line || (a.col ?? 1e9) - (b.col ?? 1e9));
+  // {/* prose-allow: word, other */} suppresses those words on its own line and the next one.
+  const allowed = new Map();
+  src.split('\n').forEach((line, n) => {
+    for (const m of line.matchAll(/\{\/\*\s*prose-allow:\s*([^*]+?)\s*\*\/\}/g)) {
+      for (const word of m[1].split(',').map((w) => w.trim().toLowerCase()).filter(Boolean)) {
+        for (const at of [n + 1, n + 2]) allowed.set(at, new Set([...(allowed.get(at) ?? []), word]));
+      }
+    }
+  });
+  return problems
+    .filter((p) => !allowed.get(p.line)?.has(p.word.toLowerCase()))
+    .sort((a, b) => a.line - b.line || (a.col ?? 1e9) - (b.col ?? 1e9));
 }
 
 /** One line per problem: file:line[:col]: rule "word" (fix). */
