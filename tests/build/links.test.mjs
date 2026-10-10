@@ -68,7 +68,7 @@ test('week header shows phase, hours as a range, AI stage and the previous week'
   const header = headerText(html);
   const [low, high] = frontmatter(join(weeksDir, '04-networking.mdx')).hours;
   assert.match(header, /Foundations/);
-  assert.ok(header.includes(`${low}–${high} h`), `header should show ${low}–${high} h`);
+  assert.ok(header.includes(`${low}–${high} hours`), `header should show ${low}–${high} hours`);
   assert.match(header, /Explain only/);
   assert.deepEqual(headerHrefs(html), [`${base}${weekPath(3)}`]);
 });

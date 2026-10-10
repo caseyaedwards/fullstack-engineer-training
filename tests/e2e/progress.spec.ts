@@ -58,7 +58,7 @@ test('the timeline lists 19 weeks in 4 phases, each linking to its week', async 
 
 test('the start link goes to week 0', async ({ page }) => {
   await page.goto('');
-  await page.getByRole('link', { name: 'Start at week 0' }).click();
+  await page.getByRole('link', { name: 'Start at Week 0' }).click();
   await expect(page).toHaveURL(/weeks\/00-setup\/$/);
 });
 

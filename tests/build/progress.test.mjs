@@ -8,7 +8,7 @@ import { base, root } from './helpers.mjs';
 const dist = (p) => readFileSync(join(root, 'dist', p, 'index.html'), 'utf8');
 const home = dist('');
 
-test('every week page has a Done when checklist whose data-total matches its checkboxes', () => {
+test('every week page has a Done When checklist whose data-total matches its checkboxes', () => {
   for (const w of weeks) {
     const html = dist(`weeks/${w.slug}`);
     const block = html.match(/<div class="done-when[^>]*>[\s\S]*?<\/ul>/)?.[0];
@@ -37,7 +37,7 @@ test('the home timeline has one node per week, with the same total as that week 
 
 test('the home page has the start link under the site base', () => {
   assert.ok(home.includes(`href="${base}weeks/00-setup/"`));
-  assert.match(home, /Start at week 0/);
+  assert.match(home, /Start at Week 0/);
 });
 
 test('callout asides are labelled by a heading that exists on the page', () => {

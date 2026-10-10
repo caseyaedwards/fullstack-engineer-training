@@ -5,7 +5,7 @@ const { week, done } = Astro.locals.starlightRoute.entry.data;
 if (week === undefined || done === undefined) {
   throw new Error('<DoneWhen /> is for week pages: week and done are required in the frontmatter.');
 }
-// The "## Done when" heading stays in the page markdown; Starlight gives it this id.
+// The "## Done When" heading stays in the page markdown; Starlight gives it this id.
 ---
 
 <div class="done-when not-content" role="group" aria-labelledby="done-when" data-week={week} data-total={done.length}>

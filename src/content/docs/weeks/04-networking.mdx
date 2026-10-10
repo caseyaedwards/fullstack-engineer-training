@@ -12,11 +12,11 @@ done:
   - id: explain-handshakes
     text: You can say what the TCP and TLS handshakes do, and which row of your timing table covers each one.
   - id: cli-prints-timings
-    text: Your CLI prints DNS, connect, TLS, first-byte and total time for a URL, and go test -race passes, including the table format test.
+    text: Your CLI prints DNS, connect, TLS, first-byte and total time for a URL. The command go test -race passes, including the table format test.
   - id: timings-logged
-    text: Each check in your monitor logs its timings on one line, and you can tell a slow DNS lookup from a slow TLS handshake by reading it.
+    text: Each check in your monitor logs its timings on one line. From that line, you can tell a slow DNS lookup from a slow TLS handshake.
   - id: three-failures
-    text: You have run your CLI against an expired certificate, a name that doesn't exist and a port that never answers, and can tell which is which from the output alone.
+    text: You have run your CLI against an expired certificate, a name that does not exist and a port that never answers, and you can tell them apart from the output alone.
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -31,44 +31,44 @@ import CodeFrom from '../../../components/CodeFrom.astro';
 
 <WeekHeader />
 
-Your monitor can already tell you that a site is slow. This week it learns to tell you _where_ the time went.
+Your monitor already tells you that a site is slow. This week, you teach it to show _where_ the time goes.
 
-Between your code asking for `https://example.com` and the first byte of the answer arriving, four things happen in order. A DNS (Domain Name System) lookup turns the name into an IP (Internet Protocol) address. A TCP (Transmission Control Protocol) handshake opens a connection. A TLS (Transport Layer Security) handshake makes that connection private. Then the server does its work and replies. You'll learn what each step does, then make your monitor time every one of them.
+Four things happen in order between your code asking for `https://example.com` and the first byte of the answer arriving. A DNS (Domain Name System) lookup turns the name into an IP (Internet Protocol) address. A TCP (Transmission Control Protocol) handshake opens a connection. A TLS (Transport Layer Security) handshake makes that connection private. Then the server does its work and replies. This week, you learn what each step does and make your monitor time every one of them.
 
 ## Goals
 
-- Explain how a name like `example.com` becomes an IP address, hop by hop.
+- Explain how a name such as `example.com` becomes an IP address, hop by hop.
 - Explain what the TCP and TLS handshakes do, and why each one costs a round trip.
-- Time DNS, connect, TLS and first byte on every check, with Go's `net/http/httptrace` package.
-- Read those timings to tell where a slow or failing request got stuck.
+- Time DNS, connect, TLS and first byte on every check, with the Go `net/http/httptrace` package.
+- Read those timings to tell where a slow or failing request gets stuck.
 
 ## Concepts
 
-### Addresses, ports and round trips
+### Addresses, Ports and Round Trips
 
-Machines on the internet find each other by **IP address** (Internet Protocol address). An IPv4 address looks like `203.0.113.10`; the newer IPv6 kind looks like `2001:db8::10`. A **port** picks out one program on that machine. Web servers listen on port 80 for HTTP (Hypertext Transfer Protocol, the way browsers and servers talk) and on port 443 for HTTPS, its secure version.
+Machines on the internet find each other by **IP address**. An IPv4 address looks like `203.0.113.10`. The newer IPv6 kind looks like `2001:db8::10`. A **port** picks out one program on that machine. Web servers listen on port `80` for HTTP and on port `443` for HTTPS, the secure version of HTTP.
 
-A URL (web address) such as `https://example.com/` tells you the port, through the `https`, but not the address. Finding the address is the first job.
+A URL such as `https://example.com/` gives you the port, through the `https` at its start, but not the address. Finding the address is the first job.
 
-One more idea runs through this whole week. A **round trip** is one message sent and its reply received. The time it takes, the **round-trip time** or RTT, depends mostly on distance: a few milliseconds (ms) across a city, 70 to 150 ms across an ocean. Most of what you'll measure this week is a count of round trips.
+One more idea runs through this whole week. A **round trip** is one message sent and its reply received. The time it takes, the **round-trip time** or RTT, depends mostly on distance: a few milliseconds (ms) across a city, 70 to 150 ms across an ocean. Most of what you measure this week is a count of round trips.
 
 :::note
-The `curl`, `dig` and CLI outputs on this page are representative examples, not captured from one real run, and their addresses come from `203.0.113.0/24`, a range reserved for documentation. When you run the commands yourself, you'll see real addresses, different times and a few extra lines.
+The `curl`, `dig` and CLI outputs on this page are representative examples, not captures of one real run. Their addresses come from `203.0.113.0/24`, a range reserved for documentation. When you run the commands yourself, you see real addresses, different times and a few extra lines.
 :::
 
-### DNS: from a name to an address
+### DNS: From a Name to an Address
 
-DNS, the Domain Name System, is a database spread over thousands of servers that maps names to records. The record you need most is the **A record**, which holds an IPv4 address. An AAAA record holds an IPv6 one.
+DNS is a database spread over thousands of servers that maps names to records. The record you need most is the **A record**, which holds an IPv4 address. An **AAAA record** holds an IPv6 address.
 
-Names are read right to left, as a tree. At the top is the root, written as a dot. Below it are the top-level domains (TLDs) such as `com` and `org`. Below `com` is `example`. Different organisations run each level, and each level only knows who is responsible for the level below it. That's why a lookup can take several hops.
+You read a DNS name from right to left, as a path down a tree. At the top is the root, written as a dot. Below it are the top-level domains (TLDs) such as `com` and `org`. Below `com` is `example`. A different organization runs each level. Each level knows only who is responsible for the level below it. That is why a lookup takes several hops when no cache holds the answer.
 
 Five roles take part:
 
-- The **stub resolver** is the small DNS client built into your operating system (or into Go). It asks one question and waits for a complete answer.
-- The **recursive resolver** does the legwork for the stub. It might be your home router, your internet provider's server, or a public one such as `1.1.1.1` or `8.8.8.8`. It remembers (caches) every answer it gets.
+- The **stub resolver** is the small DNS client built into your operating system, or into Go. It asks one question and waits for a complete answer.
+- The **recursive resolver** does the legwork for the stub. Your network settings name it: your home router, a server run by your internet provider, or a public resolver such as `1.1.1.1` or `8.8.8.8`. It remembers every answer it gets, which is called caching.
 - The **root servers** know where to find the server for every TLD.
 - The **TLD servers** for `.com` know which servers hold the records for each `.com` domain.
-- The **authoritative server** for `example.com` holds its actual records. The domain's owner, or their DNS provider, runs it.
+- The **authoritative server** for `example.com` holds the actual records of the domain. The owner of the domain, or their DNS provider, runs it.
 
 <Diagram
   id="dns-lookup"
@@ -90,39 +90,39 @@ auth -> rec: A 203.0.113.10
 rec -> stub: A 203.0.113.10
 `}
   steps={[
-    { hl: ['stub', 'rec', 'stub->rec'], caption: 'Your laptop\'s stub resolver sends one question to its recursive resolver: what is the A record for example.com? Then it waits for the full answer.' },
-    { hl: ['rec', 'root', 'rec->root', 'root->rec'], caption: 'The answer isn\'t cached, so the recursive resolver starts at the top. A root server doesn\'t know example.com, but it knows who runs .com. It replies with a referral: the names and addresses of the .com servers.' },
-    { hl: ['rec', 'tld', 'rec->tld', 'tld->rec'], caption: 'A .com TLD server doesn\'t hold example.com\'s records either. It refers the resolver on to the authoritative servers that the domain\'s owner set up.' },
-    { hl: ['rec', 'auth', 'rec->auth', 'auth->rec'], caption: 'The authoritative server holds the record and answers: 203.0.113.10. The answer carries a TTL (time to live): how many seconds anyone may cache it.' },
+    { hl: ['stub', 'rec', 'stub->rec'], caption: 'The stub resolver on your laptop sends one question to its recursive resolver: what is the A record for example.com? Then it waits for the full answer.' },
+    { hl: ['rec', 'root', 'rec->root', 'root->rec'], caption: 'No cache holds the answer. The recursive resolver therefore starts at the top. A root server does not know example.com, but it knows who runs .com. It replies with a referral: the names and addresses of the .com servers.' },
+    { hl: ['rec', 'tld', 'rec->tld', 'tld->rec'], caption: 'A .com TLD server does not hold the records of example.com either. It refers the resolver on to the authoritative servers that the owner of the domain set up.' },
+    { hl: ['rec', 'auth', 'rec->auth', 'auth->rec'], caption: 'The authoritative server holds the record and answers: 203.0.113.10. The answer carries a TTL, short for time to live: the number of seconds anyone can cache it.' },
     { hl: ['stub', 'rec', 'rec->stub'], caption: 'The recursive resolver caches the answer and passes it back. Until the TTL runs out, anyone who asks it for example.com gets the answer at once, with no further hops.' },
   ]}
 />
 
-In practice the recursive resolver almost always has the root and `.com` referrals cached already, because so many people ask for `.com` names. So a lookup that misses the cache usually costs one trip to the authoritative server, not three. A lookup that hits the cache costs one round trip to your resolver, and often less than a millisecond if your laptop caches too.
+In practice, the recursive resolver has the root and `.com` referrals in its cache already: many people ask for `.com` names, and the `.com` referral stays valid for two days. With those referrals cached, a lookup that misses the cache for the name itself costs one trip to the authoritative server, not three. A lookup that hits the cache of the resolver costs one round trip to your resolver. When your laptop also caches answers, a repeat lookup costs a millisecond or less.
 
-DNS questions usually travel over UDP (User Datagram Protocol): one packet out, one packet back, with no connection set up first. That's part of why DNS is fast when it works.
+DNS questions travel over UDP (User Datagram Protocol): one packet out, one packet back, with no connection set up first. Only an answer too large for one UDP packet makes the resolver ask again over TCP. Using UDP is part of why DNS is fast when it works.
 
-### TCP: opening a connection
+### TCP: Opening a Connection
 
-Once your CLI (command-line program) has an address, it opens a connection with TCP, the Transmission Control Protocol. The internet only moves individual packets, and it can lose, duplicate or reorder them. TCP turns those packets into a reliable, ordered stream of bytes between two programs.
+Once your CLI (command-line program) has an address, it opens a connection with TCP. The internet moves only individual packets, and it can lose, duplicate or reorder them. TCP turns those packets into a reliable, ordered stream of bytes between two programs.
 
 Before any data flows, the two sides agree to talk in a **three-way handshake**:
 
-1. Your side sends **SYN** (synchronise): "I'd like to connect, and here is the number I'll start counting my bytes from."
-2. The server replies **SYN-ACK** (synchronise, acknowledge): "Agreed, and here is my starting number."
-3. Your side sends **ACK**: "Got yours."
+1. Your side sends **SYN**, short for synchronize: a request to connect, with the number your side starts counting its bytes from.
+2. The server replies with **SYN-ACK**, short for synchronize-acknowledge: it agrees, and it sends its own starting number.
+3. Your side sends **ACK**, short for acknowledge: it confirms the starting number of the server.
 
-Your side can send data as soon as the SYN-ACK arrives, so connecting costs one round trip. That makes your connect time a handy measure of how far away the server is.
+Your side can send data as soon as the SYN-ACK arrives. Connecting therefore costs one round trip, which makes your connect time a handy measure of how far away the server is.
 
-### TLS: making the connection private
+### TLS: Making the Connection Private
 
-TLS (Transport Layer Security) is the S in HTTPS. It encrypts the connection, and it proves the server really is `example.com` and not someone in between.
+TLS is the S in HTTPS. It encrypts the connection, and it proves that the server really is `example.com` and not someone in between.
 
-The proof is a **certificate**: a small file that ties a name to a public key and is signed by a certificate authority (CA), an organisation your operating system already trusts. In practice the CA's trusted root signs an intermediate certificate, and the intermediate signs the site's, so the server sends its own certificate plus the intermediates (the chain), and your side follows the chain up to a root it trusts. Every certificate has an expiry date. After it passes, clients refuse to connect.
+The proof is a **certificate**: a small file that ties a name to a public key. A certificate authority (CA), an organization your operating system already trusts, signs it. In practice, the trusted root certificate of the CA signs an intermediate certificate. The intermediate signs the certificate of the site. The server therefore sends its own certificate plus the intermediates, together called the chain. Your side follows the chain up to a root it trusts. Every certificate has an expiry date. After that date passes, clients refuse to connect.
 
-In TLS 1.3, the current version, the handshake takes one round trip. Your side sends a **ClientHello**: which encryption methods it supports, its half of a key exchange, and the name it wants. That name is called SNI (Server Name Indication), and it lets one address serve many sites. The server answers with a **ServerHello**, its certificate, and a **Finished** message. Your side checks the certificate, sends its own Finished, and can send the request straight away. The older TLS 1.2 needs two round trips.
+In TLS 1.3, the current version, the handshake takes one round trip. Your side sends a **ClientHello**: the encryption methods it supports, its half of a key exchange, and the name it wants. That name is called SNI (Server Name Indication), and it allows one address to serve many sites. The server answers with a **ServerHello**, its certificate, and a **Finished** message. Your side checks the certificate, sends its own Finished, and can send the request straight away. The older TLS 1.2 needs two round trips.
 
-The ClientHello and the ServerHello travel unencrypted, because the two sides don't share a key yet. So anyone on the network path can read the SNI name and see which site you asked for, even though everything after the ServerHello is private.
+The ClientHello and the ServerHello travel unencrypted, because the two sides do not share a key yet. As a result, anyone on the network path can read the SNI name and see which site you ask for, even though everything after the ServerHello is private.
 
 <Diagram
   id="handshakes"
@@ -142,16 +142,22 @@ srv -> cli: 200 OK
 `}
   steps={[
     { hl: ['cli', 'srv', 'cli->srv', 'srv->cli', 'cli->srv#1'], caption: 'The TCP handshake: SYN, SYN-ACK, ACK. This is the connect row of your table: it starts as the SYN leaves and ends when the SYN-ACK arrives, one round trip later.' },
-    { hl: ['cli', 'srv', 'cli->srv#2'], caption: 'The TLS handshake starts. The ClientHello lists the encryption your side supports, carries its half of the key exchange, and names the site it wants (SNI). It travels unencrypted, so the network can see that name.' },
+    { hl: ['cli', 'srv', 'cli->srv#2'], caption: 'The TLS handshake starts. The ClientHello lists the encryption your side supports, carries its half of the key exchange, and names the site it wants (SNI). It travels unencrypted: anyone on the network can see that name.' },
     { hl: ['cli', 'srv', 'srv->cli#1'], caption: 'The server picks the encryption, sends its half of the key exchange, then its certificate and Finished. Everything after the ServerHello is already encrypted.' },
     { hl: ['cli', 'srv', 'cli->srv#3'], caption: 'Your side checks the certificate: right name, not expired, signed by a CA it trusts. Then it sends Finished. This ends the TLS row: one more round trip.' },
-    { hl: ['cli', 'srv', 'cli->srv#4', 'srv->cli#2'], caption: 'The request goes out encrypted, the server does its work, and the first byte of the response comes back. The first-byte row counts from the very start, so it includes every step above.' },
+    { hl: ['cli', 'srv', 'cli->srv#4', 'srv->cli#2'], caption: 'The request goes out encrypted. The server does its work and sends back the first byte of the response. The first-byte row counts from the very start and therefore includes every step above.' },
   ]}
 />
 
-You can watch all of this happen with `curl -v` (verbose). Lines starting `*` are curl telling you what it's doing, `>` is what it sent, and `<` is what came back. This output is trimmed:
+Watch all of this happen with `curl -v`, where `-v` stands for verbose. The first character of each output line tells you its source:
 
-```text wrap
+- `*`: `curl` reports what it does.
+- `>`: what `curl` sends.
+- `<`: what comes back.
+
+This example omits some lines of the output:
+
+```txt wrap
 $ curl -v -o /dev/null https://example.com
 * Host example.com:443 was resolved.
 * IPv4: 203.0.113.10
@@ -181,17 +187,17 @@ $ curl -v -o /dev/null https://example.com
 < content-type: text/html
 ```
 
-Match it against the diagram. "Trying" to "Connected" is the TCP handshake. The `TLS handshake` lines are the TLS one, and curl lists each part of the server's reply separately:
+Match the output against the diagram. The lines from `Trying` to `Connected` are the TCP handshake. The `TLS handshake` lines are the TLS handshake. The `curl` output lists each part of the server reply separately:
 
-- `Certificate` is the server sending its certificate chain.
-- `CERT verify` is the server's CertificateVerify message: a signature that proves it holds the private key for that certificate.
-- `SSL certificate verify ok`, further down, is curl's own check: the name matches, the certificate hasn't expired, and the chain leads to a CA it trusts. (SSL is TLS's old name, and some tools still use it.)
+- `Certificate`: the server sends its certificate chain.
+- `CERT verify`: the CertificateVerify message of the server, a signature that proves the server holds the private key for that certificate.
+- `SSL certificate verify ok`, further down: the result of the check that `curl` runs itself. It confirms three things: the name matches, the certificate has not expired, and the chain leads to a CA that `curl` trusts. SSL is the old name for TLS, and some tools still use it.
 
-The `SSL connection using` line names the cipher suite (how the data is encrypted) and the key exchange (how the two sides agreed on a key). You can ignore the details for now. ALPN (Application-Layer Protocol Negotiation) is the two sides agreeing to speak HTTP/2 inside the TLS connection. The `expire date` line is the one to watch: it's the date this site stops working if nobody renews the certificate.
+The `SSL connection using` line names the cipher suite, which sets how the data is encrypted, and the key exchange, which sets how the two sides agree on a key. You can ignore the details for now. The `ALPN` lines show the two sides agreeing to speak HTTP/2 inside the TLS connection. ALPN stands for Application-Layer Protocol Negotiation. The `expire date` line is the one to watch: on that date, this site stops working unless someone renews the certificate.
 
-### The whole path of one check
+### The Whole Path of One Check
 
-Put the pieces together and one check crosses several machines. Each row of the table you're about to build covers part of the path.
+Together, these steps take one check across several machines. Each row of the table you build next covers part of the path.
 
 <Diagram
   id="request-path"
@@ -210,21 +216,21 @@ lb -> app: request
 `}
   steps={[
     { hl: ['cli', 'dns', 'cli->dns'], caption: 'DNS row. Your CLI asks a resolver for the address. Nothing else can start until the answer arrives.' },
-    { hl: ['cli', 'net', 'lb', 'cli->net', 'net->lb'], caption: 'Connect and TLS rows. The address usually belongs to a load balancer: a server that spreads requests over several app servers. Your handshakes cross the internet to it, and it holds the certificate.' },
-    { hl: ['lb', 'app', 'lb->app'], caption: 'The load balancer passes your request to one app server, usually over a connection it already has open. The app does its work, such as reading a database.' },
-    { hl: ['cli', 'net', 'lb', 'app', 'cli->net', 'net->lb', 'lb->app'], caption: 'First-byte row. The response comes back the same way. First byte counts from the very start, so it holds every step above plus the app\'s own time.' },
+    { hl: ['cli', 'net', 'lb', 'cli->net', 'net->lb'], caption: 'Connect and TLS rows. In this example, the address belongs to a load balancer: a server that spreads requests over several app servers. Your handshakes cross the internet to it. The load balancer holds the certificate.' },
+    { hl: ['lb', 'app', 'lb->app'], caption: 'The load balancer passes your request to one app server. When it already has a connection open to that server, it reuses that connection instead of opening a new one. The app does its work, such as reading a database.' },
+    { hl: ['cli', 'net', 'lb', 'app', 'cli->net', 'net->lb', 'lb->app'], caption: 'First-byte row. The response comes back the same way. First byte counts from the very start. It therefore holds every step above plus the time the app itself takes.' },
   ]}
 />
 
 ## Build
 
-So far your monitor times each request as one number. This week you'll replace that request with a `Check` function that times each step, then write a small CLI that prints the timings for one URL.
+Until now, your monitor times each request as one number. This week, you replace that request with a `Check` function that times each step. Then you write a small CLI that prints the timings for one URL.
 
-### Where the code goes
+### Where the Code Goes
 
-You'll add a small package for the timing code and a command for the CLI. In your monitor's repo, aim for something like this:
+You add a small package for the timing code and a command for the CLI. In the repository of your monitor, aim for this layout:
 
-```text
+```txt
 your-monitor/
 ├── go.mod              first line: module <your module path>
 ├── main.go             the monitor from Week 3, with its check loop
@@ -238,83 +244,87 @@ your-monitor/
 
 If your layout from earlier weeks differs, keep the idea: `Check` in its own package, the CLI under `cmd/check`.
 
-The snippets come from this site's tested examples, where the package is called `week04` (in `trace.go`) and its import path is `fsp/examples/week04`. In your copy, write `package probe` instead of `package week04`, import `<your module path>/probe` instead of `fsp/examples/week04`, and call `probe.Check` and `probe.Timings` where the CLI says `week04.Check` and `week04.Timings`.
+The snippets come from the tested examples of this site. There, the package is named `week04`, in the file `trace.go`, and its import path is `fsp/examples/week04`. In your copy, write `package probe` instead of `package week04`, and import `<your module path>/probe` instead of `fsp/examples/week04`. Call `probe.Check` and `probe.Timings` where the CLI says `week04.Check` and `week04.Timings`.
 
-### 1. Meet httptrace
+### Step 1: Meet httptrace
 
-Go's `net/http/httptrace` package lets you attach a `ClientTrace` to a request. A `ClientTrace` is a struct of functions, often called hooks, that the HTTP client calls as it reaches each step: `DNSStart` and `DNSDone`, `ConnectStart` and `ConnectDone`, `TLSHandshakeStart` and `TLSHandshakeDone`, and `GotFirstResponseByte`, among others.
+With the Go `net/http/httptrace` package, you attach a `ClientTrace` to a request. A `ClientTrace` is a struct of functions, called hooks, that the HTTP client calls as it reaches each step: `DNSStart` and `DNSDone`, `ConnectStart` and `ConnectDone`, `TLSHandshakeStart` and `TLSHandshakeDone`, and `GotFirstResponseByte`, among others.
 
-Each step has a start hook and a done hook. Note the time when one starts and work out how long it took when it's done, and you have your timings.
+Each step has a start hook and a done hook. Note the time in the start hook, work out the duration in the done hook, and you have your timings.
 
-### 2. Define what a check returns
+### Step 2: Define What a Check Returns
 
 <CodeFrom file="go/week04/trace.go" region="types" lang="go" title="trace.go" />
 
-A `time.Duration` is Go's type for a length of time. Zero means the step didn't happen. That's normal for DNS when the URL holds an IP address instead of a name, and for TLS on a plain `http://` URL.
+A `time.Duration` is the Go type for a length of time. Zero means the step does not happen in that check. A zero is normal for DNS when the URL holds an IP address instead of a name, and for TLS on a plain `http://` URL.
 
-`client` is a package-level variable so the tests can swap in a client that trusts their test server's certificate. Your code always uses `http.DefaultClient`.
+`client` is a package-level variable, which allows the tests to swap in a client that trusts the certificate of their test server. Your code always uses `http.DefaultClient`.
 
-### 3. Add the helpers that record the times
+### Step 3: Add the Helpers That Record the Times
 
-Steps 3, 4 and 5 are three consecutive parts of one function, `Check`. This step opens it, step 4 continues it, and step 5 finishes it with the closing brace.
+Steps 3, 4 and 5 are three consecutive parts of one function, `Check`. This step opens the function. Step 4 continues it. Step 5 finishes it with the closing brace.
 
 <CodeFrom file="go/week04/trace.go" region="helpers" lang="go" title="trace.go" />
 
-`begin`, `end` and `result` are closures: small functions defined inside `Check` that can read and change its local variables. `begin` stores the current time in one of the start variables. `end` works out how long it's been since a start time and stores that in `t`. `result` returns a copy of `t`.
+`begin`, `end` and `result` are closures: small functions defined inside `Check` that read and change its local variables:
 
-Why not just write `dnsStart = time.Now()` in each hook? Because of a **data race**, and it helps to know what one is.
+- `begin`: stores the current time in one of the start variables.
+- `end`: works out the time elapsed since a start time and stores it in `t`.
+- `result`: returns a copy of `t`.
 
-The HTTP client runs some of its work, such as opening the connection, in a separate goroutine: a function running at the same time as the rest of your program. (Week 5 covers goroutines properly.) The hooks run in that goroutine. Usually that's fine, because `Check` waits for the request to finish. But when the timeout runs out, `Check` returns straight away while the connection attempt carries on in the background. A moment later that goroutine calls `ConnectDone`, which writes to `t`. If `Check` is reading `t` to return it at that same moment, two goroutines are touching the same memory at once, and one of them is writing. Go makes no promise about what either side sees.
+Why not write `dnsStart = time.Now()` directly in each hook? Because that causes a **data race**.
 
-A `sync.Mutex` is a lock that only one goroutine can hold at a time. `begin`, `end` and `result` each take the lock before they touch the shared variables, so the reads and writes take turns.
+The HTTP client runs some of its work, such as opening the connection, in a separate goroutine: a function that runs at the same time as the rest of your program. Week 5 covers goroutines in depth. The hooks run in that goroutine. While the request runs to the end, this causes no problem, because `Check` waits for the request to finish. When the timeout runs out, however, `Check` returns straight away while the connection attempt carries on in the background. A moment later, that goroutine calls `ConnectDone`, which writes to `t`. If `Check` reads `t` to return it at that same moment, two goroutines touch the same memory at once, one of them writing. Go makes no promise about what either side sees.
 
-You don't have to take this on trust. Delete `mu` and every `Lock` and `Unlock` call, then run `go test -race ./...`. The race detector fails `TestCheckHonorsContext` and shows both sides: a write from `end`, called by `ConnectDone` in the goroutine that opens the connection, and a read of the same memory as `Check` returns.
+A `sync.Mutex` is a lock that one goroutine at a time can hold. `begin`, `end` and `result` each take the lock before they touch the shared variables. The reads and writes therefore take turns.
 
-### 4. Attach the hooks
+Test this yourself. Delete `mu` and every `Lock` and `Unlock` call, then run `go test -race ./...`. The race detector fails `TestCheckHonorsContext` and shows both sides: a write from `end`, called by `ConnectDone` in the goroutine that opens the connection, and a read of the same memory as `Check` returns.
+
+### Step 4: Attach the Hooks
 
 <CodeFrom file="go/week04/trace.go" region="timings" lang="go" title="trace.go" />
 
-Each pair of hooks times one step. The hooks receive details you don't need yet, such as the addresses DNS returned or the error a step failed with, so their parameters go unused.
+Each pair of hooks times one step. The hooks receive details you do not need yet, such as the addresses DNS returns or the error a step fails with. Their parameters therefore go unused.
 
-`GotFirstResponseByte` measures from `start`, not from the end of TLS. That's why the first-byte row includes everything before it.
+`GotFirstResponseByte` measures from `start`, not from the end of TLS. That is why the first-byte row includes everything before it.
 
-### 5. Send the request
+### Step 5: Send the Request
 
 <CodeFrom file="go/week04/trace.go" region="request" lang="go" title="trace.go" />
 
-`httptrace.WithClientTrace` attaches your hooks to the request's context. A context carries a deadline and a way to cancel; when the caller's deadline passes, the request stops. (Week 5 covers contexts too.)
+`httptrace.WithClientTrace` attaches your hooks to the context of the request. A context carries a deadline and a way to cancel. When the deadline of the caller passes, the request stops. Week 5 covers contexts too.
 
 Three lines here matter for a monitor:
 
-- `req.Close = true` opens a new connection for every check. Without it, Go keeps the connection open and reuses it next time, which skips DNS, connect and TLS, and your table would show them as zero.
-- `CheckRedirect` stops Go from following redirects. If `http://` redirects to `https://`, you want to see the redirect status (301 or 302), not timings that mix two servers together.
-- Reading the whole body means `Total` covers the full download, not just the headers.
+- `req.Close = true`: opens a new connection for every check. Without it, Go keeps the connection open and reuses it next time. The reuse skips DNS, connect and TLS. Your table then shows them as zero.
+- `CheckRedirect`: stops Go from following redirects. When `http://` redirects to `https://`, you see the redirect status, `301` or `302`, instead of timings that mix two servers together.
+- Reading the whole body: makes `Total` cover the full download, not only the headers.
 
-### 6. Write the CLI
+### Step 6: Write the CLI
 
 <CodeFrom file="go/week04/cmd/check/main.go" region="main" lang="go" title="cmd/check/main.go" />
 
-The `flag` package reads `-url` and `-timeout` from the command line. `flag.Duration` understands values like `10s` or `500ms`. `context.WithTimeout` gives `Check` its deadline, and `cancel` releases the timer once you're done with it.
+The `flag` package reads the command-line flags `-url` and `-timeout`. `flag.Duration` accepts values such as `10s` or `500ms`. `context.WithTimeout` gives `Check` its deadline. `cancel` releases the timer when you are done with it.
 
-The table prints even when the check fails. The steps that did happen tell you how far the request got, which you'll use in [Operate it](#operate-it).
+The table prints even when the check fails. The steps with a time show how far the request gets. You use this in [Operate It](#operate-it).
 
-### 7. Format the table, and test the format
+### Step 7: Format the Table and Test the Format
 
 <CodeFrom file="go/week04/cmd/check/main.go" region="table" lang="go" title="cmd/check/main.go" />
 
-Every time is shown in milliseconds with one decimal place, so the column is easy to compare at a glance. A step that didn't happen shows as `-`.
+The table shows every time in milliseconds with one decimal place, which keeps the column easy to compare at a glance. A step that does not happen shows as `-`.
 
-A live request gives different numbers every run, so you can't test the output by running a real check. Instead, `printTable` takes a `Timings` value and an `io.Writer` (anything you can write to: the terminal, a file, a string builder). The test passes a fixed `Timings` and a `strings.Builder`, then compares the result with the exact text expected:
+A live request gives different numbers on every run. You therefore cannot test the output by running a real check. Instead, `printTable` takes a `Timings` value and an `io.Writer`: anything you can write to, such as the terminal, a file or a string builder. The test passes a fixed `Timings` and a `strings.Builder`, then compares the result with the exact expected text:
 
 <CodeFrom file="go/week04/cmd/check/main_test.go" region="test" lang="go" title="cmd/check/main_test.go" />
 
-Splitting "get the numbers" from "show the numbers" like this gives the test a seam: a place to feed in known input. You'll use the same trick whenever code mixes the outside world with logic you want to test.
+Splitting the code that gets the numbers from the code that shows them gives the test a **seam**: a place to feed in known input. Use the same trick whenever code mixes the outside world with logic you want to test.
 
-### 8. Run it
+### Step 8: Run It
 
-From the folder that holds your `go.mod`, run the CLI. (In this site's examples the same command is `go run ./week04/cmd/check`, run from `examples/go`.)
+From the folder that holds your `go.mod`, run the CLI. In the examples of this site, the same command is `go run ./week04/cmd/check`, run from `examples/go`.
 
-```text
+```txt
 $ go run ./cmd/check -url https://example.com
 status        200 OK
 DNS          14.2 ms
@@ -324,55 +334,60 @@ first byte   52.6 ms
 total        53.1 ms
 ```
 
-Read it top to bottom:
+Read it from top to bottom:
 
-- **Connect** is one round trip, so this machine is about 12 ms from example.com's nearest server.
-- **TLS** is one more round trip plus a little work for the encryption.
-- **First byte** is all the rows above (39.5 ms), plus one round trip for the request and response (about 12 ms), plus the server's own work: about 1 ms here.
-- **Total** is first byte plus the time to download the rest of the page, which is tiny.
+- **Connect**: one round trip. This machine is therefore about 12 ms from the nearest server of `example.com`.
+- **TLS**: one more round trip, plus a little work for the encryption.
+- **First byte**: the 39.5 ms of the rows above, plus about 12 ms for the round trip of the request and response, plus about 1 ms of work on the server.
+- **Total**: first byte plus the time to download the rest of the page, which is tiny here: 0.5 ms.
 
-Run it again straight away. Go doesn't cache DNS answers itself, so what happens next depends on your operating system. If it caches them (macOS does, and so do Linux systems running systemd-resolved), DNS drops to a millisecond or less. If not, the lookup still goes to your recursive resolver, which now has the answer cached, so it costs about one round trip to the resolver. The other rows stay about the same, because each run opens a new connection.
+Run it again straight away. Go does not cache DNS answers itself. The second DNS time therefore depends on your operating system:
 
-### 9. Wire it into your monitor
+- On macOS, and on Linux systems that run `systemd-resolved`, the operating system caches the answer. DNS drops to a millisecond or less.
+- On a system without a DNS cache, the lookup still goes to your recursive resolver. The resolver now has the answer cached, and the lookup costs about one round trip to the resolver.
 
-This is the week's milestone: every check your monitor runs records DNS, connect, TLS and first-byte time. In the Week 3 monitor, find the loop that checks each URL, then:
+The other rows stay about the same, because each run opens a new connection.
+
+### Step 9: Wire It Into Your Monitor
+
+This step is the milestone of the week: every check your monitor runs records DNS, connect, TLS and first-byte time. In the Week 3 monitor, find the loop that checks each URL, then make these changes:
 
 - Import your `probe` package.
-- Replace the request, whether it's `http.Get(url)` or `client.Get(url)`, with `probe.Check(ctx, url)`. Give each check its own deadline the way the CLI does: `context.WithTimeout` before the call, `cancel()` after it.
-- Delete the timer around the old request (`start := time.Now()` and `time.Since(start)`). `Timings.Total` replaces it.
+- Replace the request, whether it is `http.Get(url)` or `client.Get(url)`, with `probe.Check(ctx, url)`. Give each check its own deadline the way the CLI does: `context.WithTimeout` before the call, `cancel()` after it.
+- Delete the timer around the old request: `start := time.Now()` and `time.Since(start)`. `Timings.Total` replaces it.
 - Delete your `resp.Body.Close()`: `Check` reads and closes the body itself.
-- Keep the status code and the error as before, and keep the `Timings` next to them, for example in a `Timings probe.Timings` field on your check result. You'll log them next.
+- Keep the status code and the error as before, and keep the `Timings` next to them, for example in a `Timings probe.Timings` field on your check result. You log them in the next section.
 
-## Observe it
+## Observe It
 
 <ObserveIt>
 
-Add one log line per check, with every timing as a `key=value` pair. Write it to standard output with Go's `log` package: call `log.SetOutput(os.Stdout)` once at start-up, then `log.Printf` once per check. The `log` package adds the date and time at the front. That format is easy to search with `grep` now, and easy for tools to read later. (Week 13 replaces it with structured logging and metrics.)
+Add one log line per check, with every timing as a `key=value` pair. Write it to standard output with the Go `log` package: call `log.SetOutput(os.Stdout)` once at start-up, then `log.Printf` once per check. The `log` package adds the date and time at the front. That format is easy to search with `grep` now and easy for tools to read later. Week 13 replaces it with structured logging and metrics.
 
-```text wrap
+```txt wrap
 2026/10/10 14:02:07 check url=https://example.com status=200 dns_ms=0.8 connect_ms=11.9 tls_ms=13.2 first_byte_ms=39.6
 ```
 
-Let it run against a few sites for a while, then look for these patterns. Connect time is your yardstick: it's one round trip.
+Let it run against three or more sites for at least 30 minutes, then look for these patterns. Connect time is your yardstick: it is one round trip.
 
-- **DNS is high on the first check and low after that.** That's a cache warming up: your operating system's, if it keeps one, or your recursive resolver's. It's normal.
-- **DNS is high on every check, or jumps around.** Your resolver is slow or far away. Compare it with a public one: `dig @1.1.1.1 example.com` prints a `Query time` (the side lab introduces `dig`).
-- **TLS is about twice connect.** With TLS 1.3 it should be close to connect: one round trip plus a little encryption work. About twice connect usually means the server still uses TLS 1.2, which takes two round trips.
-- **TLS is well over twice connect.** The server is slow at handshakes: it's overloaded, or it sends a long chain of certificates.
-- **Connect is about 1,000 ms more than usual.** A packet was lost, and TCP waited a full second before sending the SYN again.
+- **DNS is high on the first check and low after that.** That pattern is a cache warming up: the cache of your operating system, when it keeps one, or the cache of your recursive resolver. This is normal.
+- **DNS is high on every check, or jumps around.** Your resolver is slow or far away. Compare it with a public resolver: `dig @1.1.1.1 example.com` prints a `Query time`. The side lab introduces `dig`.
+- **TLS is about twice connect.** With TLS 1.3, TLS is close to connect: one round trip plus a little encryption work. About twice connect is the pattern of a server that still uses TLS 1.2, which takes two round trips. To confirm, run `curl -v` against the site: the `SSL connection using` line names the TLS version.
+- **TLS is well over twice connect.** The server is slow at handshakes: it is overloaded, or it sends a long chain of certificates.
+- **Connect is about 1000 ms more than normal.** The network loses a packet of the handshake. TCP waits a full second, then sends the SYN again.
 - **First byte is high, but connect and TLS look normal.** The network is fine. The app is slow.
 
 </ObserveIt>
 
-## Operate it
+## Operate It
 
 <OperateIt>
 
-Here's what three common failures look like in your table. Try each one yourself.
+This section shows how three common failures look in your table. Try each one yourself.
 
-**An expired certificate.** `expired.badssl.com` is a test site whose certificate expired in 2015.
+**An expired certificate.** `expired.badssl.com` is a test site with a certificate that expired in 2015.
 
-```text
+```txt
 $ go run ./cmd/check -url https://expired.badssl.com/
 status             -
 DNS          18.3 ms
@@ -384,11 +399,11 @@ check failed: Get "https://expired.badssl.com/": tls: failed to verify certifica
 exit status 1
 ```
 
-The last lines are long, so scroll the box to read them. (`exit status 1` is `go run` reporting that the program exited with an error.) The key part is `x509: certificate has expired or is not yet valid`. TLS has a time, so the handshake ran, and it failed at the certificate check. (X.509, written `x509` in the error, is the standard format for certificates.) The network is fine; someone forgot to renew. Your clock can cause this too: the check compares the expiry date with your computer's time, which is why Time and NTP (Network Time Protocol) is on this week's reading list.
+The last lines are long: scroll the box to read them. `exit status 1` is `go run` reporting that the program exited with an error. The key part is `x509: certificate has expired or is not yet valid`. X.509, written `x509` in the error, is the standard format for certificates. TLS has a time, which shows that the handshake ran and failed at the certificate check. The network is fine. Someone forgot to renew the certificate. A wrong clock on your computer causes the same error, because the check compares the expiry date with the time on your computer. That is why Time and NTP (Network Time Protocol) is on the reading list of this week.
 
-**A name that doesn't exist.** DNS answers NXDOMAIN (non-existent domain).
+**A name that does not exist.** DNS answers `NXDOMAIN`, short for non-existent domain.
 
-```text
+```txt
 $ go run ./cmd/check -url https://no-such-host.example
 status             -
 DNS          21.7 ms
@@ -400,11 +415,11 @@ check failed: Get "https://no-such-host.example": dial tcp: lookup no-such-host.
 exit status 1
 ```
 
-Only DNS has a time, and the error ends with `no such host`. The lookup worked, and the answer was "no such name". Look for a typo, a domain that has expired, or a DNS record someone deleted. On Linux the message also names the resolver that answered, for example `on 127.0.0.53:53`.
+Only DNS has a time. The error ends with `no such host`. The lookup itself succeeds: its answer is that no such name exists. Look for a typo, an expired domain or a DNS record that someone deleted. On Linux, the message also names the resolver that answered, for example `on 127.0.0.53:53`.
 
-**A port that never answers.** A firewall that silently drops packets, instead of rejecting them, is called a black hole. `192.0.2.1` is reserved for documentation, so on most networks nothing answers it.
+**A port that never answers.** A **black hole** is a firewall that silently drops packets instead of rejecting them. `192.0.2.1` is reserved for documentation, and no host on the internet answers it. On a network that drops packets to this address, the check meets a black hole:
 
-```text
+```txt
 $ go run ./cmd/check -url https://192.0.2.1 -timeout 3s
 status             -
 DNS                -
@@ -416,11 +431,11 @@ check failed: Get "https://192.0.2.1": context deadline exceeded
 exit status 1
 ```
 
-DNS shows `-` because the URL is already an address. Connect shows `-` too: nothing ever answered the SYN, so the connection attempt never finished, and the command gave up when the full 3-second timeout ran out. Without a timeout of your own, a black hole holds a check until something else gives up: Go's default client waits 30 seconds to connect, and many other tools wait two minutes or more. (Some networks reply "no route to host" for this address straight away instead. That's a different failure, and worth recognising too.)
+DNS shows `-` because the URL is already an address. Connect shows `-` too: nothing answers the SYN. The connection attempt never finishes. The command gives up when the full 3-second timeout runs out. Without a timeout of your own, a black hole holds a check until something else gives up. `http.DefaultClient` waits 30 seconds to connect. Many other tools wait 2 minutes or more. On a network whose router rejects packets to this address, the check fails at once with `no route to host` instead. That failure is different, and worth recognizing too.
 
-Compare that with a port that refuses. Port 1 on your own machine almost certainly has nothing listening:
+Compare that with a port that refuses. On a default macOS or Ubuntu install, no program listens on port `1` of your own machine:
 
-```text
+```txt
 $ go run ./cmd/check -url http://127.0.0.1:1/
 status             -
 DNS                -
@@ -432,36 +447,36 @@ check failed: Get "http://127.0.0.1:1/": dial tcp 127.0.0.1:1: connect: connecti
 exit status 1
 ```
 
-This time Connect has a time, because the attempt got an answer straight away. The machine is up, and it replied to the SYN with a reset: "nothing is listening here". That's the difference to look for. A refused port answers at once, so Connect has a time. A black hole never answers, so Connect stays `-` and the timeout fires.
+This time, Connect has a time, because the attempt gets an answer straight away. The machine is up, and it replies to the SYN with a reset: the TCP way to say that nothing listens on that port. That reset is the difference to look for. A refused port answers at once, which gives Connect a time. A black hole never answers: Connect stays `-` until the timeout fires.
 
-| What you see | Most likely cause |
+| What you see | Cause |
 | --- | --- |
-| TLS has a time, then a certificate error | Certificate expired, issued for another name, or not trusted |
-| Only DNS has a time, then `no such host` | The name doesn't exist (NXDOMAIN) |
-| Connect is `-` and the full timeout passed | Black hole: a firewall drops the packets, or the host is gone |
+| TLS has a time, then a certificate error | The certificate is expired, issued for another name, or not trusted |
+| Only DNS has a time, then `no such host` | The name does not exist: `NXDOMAIN` |
+| Connect is `-` and the full timeout passes | Black hole: a firewall drops the packets, or the host is gone |
 | Connect has a small time, then `connection refused` at once | The host is up, but nothing listens on that port |
 
 </OperateIt>
 
-## AI this week
+## AI This Week
 
 <AiThisWeek>
 
-**Do:** run `dig +trace example.com` (see the side lab), paste the output, and ask the assistant to walk you through it: which server answered each block, what a referral is, and what each column of a record means. Then check its explanation against the DNS diagram above.
+**Do:** run `dig +trace example.com`, as in the side lab, paste the output and ask the assistant to walk you through it: which server answers each block, what a referral is, and what each column of a record means. Then check its explanation against the DNS diagram above.
 
-**Don't:** ask it to write your `httptrace` code or the CLI. Typing the hooks yourself, and watching them fire or stay at zero, is how the steps stick. If you're stuck, ask for a hint about one hook, not the code.
+**Do not:** ask it to write your `httptrace` code or the CLI. Typing the hooks yourself, and watching them fire or stay at zero, is how the steps stick. If you are stuck, ask for a hint about one hook, not for the code.
 
 </AiThisWeek>
 
-## Side lab
+## Side Lab
 
-<SideLab title="Trace a lookup with dig +trace and compare it with your CLI's DNS time">
+<SideLab title="Trace a lookup with dig +trace and compare it with the DNS time of your CLI">
 
-`dig` is a command-line DNS client. It's already on macOS. On Ubuntu, install it with `sudo apt install dnsutils`.
+`dig` is a command-line DNS client. It is already on macOS. On Ubuntu, install it with `sudo apt install dnsutils`.
 
-**1. Ask your resolver.** A plain `dig` asks your recursive resolver, like your CLI does. This output is trimmed slightly:
+**1. Ask your resolver.** A plain `dig` asks your recursive resolver, as your CLI does. This example omits a few lines of the output:
 
-```text
+```txt
 $ dig example.com
 
 ; <<>> DiG 9.18.30 <<>> example.com
@@ -481,11 +496,11 @@ example.com.		3291	IN	A	203.0.113.10
 ;; MSG SIZE  rcvd: 56
 ```
 
-`status: NOERROR` means the name exists. Try `dig no-such-host.example` and you'll see `status: NXDOMAIN`. The answer line reads: name, TTL in seconds, class (`IN` for internet), type, value. Run `dig example.com` again and watch the TTL count down. That's your resolver's cache, and the TTL is how long it has left.
+`status: NOERROR` means the name exists. Run `dig no-such-host.example` to see `status: NXDOMAIN`. The answer line reads, from left to right: name, TTL in seconds, class, type and value. The class `IN` stands for internet. Run `dig example.com` again and watch the TTL count down. The countdown is the cache of your resolver at work. The TTL is the number of seconds the answer has left in that cache.
 
-**2. Do the resolver's job yourself.** `dig +trace` starts at the root and follows each referral, just like the diagram. This output is trimmed: the full version lists all 13 root servers and adds DNSSEC (DNS Security Extensions) signature records you can ignore for now.
+**2. Do the job of the resolver yourself.** `dig +trace` starts at the root and follows each referral, as in the diagram. This example trims the output: the full version lists all 13 root servers and adds DNSSEC (DNS Security Extensions) signature records, which you can ignore for now.
 
-```text
+```txt
 $ dig +trace example.com
 
 .			510207	IN	NS	a.root-servers.net.
@@ -504,23 +519,23 @@ example.com.		3600	IN	A	203.0.113.10
 ;; Received 355 bytes from 199.43.135.53#53(a.iana-servers.net) in 89 ms
 ```
 
-An `NS` (name server) record names a server responsible for a zone. Read each block's last line to see who answered. The first block is your own resolver handing over the list of root servers. The next three are the root, the `.com` servers and example.com's authoritative server, one hop each, as in the diagram. Notice the final TTL is a full 3600: it came straight from the source, not from a cache.
+An `NS` (name server) record names a server responsible for a zone. Read the last line of each block to see who answers it. The first block is your own resolver handing over the list of root servers. The next three are the root, the `.com` servers and the authoritative server of `example.com`, one hop each, as in the diagram. The final TTL is a full `3600`: the answer comes straight from the source, not from a cache.
 
-If `+trace` stalls on the second block, your network only lets DNS through to its own resolver. Try it from home or a phone hotspot.
+If `+trace` stalls on the second block, your network allows DNS traffic only to its own resolver. Try it from home or from a phone hotspot.
 
-**3. Compare.** Add up the hops in your trace (165 ms above). Now pick a site you haven't visited today and run your CLI twice:
+**3. Compare.** Add up the hops in your trace: 165 ms in the example above. Now pick a site you have not visited today and run your CLI twice:
 
-- The first DNS time is a real lookup through your resolver. It's usually much less than the trace total, because your resolver already had the root and `.com` referrals cached.
+- The first DNS time is a real lookup through your resolver. When your resolver already has the root and `.com` referrals in its cache, this time is much less than the trace total.
 - The second DNS time is a cache hit: a millisecond or less if your operating system caches DNS, otherwise about one round trip to your resolver.
 
-Write the three numbers down. Can you explain the gap between each pair?
+Write the three numbers down, then explain the gap between each pair.
 
 </SideLab>
 
-## Done when
+## Done When
 
 <DoneWhen />
 
-## Read with this week
+## Read with This Week
 
 <ReadWith />
