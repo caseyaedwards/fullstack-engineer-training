@@ -2,7 +2,7 @@
 
 A 19-week training path to becoming a full-stack engineer, built as a static documentation site with Astro and Starlight. Concepts are explained with step-through diagrams (D2, rendered at build time), and internal links are validated on every build. It deploys to GitHub Pages at https://caseyaedwards.github.io/fullstack-engineer-training/.
 
-## Local development
+## Local Development
 
 ```sh
 npm ci
@@ -17,3 +17,7 @@ npm run test:e2e     # Playwright tests against `astro preview` (run after build
 ```
 
 To test under the deployed sub-path, set `BASE_PATH=/fullstack-engineer-training/` for build and tests. Install the browser with `npx playwright install chromium`, or point Playwright at an existing one with `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chrome`.
+
+## Writing Style
+
+Site copy follows the [technical writing style guide](docs/style-guide.md): concrete prose with no hedging, no contractions and Title Case headings. `npm run test:build` runs the prose lint in `tests/build/prose.test.mjs`, which enforces the machine-checkable rules.
