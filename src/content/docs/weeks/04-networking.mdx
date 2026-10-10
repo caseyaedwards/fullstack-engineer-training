@@ -100,7 +100,7 @@ rec -> stub: A 203.0.113.10
 
 In practice, the recursive resolver already has the root and `.com` referrals in its cache: many people ask for `.com` names, and the `.com` referral carries a TTL of `172800` seconds, two days. With those referrals cached, a lookup that misses the cache for the name itself costs one trip to the authoritative server, not three. A lookup that hits the resolver cache costs one round trip to your resolver. When your laptop also caches answers, a repeat lookup costs a millisecond or less.
 
-DNS questions travel over UDP (User Datagram Protocol): one packet out, one packet back, with no connection set up first. When an answer does not fit in the UDP size the client offered, the server marks it as truncated. The client then asks again over TCP. Using UDP is part of why DNS is fast when it works.
+DNS questions travel over UDP (User Datagram Protocol): one packet out, one packet back, with no connection set up first. When an answer is bigger than the UDP message size the client said it accepts, the server marks it as truncated. The client then asks again over TCP. Using UDP is part of why DNS is fast when it works.
 
 ### TCP: Opening a Connection
 
@@ -145,7 +145,7 @@ srv -> cli: 200 OK
     { hl: ['cli', 'srv', 'cli->srv#2'], caption: 'The TLS handshake starts. The ClientHello lists the encryption your side supports, carries its half of the key exchange, and names the site it wants (SNI). It travels unencrypted: anyone on the network can see that name.' },
     { hl: ['cli', 'srv', 'srv->cli#1'], caption: 'The server picks the encryption, sends its half of the key exchange, then its certificate and Finished. Everything after the ServerHello is already encrypted.' },
     { hl: ['cli', 'srv', 'cli->srv#3'], caption: 'Your side checks the certificate: right name, not expired, signed by a CA it trusts. Then it sends Finished. This ends the TLS row: one more round trip.' },
-    { hl: ['cli', 'srv', 'cli->srv#4', 'srv->cli#2'], caption: 'The request goes out encrypted. The server does its work and sends back the first byte of the response. The first-byte row counts from the very start, which means it includes every step above.' },
+    { hl: ['cli', 'srv', 'cli->srv#4', 'srv->cli#2'], caption: 'The request goes out encrypted. The server does its work and sends back the first byte of the response. The first-byte row counts from the very start and includes every step above.' },
   ]}
 />
 
@@ -218,7 +218,7 @@ lb -> app: request
     { hl: ['cli', 'dns', 'cli->dns'], caption: 'DNS row. Your CLI asks a resolver for the address. Nothing else can start until the answer arrives.' },
     { hl: ['cli', 'net', 'lb', 'cli->net', 'net->lb'], caption: 'Connect and TLS rows. In this example, the address belongs to a load balancer: a server that spreads requests over several app servers. Your handshakes cross the internet to it. The load balancer holds the certificate.' },
     { hl: ['lb', 'app', 'lb->app'], caption: 'The load balancer passes your request to one app server. When it already has a connection open to that server, it reuses that connection instead of opening a new one. The app does its work, such as reading a database.' },
-    { hl: ['cli', 'net', 'lb', 'app', 'cli->net', 'net->lb', 'lb->app'], caption: 'First-byte row. The response comes back the same way. First byte counts from the very start, which means it holds every step above plus the time the app spends on the request.' },
+    { hl: ['cli', 'net', 'lb', 'app', 'cli->net', 'net->lb', 'lb->app'], caption: 'First-byte row. The response comes back the same way. First byte counts from the very start. It holds every step above plus the time the app spends on the request.' },
   ]}
 />
 
@@ -341,7 +341,7 @@ Read it from top to bottom:
 - **First byte**: the 39.5 ms of the rows above, plus about 12 ms for the request and response round trip, plus about 1 ms of server work.
 - **Total**: first byte plus the time to download the rest of the page, which is tiny here: 0.5 ms.
 
-Run it again straight away. Go does not cache DNS answers itself, which leaves the second DNS time up to your operating system:
+Run it again straight away. Go does not cache DNS answers itself. Whether the second lookup is fast depends on your operating system:
 
 - On macOS, and on Linux systems that run `systemd-resolved`, the operating system caches the answer. DNS drops to a millisecond or less.
 - On a system without a DNS cache, the lookup still goes to your recursive resolver. Because the resolver now has the answer cached, the lookup costs about one round trip to it.
