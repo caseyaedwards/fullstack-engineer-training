@@ -30,7 +30,7 @@ All decisions below were agreed in the project thread on 2026-10-10.
 | Languages | Go for backend examples, TypeScript and React for frontend |
 | Reader environment | Laptop first (Docker Compose, kind), then a small cloud setup (about $10 to $25 a month) for weeks 16 to 18 |
 | Site framework | Astro Starlight (left nav, content, right on-page table of contents) |
-| Diagrams | Mermaid for sequence, flow, state, ER and timeline; D2 for architecture; both rendered to SVG at build time |
+| Diagrams | Written as D2 text, rendered at build time to inline SVG themed by the site's CSS, with optional step-by-step walkthroughs (revised 2026-10-10) |
 | Hosting | GitHub Pages via a GitHub Actions workflow, public repo `fullstack-engineer-training` |
 | Build order | Skeleton plus one sample week first, then small PRs reviewed one at a time |
 | Spec location | This file |
@@ -155,11 +155,11 @@ The site is an Astro Starlight project using Starlight's built-in three-column l
 
 **Layout.** Left sidebar: Start here, Weeks (grouped by the four phases), Tracks (grouped by the five groups). Center: content. Right: Starlight's "On this page" table of contents.
 
-**Diagrams.**
+**Diagrams** (revised 2026-10-10 after Casey asked for better theming and walkthroughs):
 
-- **Mermaid** via `rehype-mermaid`, rendered to inline SVG at build time with a headless browser. Used for sequence diagrams (HTTP request, TLS handshake, OAuth flow), flowcharts, state machines, ER diagrams and the home-page timeline.
-- **D2** via the `astro-d2` integration, rendered to SVG at build time with the `d2` binary. Used for architecture diagrams (uptime monitor components, Kubernetes networking, load balancer topologies).
-- Diagram source lives inline in the MDX page. Both renderers produce static SVG that adapts to light and dark mode, so readers download no diagram JavaScript.
+- Every diagram is D2 text inside a `<Diagram>` MDX component. At build time the `d2` CLI renders it to SVG, which is inlined in the page. Its colors are rewritten to CSS variables mapped to Starlight's theme, so diagrams follow the site's light/dark toggle exactly.
+- **Walkthroughs:** a diagram can carry steps, each naming the shapes and arrows to highlight and a caption. Readers click Prev/Next; the named parts light up in the accent color and the rest dims. Without JavaScript the steps show as a numbered list under the diagram. The script is under 2 KB.
+- D2 covers flowcharts, architecture, sequence diagrams and tables. Mermaid was dropped: a spike showed D2 gives stable names for every shape and arrow, deterministic output, and needs no headless browser at build time. The home-page timeline is a custom component, not a diagram.
 
 **Custom components** in `src/components/`:
 
@@ -173,6 +173,7 @@ The site is an Astro Starlight project using Starlight's built-in three-column l
 | `UsedInWeeks` | Backlinks on a track page, computed from all week frontmatter |
 | `WeekTimeline` | Home-page timeline that shows progress from `DoneWhen` state |
 | `CodeFrom` | Pulls a snippet from `examples/` by file and region marker |
+| `Diagram` | Renders D2 to themed inline SVG, with optional walkthrough steps |
 
 **Week page template:** `WeekHeader`, then Goals, Concepts (with diagrams), Build (steps on the uptime monitor), the three callouts, Side lab, Done when, Read with this week.
 
@@ -184,7 +185,7 @@ One repo holds the site, the tested code examples and one GitHub Actions workflo
 
 ```text
 .
-├── astro.config.mjs          # Starlight, rehype-mermaid, astro-d2, sidebar
+├── astro.config.mjs          # Starlight, sidebar, links validator
 ├── src/
 │   ├── content/docs/
 │   │   ├── index.mdx         # home: how to use this, timeline
@@ -203,7 +204,7 @@ One repo holds the site, the tested code examples and one GitHub Actions workflo
 **Workflow `site.yml`:**
 
 1. Trigger on pull requests and on pushes to `main`.
-2. Set up Node and Go; install the `d2` binary and Playwright Chromium (needed by `rehype-mermaid`).
+2. Set up Node and Go; install the `d2` binary, and Playwright Chromium for the end-to-end tests.
 3. `go vet` and `go test ./...` in `examples/go`; `npm test` in `examples/web`.
 4. `astro build`, with `starlight-links-validator` failing the build on any broken internal link.
 5. On `main` only: upload the `dist/` artifact and deploy with `actions/deploy-pages`.
@@ -216,9 +217,9 @@ The skeleton and one sample week land first in three PRs, then content follows o
 
 **Skeleton (three PRs):**
 
-1. **Site and deploy.** Starlight project, sidebar, Mermaid and D2 wired up with one test diagram each, the GitHub Actions workflow, Pages deploy, and this spec committed.
+1. **Site and deploy.** Starlight project, sidebar, the `<Diagram>` component with walkthroughs and one test diagram, the GitHub Actions workflow, Pages deploy, and this spec committed.
 2. **Components and stubs.** Frontmatter schema, all custom components, `examples/` scaffolding with its tests in CI, home page with the timeline, and stub pages for all 19 weeks and 25 tracks (frontmatter and headings only).
-3. **Sample week: Week 4, Networking.** Fully written as the style reference: Mermaid sequence diagrams for DNS resolution and the TLS handshake, a D2 diagram of the request path, Go `httptrace` examples, all three callouts, side lab and Done when. Week 4 is the sample because it exercises every component and diagram type.
+3. **Sample week: Week 4, Networking.** Fully written as the style reference: sequence diagrams with walkthroughs for DNS resolution and the TLS handshake, a diagram of the request path, Go `httptrace` examples, all three callouts, side lab and Done when. Week 4 is the sample because it exercises every component and diagram type.
 
 **Content (one PR each, after the sample week is approved):**
 
