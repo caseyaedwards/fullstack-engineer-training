@@ -30,3 +30,10 @@ export const weeks: readonly Week[] = [
   { n: 17, slug: '17-day-2-traffic', title: 'Day 2 and traffic', phase: 'run' },
   { n: 18, slug: '18-sre', title: 'SRE', phase: 'run' },
 ];
+
+/** AI-use ladder (see the AI-assisted development track). Keyed by the `aiStage` frontmatter value. */
+export const aiStages = {
+  1: 'Explain only',
+  2: 'Review everything',
+  3: 'Pair partner',
+} as const;

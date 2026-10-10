@@ -15,7 +15,13 @@ const extra = z.object({
   /** Week pages: 0 to 18. Its presence makes the other week fields required. */
   week: z.number().int().min(0).max(18).optional(),
   phase: z.enum(['foundations', 'build', 'harden', 'run']).optional(),
-  hours: z.tuple([z.number().positive(), z.number().positive()]).optional(),
+  /** Time estimate as [low, high] hours, e.g. [5, 8]. */
+  hours: z
+    .tuple([z.number().positive(), z.number().positive()])
+    .refine(([low, high]) => low <= high, {
+      error: (issue) => `hours must be a range [low, high] with low <= high, got ${JSON.stringify(issue.input)}`,
+    })
+    .optional(),
   aiStage: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
   tracks: z.array(trackSlug).min(1).optional(),
   /** Track pages. */

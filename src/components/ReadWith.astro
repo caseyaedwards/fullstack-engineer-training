@@ -1,0 +1,23 @@
+---
+// Tracks to read alongside this week, from the page's `tracks` frontmatter.
+import { tracks } from '../data/tracks';
+import { trackHref } from '../lib/links';
+
+const { tracks: slugs } = Astro.locals.starlightRoute.entry.data;
+if (!slugs) {
+  throw new Error('<ReadWith /> is for week pages: tracks is required in the frontmatter.');
+}
+const items = slugs.map((slug) => ({ slug, title: tracks.find((t) => t.slug === slug)!.title }));
+---
+
+<nav class="read-with not-content" aria-label="Read with this week">
+  <ul>
+    {
+      items.map((t) => (
+        <li>
+          <a href={trackHref(t.slug)}>{t.title}</a>
+        </li>
+      ))
+    }
+  </ul>
+</nav>

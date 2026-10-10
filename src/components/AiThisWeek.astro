@@ -1,0 +1,14 @@
+---
+// Standard week callout: the current AI-ladder stage, then this week's do and don't (the slot).
+import { aiStages } from '../data/weeks';
+
+const { aiStage } = Astro.locals.starlightRoute.entry.data;
+if (aiStage === undefined) {
+  throw new Error('<AiThisWeek> is for week pages: aiStage is required in the frontmatter.');
+}
+---
+
+<aside class="callout callout-ai not-content" aria-label="AI this week">
+  <p class="callout-stage">Stage {aiStage}: {aiStages[aiStage]}</p>
+  <slot />
+</aside>

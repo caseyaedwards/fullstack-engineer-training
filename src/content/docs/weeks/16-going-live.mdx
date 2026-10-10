@@ -7,6 +7,15 @@ aiStage: 3
 tracks: [dns, tls-pki, load-balancing, iam]
 ---
 
+import WeekHeader from '../../../components/WeekHeader.astro';
+import ObserveIt from '../../../components/ObserveIt.astro';
+import OperateIt from '../../../components/OperateIt.astro';
+import AiThisWeek from '../../../components/AiThisWeek.astro';
+import SideLab from '../../../components/SideLab.astro';
+import ReadWith from '../../../components/ReadWith.astro';
+
+<WeekHeader />
+
 ## Goals
 
 Coming soon.
@@ -21,19 +30,27 @@ Coming soon.
 
 ## Observe it
 
+<ObserveIt>
 Coming soon.
+</ObserveIt>
 
 ## Operate it
 
+<OperateIt>
 Coming soon.
+</OperateIt>
 
 ## AI this week
 
+<AiThisWeek>
 Coming soon.
+</AiThisWeek>
 
 ## Side lab
 
+<SideLab title="Optional lab (coming soon)">
 Coming soon.
+</SideLab>
 
 ## Done when
 
@@ -41,4 +58,4 @@ Coming soon.
 
 ## Read with this week
 
-Coming soon.
+<ReadWith />

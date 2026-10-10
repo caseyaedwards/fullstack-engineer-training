@@ -1,0 +1,48 @@
+---
+// Summary strip at the top of a week page, read from the page's own frontmatter.
+import { aiStages, phases, weeks } from '../data/weeks';
+import { weekHref } from '../lib/links';
+
+const { week, phase, hours, aiStage } = Astro.locals.starlightRoute.entry.data;
+if (week === undefined || phase === undefined || hours === undefined || aiStage === undefined) {
+  throw new Error('<WeekHeader /> is for week pages: week, phase, hours and aiStage are required in the frontmatter.');
+}
+
+const phaseLabel = phases.find((p) => p.id === phase)?.label ?? phase;
+const previous = weeks.find((w) => w.n === week - 1);
+---
+
+<header class="week-header not-content">
+  <dl>
+    <div>
+      <dt>Week</dt>
+      <dd>{week}</dd>
+    </div>
+    <div>
+      <dt>Phase</dt>
+      <dd>{phaseLabel}</dd>
+    </div>
+    <div>
+      <dt>Time</dt>
+      <dd>{hours[0]}–{hours[1]} h</dd>
+    </div>
+    <div>
+      <dt>AI stage</dt>
+      <dd>{aiStage}: {aiStages[aiStage]}</dd>
+    </div>
+    <div>
+      <dt>Prerequisite</dt>
+      <dd>
+        {
+          previous ? (
+            <a href={weekHref(previous.n)}>
+              Week {previous.n}: {previous.title}
+            </a>
+          ) : (
+            'None'
+          )
+        }
+      </dd>
+    </div>
+  </dl>
+</header>

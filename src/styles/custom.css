@@ -1,0 +1,103 @@
+/*
+ * Week template components (WeekHeader, ObserveIt, OperateIt, AiThisWeek, SideLab,
+ * ReadWith, UsedInWeeks). Colours come only from Starlight's --sl-color-* variables,
+ * which Starlight swaps when the light/dark toggle changes, so nothing here needs a
+ * dark-mode variant.
+ */
+
+.week-header {
+  margin-block: 1rem 1.5rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: 0.5rem;
+  background-color: var(--sl-color-bg-nav);
+}
+.week-header dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 2rem;
+  margin: 0;
+}
+.week-header dt {
+  color: var(--sl-color-gray-3);
+  font-size: var(--sl-text-xs);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.week-header dd {
+  margin: 0;
+  color: var(--sl-color-white);
+  font-weight: 600;
+}
+
+.callout {
+  --callout-color: var(--sl-color-gray-3);
+  --callout-bg: var(--sl-color-gray-6);
+  margin-block: 1rem;
+  padding: 0.75rem 1rem;
+  border-inline-start: 0.25rem solid var(--callout-color);
+  border-radius: 0.25rem;
+  background-color: var(--callout-bg);
+  color: var(--sl-color-text);
+}
+.callout > :first-child {
+  margin-top: 0;
+}
+.callout > :last-child {
+  margin-bottom: 0;
+}
+.callout-observe {
+  --callout-color: var(--sl-color-blue);
+  --callout-bg: var(--sl-color-blue-low);
+}
+.callout-operate {
+  --callout-color: var(--sl-color-orange);
+  --callout-bg: var(--sl-color-orange-low);
+}
+.callout-ai {
+  --callout-color: var(--sl-color-purple);
+  --callout-bg: var(--sl-color-purple-low);
+}
+.callout-stage {
+  margin-block: 0 0.5rem;
+  color: var(--sl-color-white);
+  font-weight: 600;
+}
+
+.side-lab {
+  margin-block: 1rem;
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: 0.25rem;
+  background-color: var(--sl-color-bg-nav);
+}
+.side-lab summary {
+  padding: 0.6rem 1rem;
+  color: var(--sl-color-white);
+  font-weight: 600;
+  cursor: pointer;
+}
+.side-lab summary:focus-visible {
+  outline: 2px solid var(--sl-color-accent);
+  outline-offset: 2px;
+}
+.side-lab[open] summary {
+  border-bottom: 1px solid var(--sl-color-hairline);
+}
+.side-lab-body {
+  padding: 0.25rem 1rem 0.75rem;
+}
+
+.read-with ul {
+  margin: 0;
+  padding-inline-start: 1.25rem;
+}
+.week-header a,
+.read-with a,
+.used-in-weeks a {
+  color: var(--sl-color-text-accent);
+}
+
+.used-in-weeks {
+  margin-block: 0 1.5rem;
+  color: var(--sl-color-gray-2);
+}

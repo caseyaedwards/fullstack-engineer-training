@@ -40,7 +40,7 @@ export default defineConfig({
       title: 'Full-Stack Engineer Path',
       sidebar,
       plugins: [starlightLinksValidator()],
-      customCss: ['./src/styles/diagrams.css'],
+      customCss: ['./src/styles/diagrams.css', './src/styles/custom.css'],
     }),
   ],
 });

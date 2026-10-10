@@ -1,0 +1,28 @@
+---
+// Backlinks on a track page, computed from every week's frontmatter at build time.
+import { weekHref, weeksForTrack } from '../lib/links';
+
+const { track } = Astro.locals.starlightRoute.entry.data;
+if (!track) {
+  throw new Error('<UsedInWeeks /> is for track pages: track is required in the frontmatter.');
+}
+const used = await weeksForTrack(track);
+---
+
+<p class="used-in-weeks not-content">
+  {
+    used.length === 0 ? (
+      'Not used in a week yet.'
+    ) : (
+      <>
+        Used in {used.length === 1 ? 'week' : 'weeks'}{' '}
+        {used.map((n, i) => (
+          <>
+            {i > 0 && ', '}
+            <a href={weekHref(n)}>{n}</a>
+          </>
+        ))}
+      </>
+    )
+  }
+</p>

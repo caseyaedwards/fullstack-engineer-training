@@ -49,6 +49,35 @@ Body.
   }
 });
 
+test('hours with low above high fails the build and says why', { timeout: 300_000 }, () => {
+  const fixture = join(weeksDir, 'zz-bad-hours.mdx');
+  const outDir = mkdtempSync(join(tmpdir(), 'schema-hours-'));
+  try {
+    writeFileSync(
+      fixture,
+      `---
+title: Bad hours
+week: 3
+phase: foundations
+hours: [8, 5]
+aiStage: 1
+tracks: [networking]
+---
+
+Body.
+`,
+    );
+    const r = spawnSync('npm', ['run', 'build', '--', '--outDir', outDir], { cwd: root, encoding: 'utf8' });
+    assert.notEqual(r.status, 0, 'build should fail');
+    const out = r.stdout + r.stderr;
+    assert.match(out, /zz-bad-hours/, 'error should name the file');
+    assert.match(out, /low <= high/, 'error should explain the range rule');
+  } finally {
+    rmSync(fixture, { force: true });
+    rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
 const frontmatter = (file) => {
   const m = readFileSync(file, 'utf8').match(/^---\n([\s\S]*?)\n---/);
   assert.ok(m, `${file} has no frontmatter`);
