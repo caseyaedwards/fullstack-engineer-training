@@ -66,3 +66,23 @@ func TestCheckHonorsContext(t *testing.T) {
 		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
 	}
 }
+
+func TestCheckDoesNotFollowRedirects(t *testing.T) {
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("moved here"))
+	}))
+	defer target.Close()
+	srv := httptest.NewTLSServer(http.RedirectHandler(target.URL, http.StatusFound))
+	defer srv.Close()
+	useClient(t, srv.Client())
+
+	_, status, err := Check(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	// An uptime check reports what the URL itself answered, so the timings
+	// never mix two servers.
+	if status != http.StatusFound {
+		t.Errorf("status = %d, want 302", status)
+	}
+}

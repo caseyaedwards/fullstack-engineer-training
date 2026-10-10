@@ -23,7 +23,8 @@ type Timings struct {
 var client = http.DefaultClient
 
 // Check makes a GET request to url and reports how long each phase took, the
-// HTTP status code, and any error. Cancelling ctx stops the request.
+// HTTP status code, and any error. Redirects are not followed. Cancelling ctx
+// stops the request.
 func Check(ctx context.Context, url string) (Timings, int, error) {
 	var (
 		mu                               sync.Mutex // guards t and the start times, see below
@@ -54,7 +55,11 @@ func Check(ctx context.Context, url string) (Timings, int, error) {
 	if err != nil {
 		return result(), 0, err
 	}
-	resp, err := client.Do(req)
+	// Don't follow redirects: report the status this URL returned, and keep the
+	// timings to one request on one connection.
+	c := *client
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := c.Do(req)
 	if err != nil {
 		return result(), 0, err
 	}
