@@ -3,4 +3,20 @@ title: Full-Stack Engineer Path
 description: A 19-week training path to becoming a full-stack engineer.
 ---
 
+import { LinkButton } from '@astrojs/starlight/components';
+import WeekTimeline from '../../components/WeekTimeline.astro';
+import { weekHref } from '../../lib/links';
+
 Welcome to the Full-Stack Engineer Path, a 19-week training path.
+
+## How to use this
+
+- Work through the weeks in order. Each one ends with a **Done when** checklist.
+- Tick items as you finish them. Your progress is saved in this browser only, and the timeline below marks a week complete once every item is ticked.
+- Tracks are reference pages. Each week lists the tracks to read alongside it.
+
+<LinkButton href={weekHref(0)} variant="primary">Start at week 0</LinkButton>
+
+## Timeline
+
+<WeekTimeline />

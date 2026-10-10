@@ -1,0 +1,39 @@
+---
+// The 19 weeks grouped by phase. Each node carries its week's `done` ids so the client script
+// (src/scripts/progress.ts) can tell when every current item is ticked.
+import { getCollection } from 'astro:content';
+import { phases, weeks } from '../data/weeks';
+import { weekHref } from '../lib/links';
+
+const docs = await getCollection('docs');
+const doneFor = (n: number) => docs.find((d) => d.data.week === n)?.data.done ?? [];
+---
+
+<div class="week-timeline not-content">
+  {
+    phases.map((phase) => (
+      <section data-phase={phase.id} aria-labelledby={`phase-${phase.id}`}>
+        <h3 id={`phase-${phase.id}`}>{phase.label}</h3>
+        <ol>
+          {weeks
+            .filter((w) => w.phase === phase.id)
+            .map((w) => (
+              <li data-week={w.n} data-total={doneFor(w.n).length} data-ids={JSON.stringify(doneFor(w.n).map((d) => d.id))}>
+                <a href={weekHref(w.n)}>
+                  <span class="tl-n">{w.n}</span>
+                  <span class="tl-title">{w.title}</span>
+                  <span class="tl-done">
+                    <span class="tl-sr">complete</span>
+                  </span>
+                </a>
+              </li>
+            ))}
+        </ol>
+      </section>
+    ))
+  }
+</div>
+
+<script>
+  import '../scripts/progress.ts';
+</script>

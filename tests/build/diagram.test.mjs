@@ -58,7 +58,7 @@ import Diagram from '../../../components/Diagram.astro';
 `,
   );
   try {
-    const r = spawnSync('npm', ['run', 'build', '--', '--outDir', outDir], { cwd: root, encoding: 'utf8' });
+    const r = spawnSync('npm', ['run', 'build', '--', '--outDir', outDir], { cwd: root, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' } });
     assert.notEqual(r.status, 0, 'build should fail');
     const out = r.stdout + r.stderr;
     assert.match(out, /nope/, 'error should name the missing key');
