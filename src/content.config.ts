@@ -24,7 +24,7 @@ const extra = z.object({
     .optional(),
   aiStage: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
   tracks: z.array(trackSlug).min(1).optional(),
-  /** Week pages: the "Done when" checklist. Ids are stored in the browser, so they must be unique within the week. */
+  /** Week pages: the "Done When" checklist. Ids are stored in the browser, so they must be unique within the week. */
   done: z
     .array(z.object({ id: z.string().min(1), text: z.string().min(1) }))
     .min(1)

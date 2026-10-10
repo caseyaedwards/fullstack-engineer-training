@@ -10,7 +10,7 @@ const setTheme = (page: Page, theme: 'light' | 'dark') =>
 
 test('week page: header, backlinks and Read with links resolve', async ({ page }) => {
   await page.goto(WEEK);
-  await expect(page.locator('.week-header')).toContainText(/\d+–\d+ h/);
+  await expect(page.locator('.week-header')).toContainText(/\d+–\d+ hours/);
   await page.locator('.week-header a').click();
   await expect(page).toHaveURL(/weeks\/03-linux-processes\/$/);
 

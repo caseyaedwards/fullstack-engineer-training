@@ -11,7 +11,7 @@ const base = process.env.BASE_PATH ?? '/';
 // Built from the registries so the sidebar can't drift from the pages. Slug items
 // get the site base applied by Starlight. The hidden dev/ fixture page is not listed.
 const sidebar = [
-  { label: 'Start here', slug: 'start-here' },
+  { label: 'Start Here', slug: 'start-here' },
   {
     label: 'Weeks',
     items: phases.map((p) => ({
