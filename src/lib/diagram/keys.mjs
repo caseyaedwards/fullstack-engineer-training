@@ -45,3 +45,12 @@ export function decodeKey(className) {
   if (!/^[^\p{C}]+$/u.test(raw) || raw.includes('�')) return null;
   return normalizeKey(raw);
 }
+
+/**
+ * Sequence-diagram lifelines decode to raw `(browser -- )[0]`; they are
+ * decoration, not highlightable elements.
+ * @param {string} key
+ */
+export function isLifeline(key) {
+  return /^\(.* -- \)\[\d+\]$/.test(key);
+}

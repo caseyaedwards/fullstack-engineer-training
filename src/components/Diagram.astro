@@ -36,7 +36,6 @@ for (const [i, step] of (steps ?? []).entries()) {
 
 <figure class="dg" id={id}>
   <div class="dg-svg"><Fragment set:html={svg} /></div>
-  <figcaption>{title}</figcaption>
   {
     steps && steps.length > 0 && (
       <ol class="dg-steps">
@@ -46,4 +45,9 @@ for (const [i, step] of (steps ?? []).entries()) {
       </ol>
     )
   }
+  <figcaption>{title}</figcaption>
 </figure>
+
+<script>
+  import '../scripts/walkthrough.ts';
+</script>

@@ -68,3 +68,17 @@ import Diagram from '../../../components/Diagram.astro';
     rmSync(outDir, { recursive: true, force: true });
   }
 });
+
+test('figcaption is the last child of every figure', () => {
+  for (const f of figures) {
+    assert.match(f, /<\/figcaption><\/figure>$/, 'figcaption is not the last child of <figure>');
+  }
+  const flow = figures.find((f) => /<ol class="dg-steps"/.test(f));
+  assert.ok(flow.indexOf('</svg>') < flow.indexOf('<ol class="dg-steps"'), 'ol must follow the svg');
+  assert.ok(flow.indexOf('</ol>') < flow.indexOf('<figcaption>'), 'figcaption must follow the ol');
+});
+
+test('sequence lifelines carry no data-k', () => {
+  const seq = figures.find((f) => !/<ol class="dg-steps"/.test(f));
+  assert.doesNotMatch(seq, /data-k="\([^"]* -- \)/);
+});

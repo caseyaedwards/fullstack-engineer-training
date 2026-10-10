@@ -8,9 +8,10 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fromHtml } from 'hast-util-from-html';
 import { toHtml } from 'hast-util-to-html';
-import { decodeKey } from './keys.mjs';
+import { decodeKey, isLifeline } from './keys.mjs';
 
-const D2 = process.env.D2_BIN ?? 'd2';
+const d2Bin = () => process.env.D2_BIN ?? 'd2';
+const d2TimeoutMs = () => Number(process.env.D2_TIMEOUT_MS) || 30_000;
 
 /** @type {Map<string, Promise<{ svg: string, keys: Set<string> }>>} */
 const cache = new Map();
@@ -19,22 +20,44 @@ let versionPromise;
 
 function run(args, input) {
   return new Promise((resolve, reject) => {
+    const D2 = d2Bin();
     const child = spawn(D2, args, { stdio: ['pipe', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
+    let settled = false;
+    const done = (fn, v) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(v);
+    };
+    const ms = d2TimeoutMs();
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      done(reject, new Error(`d2 timed out after ${ms} ms`));
+    }, ms);
     child.stdout.setEncoding('utf8').on('data', (d) => (out += d));
     child.stderr.setEncoding('utf8').on('data', (d) => (err += d));
-    child.on('error', (e) => reject(new Error(`d2: could not run "${D2}": ${e.message}`)));
+    child.on('error', (e) => done(reject, new Error(`d2: could not run "${D2}": ${e.message}`)));
+    // d2 may exit before reading stdin (bad flags, crash): wait for 'close' to
+    // report its stderr rather than crashing on EPIPE.
+    child.stdin.on('error', () => {});
     child.on('close', (code) => {
-      if (code === 0) resolve(out);
-      else reject(new Error(`d2 exited with code ${code}: ${err.trim()}`));
+      if (code === 0) done(resolve, out);
+      else done(reject, new Error(`d2 exited with code ${code}: ${err.trim()}`));
     });
     child.stdin.end(input ?? '');
   });
 }
 
 function d2Version() {
-  versionPromise ??= run(['--version']).then((v) => v.trim());
+  if (!versionPromise) {
+    const p = run(['--version']).then((v) => v.trim());
+    versionPromise = p;
+    p.catch(() => {
+      if (versionPromise === p) versionPromise = undefined;
+    });
+  }
   return versionPromise;
 }
 
@@ -103,7 +126,7 @@ async function render(source, id) {
     if (node.tagName === 'g') {
       const cls = classList(node);
       const k = cls.length === 1 ? decodeKey(cls[0]) : null;
-      if (k) {
+      if (k && !isLifeline(k)) {
         node.properties.dataK = k;
         keys.add(k);
       }

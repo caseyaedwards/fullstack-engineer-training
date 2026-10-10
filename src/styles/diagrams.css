@@ -48,3 +48,42 @@
   font-size: var(--sl-text-sm);
   color: var(--sl-color-gray-3);
 }
+
+/* Walkthrough (src/scripts/walkthrough.ts) */
+.dg .dg-dim {
+  opacity: 0.25;
+}
+
+.dg .dg-hl :is(rect, path, ellipse, polygon, circle) {
+  stroke: var(--sl-color-accent);
+  stroke-width: 2;
+}
+
+.dg-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  font-size: var(--sl-text-sm);
+}
+
+.dg-nav span {
+  flex: 1;
+  text-align: center;
+  color: var(--sl-color-text);
+}
+
+.dg-nav button {
+  padding: 0.25rem 0.75rem;
+  border: 1px solid var(--sl-color-gray-4);
+  border-radius: 0.25rem;
+  background: var(--sl-color-bg-nav);
+  color: var(--sl-color-text);
+  cursor: pointer;
+}
+
+.dg-nav button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

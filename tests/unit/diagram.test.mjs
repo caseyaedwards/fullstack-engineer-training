@@ -94,3 +94,61 @@ test('claimId: a repeated diagram id on one page throws, other pages are indepen
   claimId(page2, 'dns');
   assert.throws(() => claimId(page1, 'dns'), /"dns".*\/a\//);
 });
+
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { isLifeline } from '../../src/lib/diagram/keys.mjs';
+
+function fakeD2(body) {
+  const f = join(mkdtempSync(join(tmpdir(), 'faked2-')), 'd2');
+  writeFileSync(f, `#!/bin/sh\n${body}\n`);
+  chmodSync(f, 0o755);
+  return f;
+}
+
+async function withEnv(env, fn) {
+  const old = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, env);
+  try {
+    return await fn();
+  } finally {
+    for (const [k, v] of Object.entries(old)) v === undefined ? delete process.env[k] : (process.env[k] = v);
+  }
+}
+
+test('renderD2: sequence lifelines are not keys and carry no data-k', async () => {
+  const { svg, keys } = await renderD2(`shape: sequence_diagram\nbrowser -> server: SYN\n`, { id: 'life' });
+  assert.ok(isLifeline('(browser -- )[0]'));
+  assert.ok(!isLifeline('browser->server'));
+  for (const k of keys) assert.ok(!isLifeline(k), k);
+  assert.doesNotMatch(svg, /data-k="\(browser -- \)/);
+  assert.ok(keys.has('browser->server'));
+});
+
+test('renderD2: d2 exiting before reading stdin rejects with its stderr (no EPIPE crash)', async () => {
+  const bin = fakeD2('if [ "$1" = "--version" ]; then echo v0.0.0; exit 0; fi\necho boom-from-d2 >&2\nexit 3');
+  const mod = await import('../../src/lib/diagram/render.mjs?epipe');
+  await withEnv({ D2_BIN: bin }, async () => {
+    await assert.rejects(mod.renderD2('x'.repeat(5_000_000), { id: 'epipe' }), /boom-from-d2/);
+  });
+});
+
+test('renderD2: a hung d2 is killed and rejects with a timeout error', async () => {
+  const bin = fakeD2('if [ "$1" = "--version" ]; then echo v0.0.0; exit 0; fi\nsleep 30');
+  const mod = await import('../../src/lib/diagram/render.mjs?timeout');
+  await withEnv({ D2_BIN: bin, D2_TIMEOUT_MS: '300' }, async () => {
+    const t = Date.now();
+    await assert.rejects(mod.renderD2('a -> b', { id: 'hung' }), /timed out after 300 ms/);
+    assert.ok(Date.now() - t < 5000);
+  });
+});
+
+test('renderD2: a failed d2 --version is not cached forever', async () => {
+  const mod = await import('../../src/lib/diagram/render.mjs?version');
+  await withEnv({ D2_BIN: '/nonexistent/d2' }, async () => {
+    await assert.rejects(mod.renderD2('a -> b', { id: 'ver' }), /could not run/);
+  });
+  const { keys } = await mod.renderD2('a -> b', { id: 'ver' });
+  assert.ok(keys.has('a'));
+});
