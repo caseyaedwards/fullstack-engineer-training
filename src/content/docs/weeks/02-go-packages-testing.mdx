@@ -50,9 +50,9 @@ You already know how to design tests: equivalence classes, boundary values, test
 
 Week 1 introduced modules and packages. This week, you use both, and import one package from another:
 
-- A **module** is your whole project, named by the first line of `go.mod`: `module github.com/your-user/your-monitor`. The name is the **module path**.
+- A **module** is your whole project, named by the first line of `go.mod`: `module github.com/<user>/your-monitor`. The name is the **module path**.
 - A **package** is one folder of `.go` files. Every file in the folder starts with the same `package` line, and the files share one namespace: a function in `list.go` calls a function in `check.go` with no import.
-- An **import path** finds a package: the module path plus the folder. The `check` folder in your module has the import path `github.com/your-user/your-monitor/check`. Standard library packages have short paths, such as `net/http`, because they belong to Go itself.
+- An **import path** finds a package: the module path plus the folder. The `check` folder in your module has the import path `github.com/<user>/your-monitor/check`. Standard library packages have short paths, such as `net/http`, because they belong to Go itself.
 
 The `package` line names the package. By convention, the name is the last part of the import path: the files in `check/` start with `package check`. Code that imports the package uses that name as a prefix, as in `check.URL`. The prefix is part of the name every caller reads, which is why Go code avoids stutter: `check.URL` reads well, and `check.CheckURL` repeats itself.
 
@@ -158,11 +158,11 @@ Two methods of `t` keep test helpers short:
 
 By the end of this section, `your-monitor` has a `check` package with its tests, and a `main.go` that reads a list of URLs from the file named by `-file`, checks each one in turn and prints one line per URL. <a href={weekHref(3)}>Week 3</a> turns it into a process that runs for days. Start a branch first, as every week: `git switch main`, `git pull`, then `git switch -c week-02`.
 
-The code comes from the site examples, which the site tests on every change. The example folder `examples/go/week02/your-monitor` mirrors your repository, with one difference: the examples live in a module named `fsp/examples`, which gives them the import path `fsp/examples/week02/your-monitor/check`. In your code, the path is `github.com/your-user/your-monitor/check`, with your GitHub user name in place of `your-user`.
+The code comes from the site examples, which the site tests on every change. The example folder `examples/go/week02/your-monitor` mirrors your repository, with one difference: the examples live in a module named `fsp/examples`, which gives them the import path `fsp/examples/week02/your-monitor/check`. In your code, the path is `github.com/<user>/your-monitor/check`, with your GitHub user name in place of `<user>`.
 
 ```txt
 your-monitor/
-├── go.mod          module github.com/your-user/your-monitor
+├── go.mod          module github.com/<user>/your-monitor
 ├── main.go         reads -file, checks each URL, prints one line each
 ├── urls.txt        the URLs to check
 └── check/
@@ -213,7 +213,7 @@ Create `check/check_test.go`. These are the imports of the finished file:
 
 <CodeFrom file="go/week02/your-monitor/check/check_test.go" region="imports" lang="go" title="check/check_test.go" />
 
-The last import is your own package, by its import path: in your file, write `github.com/your-user/your-monitor/check`. Go refuses an import the file does not use yet: start with `errors`, `testing`, `time` and your `check` package, and add the others in Steps 4 and 5. When you save, the VS Code Go extension adds a standard library import that the code uses and removes one it does not. Now add the test:
+The last import is your own package, by its import path: in your file, write `github.com/<user>/your-monitor/check`. Go refuses an import the file does not use yet: start with `errors`, `testing`, `time` and your `check` package, and add the others in Steps 4 and 5. When you save, the VS Code Go extension adds a standard library import that the code uses and removes one it does not. Now add the test:
 
 <CodeFrom file="go/week02/your-monitor/check/check_test.go" region="table" lang="go" title="check/check_test.go" />
 
@@ -221,8 +221,8 @@ The rows cover the classes from Week 1, plus the boundary at `400` from both sid
 
 ```txt
 $ go test ./...
-?   	github.com/your-user/your-monitor	[no test files]
-ok  	github.com/your-user/your-monitor/check	0.007s
+?   	github.com/<user>/your-monitor	[no test files]
+ok  	github.com/<user>/your-monitor/check	0.007s
 ```
 
 `go test` reports per package. The `main` package has no tests, and `check` passes. The `-run` command-line flag takes a regular expression and runs only the tests whose names match it. A `/` in the pattern separates the test name from the subtest name. Add `-v`, for verbose, to list each test as it runs:
@@ -234,7 +234,7 @@ $ go test -v -run 'TestResult/400' ./check
 --- PASS: TestResult (0.00s)
     --- PASS: TestResult/400_is_the_first_status_that_counts_as_down (0.00s)
 PASS
-ok  	github.com/your-user/your-monitor/check	0.007s
+ok  	github.com/<user>/your-monitor/check	0.007s
 ```
 
 A subtest has the full name `TestResult/` plus the row name, with each space turned into `_`. Run `go test -v ./check` to list them all. Break the code once to see a failure: change `r.Status < 400` in `Up` to `r.Status <= 400`, and run `go test ./check`. Only the `400` row fails, and its message names the row and the value. Put the `<` back.
@@ -259,7 +259,7 @@ A test server cannot tell you whether `URL` closed the response body. A fake can
 
 `spyBody` is the response body. The `Body` field of `http.Response` has the type `io.ReadCloser`, an interface with two methods: `Read` and `Close`. `spyBody` gets `Read` through **embedding**: a field with a type and no name, here `io.Reader`, whose methods become methods of the struct. It adds its own `Close`, which records the call. In test-double terms, `fakeGetter` is a stub and `spyBody` is a spy.
 
-`Close` has a pointer receiver, `(b *spyBody)`, because it changes the struct. That is also why the test creates the body with `&spyBody{...}`. Pass a `spyBody` value instead, and the build stops with `spyBody does not implement io.ReadCloser (method Close has pointer receiver)`. The compiler checks the interface where you use the value, and names the missing piece. Rename the `Get` method of `fakeGetter` to `Fetch` to see the other common message: `fakeGetter does not implement "github.com/your-user/your-monitor/check".Getter (missing method Get)`. Then put both back.
+`Close` has a pointer receiver, `(b *spyBody)`, because it changes the struct. That is also why the test creates the body with `&spyBody{...}`. Pass a `spyBody` value instead, and the build stops with `spyBody does not implement io.ReadCloser (method Close has pointer receiver)`. The compiler checks the interface where you use the value, and names the missing piece. Rename the `Get` method of `fakeGetter` to `Fetch` to see the other common message: `fakeGetter does not implement "github.com/<user>/your-monitor/check".Getter (missing method Get)`. Then put both back.
 
 Now prove the spy works: delete `defer resp.Body.Close()` from `URL`, and run `go test ./check`. `TestURLClosesTheBody` fails with `URL returned without closing the response body`. Put the line back.
 
@@ -331,7 +331,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/your-user/your-monitor/check"
+	"github.com/<user>/your-monitor/check"
 )
 ```
 
@@ -360,8 +360,8 @@ Run the full suite with the race detector and coverage. On Linux and WSL, `-race
 
 ```txt
 $ go test -race -cover ./...
-	github.com/your-user/your-monitor		coverage: 0.0% of statements
-ok  	github.com/your-user/your-monitor/check	1.130s	coverage: 100.0% of statements
+	github.com/<user>/your-monitor		coverage: 0.0% of statements
+ok  	github.com/<user>/your-monitor/check	1.130s	coverage: 100.0% of statements
 ```
 
 `-race` builds the test binary with the **race detector**, which watches every memory access while the tests run. It fails a test when two goroutines, functions that run at the same time, touch the same memory and at least one writes, with no synchronization such as a mutex between them. Your code starts no goroutines of its own yet, but `net/http` and `httptest` start several. The detector finds a race only in code that a test runs, which is why you run it with every test run, not once. [Operate It](#operate-it) shows it catching a bug in test code.

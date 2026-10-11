@@ -234,6 +234,10 @@ You need a small package for the timing code and a command for the CLI. In your 
 your-monitor/
 ├── go.mod              first line: module <your module path>
 ├── main.go             the monitor from Week 3, with its check loop
+├── run_test.go         from Week 3
+├── signal_test.go      from Week 3
+├── urls.txt
+├── your-monitor.service
 ├── check/
 │   ├── check.go        Result (Step 9 adds Timings)
 │   ├── list.go         ParseList
@@ -356,17 +360,17 @@ The other rows stay about the same, because each run opens a new connection.
 
 This step is the milestone for Week 4: every check your monitor runs records DNS, connect, TLS and first-byte time. In the Week 3 monitor, `main` passes `run` a function, `checkOne`, that calls `check.URL(client, target)`. Swap that request for `probe.Check`:
 
-- In `check/check.go`, import your `probe` package and add a field `Timings probe.Timings` to `Result`. You log it in the next section.
-- In `main.go`, import `probe` and replace `checkOne` with the version below. It gives each check its own deadline the way the CLI does: `context.WithTimeout` before the call, `cancel()` after it. The deadline comes from `ctx`, the signal context, which means SIGTERM now also cancels the check in flight.
+- In `check/check.go`, import your `probe` package, remove the `net/http` import, and add a field `Timings probe.Timings` to `Result`. You log it in the next section.
+- In `main.go`, import `probe` and replace `checkOne` with the version below. It gives each check its own deadline the way the CLI does: `context.WithTimeout` before the call, `cancel()` after it. The deadline comes from `ctx`, the signal context, which means SIGTERM now also cancels the check in flight: the log shows a `down` line for it that ends in `context canceled`, then the `shutting down` line.
 - In `main.go`, delete the `client := &http.Client{...}` line and the `net/http` import: `probe.Check` sends the request with its own client.
-- In `check/check.go`, delete `URL` and the `Getter` interface, and delete their tests and test helpers from `check/check_test.go`. `probe.Check` replaces the request, the `time.Now()` timer around it and the `resp.Body.Close()`, and the `probe` tests cover them. `Result`, `ParseList` and their tests stay, and the Week 3 tests of `run` need no change.
+- In `check/check.go`, delete `URL` and the `Getter` interface. In `check/check_test.go`, delete every test of `URL` and the helpers `newServer`, `fakeGetter` and `spyBody`, and keep only `TestResult`, with the imports `errors`, `testing`, `time` and your `check` package. `probe.Check` replaces the request, the `time.Now()` timer around it and the `resp.Body.Close()`, and the `probe` tests cover them. `Result`, `ParseList` and their tests stay, and the Week 3 tests of `run` need no change.
 
 ```go
 checkOne := func(target string) check.Result {
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
 	timings, status, err := probe.Check(ctx, target)
-	return check.Result{URL: target, Status: status, Latency: timings.Total, Err: err, Timings: timings}
+	return check.Result{URL: target, Status: status, Latency: timings.FirstByte, Err: err, Timings: timings}
 }
 ```
 

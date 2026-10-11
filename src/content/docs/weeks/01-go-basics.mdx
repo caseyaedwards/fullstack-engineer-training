@@ -498,7 +498,7 @@ Go needs the scheme to pick a protocol, and the empty string between the escaped
 
 Scripts act on the exit code. In the shell, `||` runs the second command only when the first one fails: `./your-monitor -url https://example.com || echo "example.com is down"` prints the warning only for a site that is down.
 
-One failure does not show up in a single run: a missing `resp.Body.Close()`. Each unclosed body holds a network connection open. In Week 3, your monitor checks URLs in a loop for days, and the open connections pile up until the process runs out of the files it is allowed to open. Keep the `defer`.
+One failure does not show up in a single run: a missing `resp.Body.Close()`. Each unclosed body holds a network connection open until the client timeout closes it, or for good with no timeout. In Week 3, your monitor checks URLs in a loop for days, and those open connections cost one open file each: with no timeout, they pile up until the process runs out of the files it is allowed to open. Keep the `defer`.
 
 </OperateIt>
 
