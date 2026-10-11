@@ -1,37 +1,38 @@
 /*
- * Site palette: Gruvbox (github.com/morhetz/gruvbox), dark and light.
+ * Site palette: ivory paper and clay, after the reference page Casey picked
+ * (thariqs.github.io/html-effectiveness). Light mode takes its colours as they
+ * are; dark mode is the same warm neutrals and clay, inverted.
  *
  * Starlight's documented theming approach: override its colour variables under
  * :root (dark mode) and :root[data-theme='light']. Every component, the D2
  * diagrams (src/styles/diagrams.css) and the Expressive Code frames read these
  * variables, so this is the only file with literal colours. Code tokens come from
- * Shiki's gruvbox-dark-hard and gruvbox-light-hard themes (astro.config.mjs).
+ * Shiki's vitesse-dark and vitesse-light themes (astro.config.mjs).
  *
- * Dark mode is Gruvbox dark hard: the page is bg0_h #1d2021 (dark, not black),
- * raised surfaces (sidebar, nav, code frames) are bg0 #282828 and bg1 #3c3836.
- * Headings are fg0 #fbf1c7, body text fg1 #ebdbb2, secondary text fg3 #bdae93.
- * Gruvbox's #928374 gray is never used for text (only for light-mode borders).
- * Light mode is Gruvbox light hard:
- * page bg0_h #f9f5d7, raised bg0 #fbf1c7 and bg1 #ebdbb2, body text fg1 #3c3836.
+ * Light mode: the page is ivory #faf9f5, raised surfaces (nav, code frames) are
+ * paper #ffffff, inline code and tab bars are #f0eee6, hairlines #e6e3da and
+ * borders #d1cfc5. Headings are slate #141413, body text #3d3d3a, secondary text
+ * #5e5d59 (6.3:1). The reference page's #87867f gray is 3.5:1 on ivory, so no
+ * text uses it.
+ * Dark mode: the page is #1c1b19, a warm near-black (not pure black). Sidebar,
+ * nav and code frames are #262521, raised surfaces #33322e, borders #5a5953.
+ * Headings are ivory #faf9f5, body text #e6e3da, secondary text #b5b3aa.
  * Every text role passes WCAG AA (4.5:1) on the surfaces it sits on.
  *
- * Accent roles (Gruvbox green):
- * --sl-color-accent is the green of strokes, borders, focus rings and diagram
- * highlights: bright green #b8bb26 in dark mode, faded green #79740e in light.
- * --sl-color-accent-high is the link and site-title green (Starlight's
- * --sl-color-text-accent) and the fill of the current sidebar item: #b8bb26 in
- * dark mode. In light mode #79740e is 4.4:1 on bg0_h, just short of AA, and
- * Gruvbox has no darker green, so text uses #79740e darkened with fg0 #282828
- * (70% / 30% = #615d16: the same 57 degree hue, 6.2:1 on the page and 5.0:1 on
- * bg1).
- * --sl-color-accent-low is the tinted surface of callouts, notes, completed weeks
- * and lit diagram shapes, and in dark mode the text of the current sidebar item.
- * It is a Gruvbox green blended over the page: neutral green #98971a 20% over
- * #1d2021 in dark mode, faded green #79740e 15% over #f9f5d7 in light mode.
+ * Accent roles (clay):
+ * --sl-color-accent is the clay #d97757 of strokes, borders, focus rings and
+ * diagram highlights, in both modes. --sl-color-accent-high is the link and
+ * site-title colour (Starlight's --sl-color-text-accent) and the fill of the
+ * current sidebar item: clay is 3.0:1 on ivory, so light mode darkens it to
+ * #a14d30 (5.5:1), and dark mode lightens it to #e5896b (6.7:1).
+ * --sl-color-accent-low is the tinted surface of callouts, notes, completed
+ * weeks and lit diagram shapes, and in dark mode the text of the current
+ * sidebar item: clay 14% over ivory in light mode, 18% over the page in dark.
  *
  * Starlight's green, orange, purple and red scales (asides, badges, the Operate
- * and AI callouts) take the Gruvbox colours of the same names, with each -low
- * surface blended over the page the same way.
+ * and AI callouts) take an olive, an amber, a muted violet and a brick red from
+ * the same warm family. Each -low surface is the base colour blended over the
+ * page the same way, and each -high text colour passes 4.5:1 on it.
  */
 
 /*
@@ -42,107 +43,107 @@
 @media not print {
   :root,
   ::backdrop {
-    --sl-color-accent-low: #363820; /* neutral green #98971a 20% over bg0_h */
-    --sl-color-accent: #b8bb26; /* bright green */
-    --sl-color-accent-high: #b8bb26; /* bright green */
+    --sl-color-accent-low: #3e2c24; /* clay 18% over the page */
+    --sl-color-accent: #d97757; /* clay */
+    --sl-color-accent-high: #e5896b; /* light clay */
 
-    --sl-color-white: #fbf1c7; /* fg0: headings */
-    --sl-color-gray-1: #fbf1c7; /* fg0 */
-    --sl-color-gray-2: #ebdbb2; /* fg1: body text */
-    --sl-color-gray-3: #bdae93; /* fg3: secondary text */
-    --sl-color-gray-4: #7c6f64; /* bg4: borders, never text (3.4:1 on the page) */
-    --sl-color-gray-5: #3c3836; /* bg1 */
-    --sl-color-gray-6: #282828; /* bg0: sidebar, nav, code frames */
-    --sl-color-black: #1d2021; /* bg0_h: the page */
+    --sl-color-white: #faf9f5; /* headings */
+    --sl-color-gray-1: #faf9f5;
+    --sl-color-gray-2: #e6e3da; /* body text */
+    --sl-color-gray-3: #b5b3aa; /* secondary text */
+    --sl-color-gray-4: #5a5953; /* borders, never text */
+    --sl-color-gray-5: #33322e; /* raised surfaces */
+    --sl-color-gray-6: #262521; /* sidebar, nav, code frames */
+    --sl-color-black: #1c1b19; /* the page */
 
-    --sl-color-green-low: #363820; /* #98971a 20% over bg0_h */
-    --sl-color-green: #98971a;
-    --sl-color-green-high: #b8bb26;
-    --sl-color-orange-low: #39291e; /* #d65d0e 15% over bg0_h */
-    --sl-color-orange: #d65d0e;
-    --sl-color-orange-high: #fe8019;
-    --sl-color-purple-low: #332a30; /* #b16286 15% over bg0_h */
-    --sl-color-purple: #b16286;
-    --sl-color-purple-high: #d3869b;
-    --sl-color-red-low: #2b2021; /* #cc241d 8% over bg0_h: #fb4934 is 4.8:1 on the bare page */
-    --sl-color-red: #cc241d;
-    --sl-color-red-high: #fb4934;
+    --sl-color-green-low: #2d2f25; /* olive 18% over the page */
+    --sl-color-green: #788c5d;
+    --sl-color-green-high: #9fb381;
+    --sl-color-orange-low: #3b2e1f; /* amber 18% over the page */
+    --sl-color-orange: #c7853a;
+    --sl-color-orange-high: #e0a965;
+    --sl-color-purple-low: #312a34; /* violet 18% over the page */
+    --sl-color-purple: #8e6fae;
+    --sl-color-purple-high: #b9a0d4;
+    --sl-color-red-low: #3a231f; /* brick 18% over the page */
+    --sl-color-red: #c4473a;
+    --sl-color-red-high: #ec7f73;
 
-    --sl-color-backdrop-overlay: rgb(29 32 33 / 0.7);
+    --sl-color-backdrop-overlay: rgb(28 27 25 / 0.7);
   }
 }
 
 /* Light mode. */
 :root[data-theme='light'],
 [data-theme='light'] ::backdrop {
-  --sl-color-accent-low: #e6e2b9; /* faded green #79740e 15% over bg0_h */
-  --sl-color-accent: #79740e; /* faded green */
-  --sl-color-accent-high: #615d16; /* #79740e 70% + fg0 #282828 30% */
+  --sl-color-accent-low: #f5e7df; /* clay 14% over ivory */
+  --sl-color-accent: #d97757; /* clay */
+  --sl-color-accent-high: #a14d30; /* dark clay */
 
-  --sl-color-white: #282828; /* fg0: headings */
-  --sl-color-gray-1: #282828; /* fg0 */
-  --sl-color-gray-2: #3c3836; /* fg1: body text */
-  --sl-color-gray-3: #665c54; /* fg3: secondary text */
-  --sl-color-gray-4: #928374; /* gray: borders, never text (3.3:1 on the page) */
-  --sl-color-gray-5: #d5c4a1; /* bg2 */
-  --sl-color-gray-6: #ebdbb2; /* bg1 */
-  --sl-color-gray-7: #fbf1c7; /* bg0: nav, code frames */
-  --sl-color-black: #f9f5d7; /* bg0_h: the page */
+  --sl-color-white: #141413; /* slate: headings */
+  --sl-color-gray-1: #141413;
+  --sl-color-gray-2: #3d3d3a; /* body text */
+  --sl-color-gray-3: #5e5d59; /* secondary text */
+  --sl-color-gray-4: #d1cfc5; /* borders, never text */
+  --sl-color-gray-5: #e6e3da; /* hairlines */
+  --sl-color-gray-6: #f0eee6; /* inline code, tab bars */
+  --sl-color-gray-7: #ffffff; /* paper: nav, code frames */
+  --sl-color-black: #faf9f5; /* ivory: the page */
 
-  --sl-color-green-low: #e6e2b9;
-  --sl-color-green: #79740e;
-  --sl-color-green-high: #615d16;
-  --sl-color-orange-low: #f4deb9; /* #d65d0e 15% over bg0_h */
-  --sl-color-orange: #d65d0e;
-  --sl-color-orange-high: #af3a03;
-  --sl-color-purple-low: #eedfcb; /* #b16286 15% over bg0_h */
-  --sl-color-purple: #b16286;
-  --sl-color-purple-high: #8f3f71;
-  --sl-color-red-low: #f2d6bb; /* #cc241d 15% over bg0_h */
-  --sl-color-red: #cc241d;
-  --sl-color-red-high: #9d0006;
+  --sl-color-green-low: #e8eae0; /* olive 14% over ivory */
+  --sl-color-green: #788c5d;
+  --sl-color-green-high: #56683f;
+  --sl-color-orange-low: #f3e9db; /* amber 14% over ivory */
+  --sl-color-orange: #c7853a;
+  --sl-color-orange-high: #895a1f;
+  --sl-color-purple-low: #ebe6eb; /* violet 14% over ivory */
+  --sl-color-purple: #8e6fae;
+  --sl-color-purple-high: #6c4f8a;
+  --sl-color-red-low: #f2e0db; /* brick 14% over ivory */
+  --sl-color-red: #c4473a;
+  --sl-color-red-high: #a3352a;
 
   /* Starlight's light mode draws links in --sl-color-accent, which here is a stroke colour. */
   --sl-color-text-accent: var(--sl-color-accent-high);
   --sl-color-bg-accent: var(--sl-color-accent-high);
 
-  --sl-color-backdrop-overlay: rgb(60 56 54 / 0.6);
+  --sl-color-backdrop-overlay: rgb(20 20 19 / 0.5);
 }
 
 /*
- * Printing: Gruvbox light text and accents on white paper, whichever mode the
+ * Printing: light-mode text and accents on white paper, whichever mode the
  * reader picked on screen. :root[data-theme] matches the light-mode rule's
  * specificity and comes later, so printing from light mode is white too.
  */
 @media print {
   :root,
   :root[data-theme] {
-    --sl-color-accent-low: #e6e2b9;
-    --sl-color-accent: #79740e;
-    --sl-color-accent-high: #615d16;
+    --sl-color-accent-low: #f5e7df;
+    --sl-color-accent: #d97757;
+    --sl-color-accent-high: #a14d30;
 
-    --sl-color-white: #282828;
-    --sl-color-gray-1: #282828;
-    --sl-color-gray-2: #3c3836;
-    --sl-color-gray-3: #665c54;
-    --sl-color-gray-4: #928374;
-    --sl-color-gray-5: #d5c4a1;
-    --sl-color-gray-6: #ebdbb2;
-    --sl-color-gray-7: #fbf1c7;
+    --sl-color-white: #141413;
+    --sl-color-gray-1: #141413;
+    --sl-color-gray-2: #3d3d3a;
+    --sl-color-gray-3: #5e5d59;
+    --sl-color-gray-4: #d1cfc5;
+    --sl-color-gray-5: #e6e3da;
+    --sl-color-gray-6: #f0eee6;
+    --sl-color-gray-7: #ffffff;
     --sl-color-black: #ffffff;
 
-    --sl-color-green-low: #e6e2b9;
-    --sl-color-green: #79740e;
-    --sl-color-green-high: #615d16;
-    --sl-color-orange-low: #f4deb9;
-    --sl-color-orange: #d65d0e;
-    --sl-color-orange-high: #af3a03;
-    --sl-color-purple-low: #eedfcb;
-    --sl-color-purple: #b16286;
-    --sl-color-purple-high: #8f3f71;
-    --sl-color-red-low: #f2d6bb;
-    --sl-color-red: #cc241d;
-    --sl-color-red-high: #9d0006;
+    --sl-color-green-low: #e8eae0;
+    --sl-color-green: #788c5d;
+    --sl-color-green-high: #56683f;
+    --sl-color-orange-low: #f3e9db;
+    --sl-color-orange: #c7853a;
+    --sl-color-orange-high: #895a1f;
+    --sl-color-purple-low: #ebe6eb;
+    --sl-color-purple: #8e6fae;
+    --sl-color-purple-high: #6c4f8a;
+    --sl-color-red-low: #f2e0db;
+    --sl-color-red: #c4473a;
+    --sl-color-red-high: #a3352a;
 
     --sl-color-text-accent: var(--sl-color-accent-high);
     --sl-color-bg-accent: var(--sl-color-accent-high);
@@ -151,8 +152,8 @@
 
 /*
  * Printed code. Expressive Code picks token colours by data-theme, so printing
- * from dark mode would keep gruvbox-dark-hard's pale tokens (and its #ebdbb2
- * default text) on the light print surfaces. Print uses the light theme's tokens
+ * from dark mode would keep vitesse-dark's pale tokens (and its pale default
+ * text) on the light print surfaces. Print uses the light theme's tokens
  * (--1, the second theme in astro.config.mjs) and frames from either mode.
  * These rules are unlayered, so they beat Expressive Code's layered theme rules.
  */

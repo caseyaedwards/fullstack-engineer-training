@@ -11,30 +11,31 @@ const FIXTURE = 'dev/diagrams/';
 const CODE_TOKEN = '.expressive-code .ec-line span:not(:has(*))';
 const AA = 4.5;
 
-// The Gruvbox accents (src/styles/theme.css). Links and strokes are Gruvbox green;
-// the -low tints are a Gruvbox green blended over the page; light-mode text green
-// is faded green darkened with fg0 because #79740e alone is just under AA.
-const GRUVBOX = {
+// The clay accents (src/styles/theme.css). Strokes are clay #d97757 in both modes;
+// link text is clay darkened (light) or lightened (dark) to pass AA; the -low
+// tints are clay blended over the page.
+const CLAY = {
   dark: {
-    '--sl-color-accent-low': '#363820',
-    '--sl-color-accent': '#b8bb26',
-    '--sl-color-accent-high': '#b8bb26',
-    '--sl-color-blue-low': '#363820',
-    '--sl-color-blue': '#b8bb26',
-    '--sl-color-blue-high': '#b8bb26',
+    '--sl-color-accent-low': '#3e2c24',
+    '--sl-color-accent': '#d97757',
+    '--sl-color-accent-high': '#e5896b',
+    '--sl-color-blue-low': '#3e2c24',
+    '--sl-color-blue': '#d97757',
+    '--sl-color-blue-high': '#e5896b',
   },
   light: {
-    '--sl-color-accent-low': '#e6e2b9',
-    '--sl-color-accent': '#79740e',
-    '--sl-color-accent-high': '#615d16',
-    '--sl-color-blue-low': '#e6e2b9',
-    '--sl-color-blue': '#79740e',
-    '--sl-color-blue-high': '#615d16',
+    '--sl-color-accent-low': '#f5e7df',
+    '--sl-color-accent': '#d97757',
+    '--sl-color-accent-high': '#a14d30',
+    '--sl-color-blue-low': '#f5e7df',
+    '--sl-color-blue': '#d97757',
+    '--sl-color-blue-high': '#a14d30',
   },
 } as const;
-// Gruvbox greens sit at hue 55-65 degrees (#79740e 57, #98971a 60, #b8bb26 61);
-// the band keeps them and excludes Gruvbox yellow (42), aqua (104) and any blue.
-const GREEN_HUE: [number, number] = [50, 75];
+// The clays sit at hue 14-22 degrees (#d97757 15, #a14d30 15, #e5896b 15,
+// #3e2c24 18, #f5e7df 22); the band keeps them and excludes the palette's brick
+// red (6), amber (32) and any blue.
+const CLAY_HUE: [number, number] = [10, 25];
 
 type RGBA = [number, number, number, number];
 
@@ -179,15 +180,15 @@ function expectAtLeast(ms: Measured[], min: number) {
 
 for (const theme of ['dark', 'light'] as const) {
   test.describe(`${theme} theme`, () => {
-    test(`accent is Gruvbox green`, async ({ page }) => {
+    test(`accent is clay`, async ({ page }) => {
       await load(page, HOME, theme);
-      // The blue tokens are remapped to the accent, so asides, badges and cards are green too.
-      for (const [name, want] of Object.entries(GRUVBOX[theme])) {
+      // The blue tokens are remapped to the accent, so asides, badges and cards are clay too.
+      for (const [name, want] of Object.entries(CLAY[theme])) {
         const c = await variable(page, name);
         expect.soft(toHex(c), name).toBe(want);
         const h = hue(c);
-        expect.soft(h, `${name} hue ${h.toFixed(0)}`).toBeGreaterThanOrEqual(GREEN_HUE[0]);
-        expect.soft(h, `${name} hue ${h.toFixed(0)}`).toBeLessThanOrEqual(GREEN_HUE[1]);
+        expect.soft(h, `${name} hue ${h.toFixed(0)}`).toBeGreaterThanOrEqual(CLAY_HUE[0]);
+        expect.soft(h, `${name} hue ${h.toFixed(0)}`).toBeLessThanOrEqual(CLAY_HUE[1]);
       }
     });
 
@@ -273,9 +274,9 @@ for (const theme of ['dark', 'light'] as const) {
       const r = ratio(c, white);
       expect.soft(r, `${name}: ${r.toFixed(2)}:1 (${fg})`).toBeGreaterThanOrEqual(AA);
     }
-    // Printed accents are the light-mode Gruvbox greens, on white paper.
+    // Printed accents are the light-mode clays, on white paper.
     for (const name of ['--sl-color-accent', '--sl-color-accent-high'] as const) {
-      expect.soft(toHex(await variable(page, name)), `print ${name}`).toBe(GRUVBOX.light[name]);
+      expect.soft(toHex(await variable(page, name)), `print ${name}`).toBe(CLAY.light[name]);
     }
     expect.soft(toHex(await variable(page, '--sl-color-bg')), 'print page background').toBe('#ffffff');
 
@@ -293,11 +294,11 @@ for (const theme of ['dark', 'light'] as const) {
   });
 }
 
-// Casey asked for a dark background that is not pure black: Gruvbox bg0_h.
-test(`dark mode page background is Gruvbox bg0_h`, async ({ page }) => {
+// Casey asked for a dark background that is not pure black: a warm near-black.
+test(`dark mode page background is warm near-black #1c1b19`, async ({ page }) => {
   await load(page, HOME, 'dark');
   const body = await page.locator('body').evaluate((el) => getComputedStyle(el).backgroundColor);
   const c = await page.evaluate((css) => (window as unknown as { __contrast: { parse(s: string): RGBA } }).__contrast.parse(css), body);
-  expect(toHex(c)).toBe('#1d2021');
-  expect(toHex(await variable(page, '--sl-color-bg'))).toBe('#1d2021');
+  expect(toHex(c)).toBe('#1c1b19');
+  expect(toHex(await variable(page, '--sl-color-bg'))).toBe('#1c1b19');
 });
