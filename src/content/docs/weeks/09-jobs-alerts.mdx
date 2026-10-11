@@ -165,21 +165,7 @@ A **webhook** is a URL that accepts an HTTP `POST` and does something with it, s
 
 ## Build
 
-By the end of this section, `your-monitor` has two new programs, `cmd/scheduler` and `cmd/alerter`, a rewritten `cmd/worker`, and two new packages. The code comes from the site examples in `examples/go/week09/your-monitor`, which mirror your repository. Their import paths start with `fsp/examples/week09/your-monitor`, and yours start with `github.com/<user>/your-monitor`:
-
-```txt
-your-monitor/
-├── migrations/002_jobs_alerts.sql   new: check_jobs, incidents, last_enqueued_at
-├── internal/
-│   ├── queue/        new: Enqueue, Work, Depth
-│   ├── alert/        new: Decide, Notifier, Webhook, Log, Alerter, Store
-│   ├── db/dbtest/    adds pool.go: a migrated pool per test
-│   └── api/          adds GET /api/incidents
-└── cmd/
-    ├── scheduler/    new
-    ├── worker/       claims jobs instead of looping over the monitors
-    └── alerter/      new
-```
+By the end of this section, `your-monitor` has two new programs, `cmd/scheduler` and `cmd/alerter`, a rewritten `cmd/worker`, and two new packages: `internal/queue` with `Enqueue`, `Work` and `Depth`, and `internal/alert` with the rule, the notifiers and the alerter. `migrations/002_jobs_alerts.sql` adds the tables, `internal/db/dbtest/pool.go` gives each test a migrated pool, and `internal/api` adds `GET /api/incidents`. The code comes from the site examples in `examples/go/week09/your-monitor`, which mirror your repository. Their import paths start with `fsp/examples/week09/your-monitor`, and yours start with `github.com/<user>/your-monitor`.
 
 ### Step 1: Add the Migration
 
@@ -213,9 +199,9 @@ Add the worker side to the same file:
 
 <CodeFrom file="go/week09/your-monitor/internal/queue/queue.go" region="claim" lang="go" title="internal/queue/queue.go" />
 
-`ORDER BY j.run_at, j.id LIMIT 1` picks the oldest due job. `FOR KEY SHARE OF m` keeps the monitor from being deleted until the commit. Without it, a `DELETE` of a monitor in the middle of its check deadlocks with the worker: the `DELETE` waits for the job row, and the result `INSERT` waits for the monitor through its foreign key. `TestDeleteDuringCheck` reproduces that deadlock. `defer tx.Rollback(ctx)` is the safety net: on every path that returns before `Commit`, the transaction rolls back and the job goes back to the queue. After a successful `Commit`, the deferred `Rollback` does nothing.
+`ORDER BY j.run_at, j.id LIMIT 1` picks the oldest due job. `FOR KEY SHARE OF m` keeps the monitor from being deleted until the commit. Without it, a `DELETE` of a monitor in the middle of its check deadlocks with the worker: the `DELETE` waits for the job row, and the result `INSERT` waits for the monitor through its foreign key. `TestDeleteDuringCheck` reproduces that deadlock. One side effect: when the claim skips a job whose monitor a `DELETE` holds, the job row stays locked until the claiming transaction ends, and the `DELETE` waits up to one `-timeout` longer. `defer tx.Rollback(ctx)` is the safety net: on every path that returns before `Commit`, the transaction rolls back and the job goes back to the queue. After a successful `Commit`, the deferred `Rollback` does nothing.
 
-`Work` checks `ctx.Err()` before it counts a failure. On SIGTERM, the signal context from Week 3 cancels the check in flight. That check proves nothing about the site: `Work` rolls back with a context that is not cancelled, which frees the job for the next worker at once. The transaction body:
+`Work` checks `ctx.Err()` before it counts a failure. On SIGTERM, the signal context from Week 3 cancels the check in flight. That check proves nothing about the site: `Work` rolls back with a context that is not cancelled, which frees the job for the next worker at once. `TestCancelledWorkFreesTheJobAtOnce` fails when the rollback uses the cancelled context. The transaction body:
 
 <CodeFrom file="go/week09/your-monitor/internal/queue/queue.go" region="store" lang="go" title="internal/queue/queue.go" />
 
@@ -248,24 +234,34 @@ go test -race ./internal/queue
 
 A concurrency test that never runs two things at once proves nothing. `maxPar` records the most checks in flight at one moment, and the test fails unless the workers overlap. The 2 ms sleep makes each fake check last long enough for the others to start.
 
-Break the claim on purpose, the way you broke the lock in Week 4, and watch the tests catch it. Delete the two locking lines at the end of `claimSQL`, and run the tests:
+Break the claim on purpose, the way you broke the lock in Week 4, and watch the tests catch it. Delete the two locking lines at the end of `claimSQL`, and run the tests. The output starts with one line for each job that ran more than once, 198 in this run. The first two, and the rest of the output:
 
 ```txt
---- FAIL: TestEachJobRunsOnce (0.92s)
-    queue_test.go:198: job 198 ran 4 times, want 1
-    queue_test.go:198: job 42 ran 4 times, want 1
+--- FAIL: TestEachJobRunsOnce (1.08s)
+    queue_test.go:198: job 29 ran 4 times, want 1
+    queue_test.go:198: job 65 ran 4 times, want 1
+    queue_test.go:205: check_results has 737 rows, want 200
+--- FAIL: TestLockedJobIsSkipped (0.10s)
+    queue_test.go:244: the second worker ran the job the first one holds
+    queue_test.go:248: second Work = true, <nil>; want false, nil: it must skip the locked job
+--- FAIL: TestDeleteDuringCheck (0.07s)
+    queue_test.go:360: find the backend that holds the job: no rows in result set (does the claim lock its row?)
 ```
 
-Without a lock, all four workers read the same oldest job and run it. Put back only `FOR UPDATE OF j`, without `SKIP LOCKED`:
+Without a lock, all four workers read the same oldest job and run it, and `TestDeleteDuringCheck` finds no backend that holds the job. Put back only `FOR UPDATE OF j`, without `SKIP LOCKED`:
 
 ```txt
---- FAIL: TestEachJobRunsOnce (0.87s)
+--- FAIL: TestEachJobRunsOnce (1.05s)
     queue_test.go:202: at most 1 check ran at a time, want the workers to overlap
---- FAIL: TestLockedJobIsSkipped (2.05s)
+--- FAIL: TestLockedJobIsSkipped (2.07s)
     queue_test.go:248: second Work = false, claim: timeout: context deadline exceeded; want false, nil: it must skip the locked job
+--- FAIL: TestDeleteDuringCheck (1.09s)
+    queue_test.go:374: DELETE: ERROR: deadlock detected (SQLSTATE 40P01)
+    queue_test.go:378: monitors has 1 rows after the DELETE, want 0
+    queue_test.go:378: check_results has 1 rows after the DELETE, want 0
 ```
 
-Every job ran once, but the workers took turns, and the second worker in `TestLockedJobIsSkipped` waited for the lock until its 2-second deadline. Restore the line. `TestCancelledWorkLeavesTheJob` cancels a check halfway and finds the job untouched, and `TestFailingJobIsRetriedThenDropped` panics in every check and watches the job get dropped after three attempts.
+Every job ran once, but the workers took turns, and the second worker in `TestLockedJobIsSkipped` waited for the lock until its 2-second deadline. Without `FOR KEY SHARE OF m`, the `DELETE` and the worker deadlock, as Step 3 describes, and Postgres cancels the `DELETE`. Restore the line. `TestCancelledWorkLeavesTheJob` cancels a check halfway and finds the job untouched, and `TestFailingJobIsRetriedThenDropped` panics in every check and watches the job get dropped after three attempts.
 
 ### Step 6: Rewrite the Worker
 

@@ -291,6 +291,34 @@ func TestCancelledWorkLeavesTheJob(t *testing.T) {
 
 // endregion: crash-test
 
+// TestCancelledWorkFreesTheJobAtOnce checks how Work rolls back on
+// shutdown. A rollback with the cancelled context fails, and pgx then
+// closes the connection: Postgres frees the job only once it notices, a
+// moment later. Work rolls back with a context of its own, which frees
+// the job at once and keeps the connection in the pool.
+func TestCancelledWorkFreesTheJobAtOnce(t *testing.T) {
+	pool := newDB(t)
+	addMonitors(t, pool, 1)
+	if _, err := Enqueue(context.Background(), pool); err != nil {
+		t.Fatal(err)
+	}
+	dbtest.Count(t, pool, `SELECT 1`) // one idle connection waits in the pool
+	opened := pool.Stat().NewConnsCount()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	Work(ctx, pool, func(_ context.Context, job Job) monitor.Result {
+		cancel()
+		return up(job)
+	})
+	// The next query reuses the connection of Work, unless Work closed it.
+	dbtest.Count(t, pool, `SELECT 1`)
+	if got := pool.Stat().NewConnsCount() - opened; got != 0 {
+		t.Errorf("the pool opened %d more connection(s) after the cancelled Work, want 0: the rollback closed its connection", got)
+	}
+	// NOWAIT fails at once if any transaction still holds the job.
+	dbtest.Exec(t, pool, `SELECT id FROM check_jobs FOR UPDATE NOWAIT`)
+}
+
 // region: delete-test
 
 // TestDeleteDuringCheck deletes a monitor while a worker checks it. The
@@ -304,28 +332,40 @@ func TestDeleteDuringCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	claimed, release := make(chan uint32), make(chan struct{})
-	worked := make(chan error)
+	// Buffered channels and a deferred release: when the test fails early,
+	// the worker still finishes, and the pool closes instead of hanging.
+	type backend struct {
+		pid uint32
+		err error
+	}
+	claimed, worked, deleted := make(chan backend, 1), make(chan error, 1), make(chan error, 1)
+	release := make(chan struct{})
+	var once sync.Once
+	releaseCheck := func() { once.Do(func() { close(release) }) }
+	defer releaseCheck()
+
 	go func() {
 		_, err := Work(ctx, pool, func(ctx context.Context, job Job) monitor.Result {
-			var pid uint32 // the backend of this worker's transaction
-			pool.QueryRow(ctx, `SELECT pid FROM pg_locks WHERE locktype = 'relation'
-				AND relation = 'check_jobs'::regclass AND mode = 'RowShareLock' LIMIT 1`).Scan(&pid)
-			claimed <- pid
+			var b backend // the backend of this worker's transaction
+			b.err = pool.QueryRow(ctx, `SELECT pid FROM pg_locks WHERE locktype = 'relation'
+				AND relation = 'check_jobs'::regclass AND mode = 'RowShareLock' LIMIT 1`).Scan(&b.pid)
+			claimed <- b
 			<-release
 			return up(job)
 		})
 		worked <- err
 	}()
-	workerPID := <-claimed
+	b := <-claimed
+	if b.err != nil {
+		t.Fatalf("find the backend that holds the job: %v (does the claim lock its row?)", b.err)
+	}
 
-	deleted := make(chan error)
 	go func() {
 		_, err := pool.Exec(ctx, `DELETE FROM monitors`)
 		deleted <- err
 	}()
-	waitBlocked(t, pool, workerPID, 1) // the DELETE waits for the check
-	close(release)
+	waitBlocked(t, pool, b.pid, 1) // the DELETE waits for the check
+	releaseCheck()
 
 	if err := <-worked; err != nil {
 		t.Errorf("Work: %v", err)
