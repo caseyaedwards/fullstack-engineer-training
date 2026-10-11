@@ -365,7 +365,7 @@ docker run --rm -i --env-file ~/.config/your-monitor/offsite-read.env -e AGE_IDE
   your-monitor-backup restore-drill.sh < ~/.config/your-monitor/backup.key
 ```
 
-`LIVE_MONITORS` passes the monitor count of the live database. `AGE_IDENTITY=-` makes `age` read the key from standard input, which `-i` connects to the file: the key never lands on a disk inside the container.
+`LIVE_MONITORS` passes the monitor count of the live database, and the drill requires it: unset, empty or not a number, it fails at once with `LIVE_MONITORS must be the monitor count of the live database`. An empty `$live` is what a failed `kubectl exec` leaves behind, and without the check a backup of the wrong database passes. `AGE_IDENTITY=-` makes `age` read the key from standard input, which `-i` connects to the file: the key never lands on a disk inside the container.
 
 <CodeFrom file="go/week17/your-monitor/deploy/backup/restore-drill.sh" region="drill-script" lang="sh" title="deploy/backup/restore-drill.sh" />
 

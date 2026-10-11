@@ -173,7 +173,7 @@ func TestBackupUploadsOnlyCiphertext(t *testing.T) {
 
 // TestRestoreDrill takes a real backup, then runs the drill on copies of
 // the remote: as it is, with a copy dated 2 minutes ahead, which the clock
-// skew allows, and broken seven ways. Each way fails with its own
+// skew allows, and broken nine ways. Each way fails with its own
 // message, which is what the reader sees in the drill log. The live
 // database holds two monitors, which LIVE_MONITORS=2 tells the drill.
 func TestRestoreDrill(t *testing.T) {
@@ -219,6 +219,8 @@ func TestRestoreDrill(t *testing.T) {
 		{"the counts differ", nil, func(r string) {
 			os.WriteFile(filepath.Join(r, stem+".counts"), []byte("2 4 0 3\n"), 0o644)
 		}, "FAILED: the restored counts differ"},
+		{"LIVE_MONITORS is empty", []string{"LIVE_MONITORS="}, func(string) {}, "FAILED: LIVE_MONITORS must be the monitor count"},
+		{"LIVE_MONITORS is not a number", []string{"LIVE_MONITORS=two"}, func(string) {}, "FAILED: LIVE_MONITORS must be the monitor count"},
 		{"a backup of the empty database", nil, func(r string) {
 			os.RemoveAll(r)
 			os.CopyFS(r, os.DirFS(emptied))

@@ -130,7 +130,7 @@ Set-Cookie: session=4JSM4QUGWTA4AWIZ2BSX5JLPON; Path=/; Max-Age=86400; HttpOnly;
 
 A request from another origin also meets CORS, short for cross-origin resource sharing: the headers a server sends to tell the browser which other origins can read its answers. A **simple request**, such as a form `POST` or a `fetch` with a `text/plain` body, still reaches the api and runs the handler: CORS only decides whether the other origin reads the answer. A request with a JSON body or the `DELETE` method is not simple. The browser asks first with an `OPTIONS` request, the **preflight**, and sends the real request only when the answer carries the right CORS headers. Two rules of the api turn this into a defense, and every later week keeps them: **writes take JSON only, and the api sends no CORS headers.** The browser hides each answer from other origins, and blocks each JSON or `DELETE` request at the preflight.
 
-Rules that hold by habit break by accident, and `SameSite` admits a sibling subdomain. A third check reads what the browser says about the request itself. Every current browser sends `Sec-Fetch-Site` with each request: `same-origin`, `same-site`, `cross-site`, or `none` for an address the user typed. Step 7 adds `sameOrigin`, which refuses every write that does not come from the api's own origin.
+Rules that hold by habit break by accident, and `SameSite` admits a sibling subdomain. A third check reads what the browser says about the request itself. Every current browser sends `Sec-Fetch-Site` with each request to an HTTPS address or to `localhost`: `same-origin`, `same-site`, `cross-site`, or `none` for an address the user typed. A request to plain HTTP on any other host carries no `Sec-Fetch-Site`, and `sameOrigin` then compares the `Origin` header with the host of the request. Step 7 adds `sameOrigin`, which refuses every write that does not come from the api's own origin.
 
 <Diagram
   id="csrf"
@@ -281,9 +281,9 @@ In `internal/api/api.go`, add `auth Auth` to `handler`, make it the fourth param
 
 <CodeFrom file="go/week11/your-monitor/internal/api/csrf.go" region="csrf" lang="go" title="internal/api/csrf.go" />
 
-Pages from the Vite dev server and from nginx share the origin of the api they proxy, which means they pass. Go 1.25 added the same check to the standard library: `http.NewCrossOriginProtection()` returns a `*http.CrossOriginProtection`, and its `Handler` method wraps a handler. Your `go.mod` names Go 1.25 or newer after Step 1, and you can use it in place of `sameOrigin`. The site examples write their own, because they build with Go 1.24. Either way, `TestCrossOriginWritesAreRefused` in `csrf_test.go` sends each write with the headers a browser adds, and expects `403` from every other origin.
+Writes from a page of the Vite dev server pass, because the page shares the origin of the api it proxies. Writes from the nginx image pass on `localhost` or over HTTPS: the browser sends `Sec-Fetch-Site: same-origin`, and nginx forwards the header. On plain HTTP at another host the header is missing, `sameOrigin` compares `Origin` with `Host`, and nginx sends the api the `Host` of its `proxy_pass` target, `api:8080`. The write gets `403` until you add `proxy_set_header Host $host;`. Go 1.25 added the same check to the standard library: `http.NewCrossOriginProtection()` returns a `*http.CrossOriginProtection`, and its `Handler` method wraps a handler. Your `go.mod` names Go 1.25 or newer after Step 1, and you can use it in place of `sameOrigin`. The site examples write their own, because they build with Go 1.24. Either way, `TestCrossOriginWritesAreRefused` in `csrf_test.go` sends each write with the headers a browser adds, and expects `403` from every other origin.
 
-Your Week 7 tests now get `401` on every write. Give their `serve` and `mustDo` helpers the line `req.AddCookie(&http.Cookie{Name: "session", Value: goodToken})`, and pass `NewHandler` a fake `Auth` that accepts `goodToken`. `TestAPIOnPostgres` in `cmd/api` needs a real session: create a user with the service, call `Login`, and add the token as the `session` cookie of its `POST` and `DELETE`. Then add the test that matters most this week. It sends each request with no cookie and with a forged one:
+Your Week 7 tests now get `401` on every write. Give their `serve` and `mustDo` helpers the line `req.AddCookie(&http.Cookie{Name: "session", Value: goodToken})`, and pass `NewHandler` a fake `Auth` that accepts `goodToken`. Every call of `NewHandler` in a test gets the fourth argument: `fakeAuth{}` in `newTestHandler` and the other calls in `api_test.go`, `results_test.go`, `incidents_test.go` and `log_test.go`, and `fakeAuth{loggedOut: &loggedOut}` in `csrf_test.go` and `auth_test.go`. `memHandler` in `cmd/api/main_test.go` passes `nil`: its tests request only `/healthz`, which never reads the session. `TestAPIOnPostgres` in `cmd/api` needs a real session: create a user with the service, call `Login`, and add the token as the `session` cookie of its `POST` and `DELETE`. Then add the test that matters most this week. It sends each request with no cookie and with a forged one:
 
 <CodeFrom file="go/week11/your-monitor/internal/api/auth_test.go" region="require-test" lang="go" title="internal/api/auth_test.go" />
 
@@ -346,11 +346,15 @@ await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'applicat
 
 In Chrome, open **Application**, then **Cookies**, then `http://localhost:5173`: the `session` row has ticks under **HttpOnly** and **Secure**, and `Lax` under **SameSite**. In Firefox, the same table sits under **Storage**. Type `document.cookie` in the console: the answer is `''`, because `HttpOnly` hides the cookie from scripts. `await (await fetch('/api/me')).json()` still answers with your user, because the browser sends the cookie with the request.
 
-For the page itself, create `web/src/auth.ts` with the three calls that a login form needs. They follow the pattern of `api.ts` from Week 10:
+For the page itself, create `web/src/auth.ts`. It starts with the `User` type, the `AuthError` class and the `fail` helper that builds one:
+
+<CodeFrom file="web/src/week11/auth.ts" region="types" lang="ts" title="web/src/auth.ts" />
+
+Then come the three calls that a login form needs. They follow the pattern of `api.ts` from Week 10:
 
 <CodeFrom file="web/src/week11/auth.ts" region="calls" lang="ts" title="web/src/auth.ts" />
 
-The file also defines `User` and `AuthError`. Create `web/src/auth.test.ts` next to it. It checks the JSON body, the `401` that means logged out, and `Retry-After` on a `429`:
+Create `web/src/auth.test.ts` next to it. It checks the JSON body, the `401` that means logged out, and `Retry-After` on a `429`:
 
 <CodeFrom file="web/src/week11/auth.test.ts" region="tests" lang="ts" title="web/src/auth.test.ts" />
 

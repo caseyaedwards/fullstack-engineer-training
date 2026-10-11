@@ -85,12 +85,9 @@ func main() {
 		}
 	}()
 	if *debugAddr != "" {
-		// Prometheus scrapes this address from another container: it
-		// serves /metrics and nothing else.
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.Handler())
+		// Prometheus scrapes this address from another container.
 		go func() {
-			slog.Error("debug server stopped", "err", obs.NewServer(*debugAddr, mux).ListenAndServe())
+			slog.Error("debug server stopped", "err", obs.NewServer(*debugAddr, metricsMux()).ListenAndServe())
 		}()
 	}
 	if *pprofAddr != "" {
@@ -122,6 +119,19 @@ func main() {
 }
 
 // endregion: main
+
+// region: metricsmux
+
+// metricsMux returns the handler of -debug-addr: /metrics and nothing else.
+// It is a mux of its own, never http.DefaultServeMux, which a blank import
+// of net/http/pprof fills with the profiling pages.
+func metricsMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	return mux
+}
+
+// endregion: metricsmux
 
 // region: connect
 
