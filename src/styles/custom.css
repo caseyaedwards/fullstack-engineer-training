@@ -52,8 +52,8 @@
   margin-bottom: 0;
 }
 .callout-observe {
-  --callout-color: var(--sl-color-blue);
-  --callout-bg: var(--sl-color-blue-low);
+  --callout-color: var(--sl-color-accent);
+  --callout-bg: var(--sl-color-accent-low);
 }
 .callout-operate {
   --callout-color: var(--sl-color-orange);
@@ -185,15 +185,16 @@
 }
 .tl-done {
   display: none;
-  color: var(--sl-color-green);
+  color: var(--sl-color-text-accent);
   font-weight: 700;
 }
 .tl-done::before {
   content: '\2713';
 }
+/* Complete: an accent border and tinted fill, plus the check mark, so hover (border only) reads differently. */
 .week-timeline [data-complete] > a {
-  border-color: var(--sl-color-green);
-  background-color: var(--sl-color-green-low);
+  border-color: var(--sl-color-accent);
+  background-color: var(--sl-color-accent-low);
 }
 .week-timeline [data-complete] .tl-done {
   display: inline;

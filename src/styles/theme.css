@@ -1,0 +1,87 @@
+/*
+ * Site palette: greens on nori.
+ *
+ * Starlight's documented theming approach: override its colour variables under
+ * :root (dark mode) and :root[data-theme='light']. Every component, the D2
+ * diagrams (src/styles/diagrams.css) and the Expressive Code frames read these
+ * variables, so this is the only file with literal colours.
+ *
+ * Dark mode sits on nori, the green-black of dried seaweed: the page is #1f2a1c
+ * and raised surfaces (sidebar, nav, code) are #2b3a26. The grays carry a slight
+ * green tint, and the text grays are light enough that body, sidebar and
+ * table-of-contents text all pass WCAG AA (4.5:1) on both surfaces.
+ * Light mode is white with a faint green tint on surfaces and a dark green accent.
+ *
+ * Accent roles: --sl-color-accent is the medium green of strokes, borders, focus
+ * rings and diagram highlights; --sl-color-accent-high is the link and site-title
+ * green in dark mode (Starlight's --sl-color-text-accent), and the fill of the
+ * current sidebar item; --sl-color-accent-low is the tinted surface of callouts,
+ * notes, completed weeks and lit diagram shapes, and in dark mode the text of the
+ * current sidebar item.
+ */
+
+/*
+ * Dark mode (Starlight's default). Screen only: Starlight forces light colours when
+ * printing, and an unconditional :root here would override that and print pale
+ * text on white paper.
+ */
+@media not print {
+  :root,
+  ::backdrop {
+    --sl-color-accent-low: #1d4527;
+    --sl-color-accent: #4caf5f;
+    --sl-color-accent-high: #8fd69b;
+
+    --sl-color-white: #f4f9f1;
+    --sl-color-gray-1: #e3ecdf;
+    --sl-color-gray-2: #d5e1cf;
+    --sl-color-gray-3: #adc0a6;
+    --sl-color-gray-4: #6e8467;
+    --sl-color-gray-5: #3d4f37;
+    --sl-color-gray-6: #2b3a26;
+    --sl-color-black: #1f2a1c;
+
+    --sl-color-backdrop-overlay: rgb(17 24 15 / 0.7);
+  }
+}
+
+/* Light mode. */
+:root[data-theme='light'],
+[data-theme='light'] ::backdrop {
+  --sl-color-accent-low: #dcefdf;
+  --sl-color-accent: #22693a;
+  --sl-color-accent-high: #144421;
+
+  --sl-color-white: #0f170d;
+  --sl-color-gray-1: #1b2618;
+  --sl-color-gray-2: #273424;
+  --sl-color-gray-3: #44553e;
+  --sl-color-gray-4: #7f927a;
+  --sl-color-gray-5: #c2d0bc;
+  --sl-color-gray-6: #e4ece0;
+  --sl-color-gray-7: #f2f7f0;
+  --sl-color-black: #ffffff;
+
+  --sl-color-backdrop-overlay: rgb(52 66 48 / 0.6);
+}
+
+/* Printing uses Starlight's light greys; give it the light-mode greens. */
+@media print {
+  :root {
+    --sl-color-accent-low: #dcefdf;
+    --sl-color-accent: #22693a;
+    --sl-color-accent-high: #144421;
+  }
+}
+
+/*
+ * Starlight's note asides, badges and cards read its blue tokens. Point them at
+ * the accent so no blue is left in either mode.
+ */
+:root,
+:root[data-theme='light'],
+::backdrop {
+  --sl-color-blue-low: var(--sl-color-accent-low);
+  --sl-color-blue: var(--sl-color-accent);
+  --sl-color-blue-high: var(--sl-color-accent-high);
+}
