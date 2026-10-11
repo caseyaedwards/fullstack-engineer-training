@@ -81,7 +81,7 @@ The first diagram follows one query through both plans on a table of a week of c
 <Diagram
   id="index-lookup"
   title="A sequential scan and a B-tree index scan for the newest checks of monitor 42"
-  code={`direction: right
+  code={`direction: down
 q: "where monitor_id = 42\\norder by checked_at desc\\nlimit 50"
 root: "root page"
 br: "branch page\\nmonitors 40 to 49"
@@ -92,14 +92,16 @@ q -> heap: "Seq Scan"
 q -> root: "Index Scan"
 root -> br
 br -> leaf
-leaf -> heap: "fetch 50 rows"
+heap <-> leaf: "fetch 50 rows" {
+  target-arrowhead.shape: circle
+}
 `}
   steps={[
     { hl: ['q', 'heap', 'q->heap'], caption: 'Without an index, a sequential scan reads all 22,910 table pages, keeps the 20,160 rows of monitor 42, sorts them by time and returns 50. Week 8 measures this plan at 74 ms.' },
     { hl: ['q', 'root', 'q->root'], caption: 'With the index on monitor_id and checked_at, Postgres starts at the root page. The root holds key ranges and points at the branch page that covers monitor 42.' },
     { hl: ['root', 'br', 'root->br'], caption: 'The branch page narrows the range again and points at the leaf page where the entries for monitor 42 begin.' },
     { hl: ['br', 'leaf', 'br->leaf'], caption: 'The leaf page holds the entries for monitor 42 sorted newest first, each with the location of its row. The scan reads 50 entries in order and stops.' },
-    { hl: ['leaf', 'heap', 'leaf->heap'], caption: 'For each entry, Postgres fetches the row from its table page. EXPLAIN with the BUFFERS option counts 56 pages for the whole plan instead of 22,910, and Week 8 measures it at 0.24 ms.' },
+    { hl: ['leaf', 'heap', 'heap<->leaf'], caption: 'For each entry, Postgres fetches the row from its table page. EXPLAIN with the BUFFERS option counts 56 pages for the whole plan instead of 22,910, and Week 8 measures it at 0.24 ms.' },
   ]}
 />
 

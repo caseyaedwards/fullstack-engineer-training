@@ -29,7 +29,7 @@ When a component runs as its own program and talks to the others over the networ
 
 Every split also costs something. A function call that never fails becomes a network call that times out, arrives twice or arrives late. Each service needs its own build, deploy, logs and alerts. One program with clean packages inside, a **modular monolith**, keeps the boundaries without the network, and it is the right start for a new app with one team.
 
-Draw boundaries around **data ownership**: each piece of data has one service that writes it, and the others read it or ask that service. In the uptime monitor, the api writes the monitors themselves, the worker writes `check_results`, and the alerter writes `incidents`. The scheduler writes only `last_enqueued_at` on `monitors`, a column the api never touches. Two services share the job queue by design: the scheduler inserts, and the workers delete. When two services write the same rows for different reasons, a change to the schema or the rules needs both of them changed and deployed together, and the boundary between them exists only on paper. The monitor shares one Postgres database between its services, which keeps backups and transactions simple, at the price of one schema that every service depends on.
+Draw boundaries around **data ownership**: each piece of data has one service that writes it, and the others read it or ask that service. The [first diagram](#monitor-boundaries) shows which service writes each table. Two services share the job queue by design: the scheduler inserts, and the workers delete. When two services write the same rows for different reasons, a change to the schema or the rules needs both of them changed and deployed together, and the boundary between them exists only on paper. The monitor shares one Postgres database between its services, which keeps backups and transactions simple, at the price of one schema that every service depends on.
 
 ### Layers and Interfaces Inside a Service
 
@@ -69,59 +69,51 @@ Retries need two more parts:
 - **Exponential backoff**: wait longer after each failure, such as 100 ms, then 200 ms, then 400 ms, up to a cap. A struggling server gets room to recover.
 - **Jitter**: randomize each wait. When a server restarts, every client that failed at the same moment retries at the same moment, and with fixed waits they stay in step and hit it together on every round. **Full jitter** picks each wait at random between zero and the backoff ceiling, which spreads the clients out.
 
-A **timeout budget** is the total time a caller is willing to spend on an operation, retries included. In Go, the budget is a context with a deadline, from `context.WithTimeout`. Every attempt and every wait between attempts takes from the same budget, and when it runs out, the whole operation stops. Retries at several layers multiply: three attempts in the browser, each calling an api that makes three attempts against a service, is nine calls to that service for one click. Retry at one layer, the one closest to the failure.
+A **timeout budget** is the total time a caller is willing to spend on an operation, retries included. In Go, the budget is a context with a deadline, from `context.WithTimeout`. Every attempt and every wait between attempts takes from the same budget, and when it runs out, the whole operation stops. Retries at several layers multiply into dozens of calls, and [Common Mistakes](#common-mistakes) counts them. Retry at one layer, the one closest to the failure.
 
 ## Diagrams
 
-The first diagram shows the uptime monitor at the end of the course, grouped by boundary, with an arrow from each service to the tables it reads and writes. Week 11 adds `users` and `sessions`, which the api writes.
+The first diagram groups the uptime monitor at the end of the course by boundary, with an arrow from each service to the tables it writes. The dashed arrow writes a single column: the scheduler stamps `last_enqueued_at` on `monitors`, a column the api never touches. Week 11 adds `users` and `sessions`.
 
 <Diagram
   id="monitor-boundaries"
-  title="The uptime monitor by boundary, and which service writes which table"
+  title="Which service writes which table: a solid arrow writes rows, the dashed arrow one column"
   code={`direction: right
-browser: browser
 public: "public side" {
-  web: "web\\nnginx and React"
-  api: "api"
+  api
 }
 background: "background services" {
   scheduler
   worker
   alerter
 }
-db: "Postgres" {
+db: Postgres {
+  login: "users,\\nsessions"
   monitors
   jobs: check_jobs
   results: check_results
   incidents
-  users
-  sessions
 }
-outside: "outside world" {
-  sites: monitored sites
-  hook: webhook
-}
-browser -> public.web: "page, /api/"
-public.web -> public.api: "/api/ proxy"
-public.api -> db.monitors: writes
-public.api -> db.results: reads
-public.api -> db.incidents: reads
-public.api -> db.users: writes
-public.api -> db.sessions: writes
-background.scheduler -> db.monitors: "reads due, stamps"
-background.scheduler -> db.jobs: inserts
-background.worker -> db.jobs: "claims, deletes"
-background.worker -> db.monitors: reads
-background.worker -> db.results: writes
-background.worker -> outside.sites: checks
-background.alerter -> db.monitors: reads
-background.alerter -> db.results: reads
-background.alerter -> db.incidents: writes
-background.alerter -> outside.hook: notifies
+public.api -> db.login
+public.api -> db.monitors
+background.scheduler -> db.monitors: {style.stroke-dash: 4}
+background.scheduler -> db.jobs
+background.worker -> db.jobs
+background.worker -> db.results
+background.alerter -> db.incidents
 `}
 />
 
-The second diagram is a hypothetical: the monitor alerter does not call `Retry`, and [In the Uptime Monitor](#in-the-uptime-monitor) explains what it does instead. Suppose the alerter wraps its webhook send in the `Retry` function from the example, with a budget of 10 seconds, four attempts, a base of 500 ms and a cap of 4 seconds. The diagram follows one notification through it.
+The services read these tables:
+
+| Service | Reads |
+| --- | --- |
+| api | `monitors`, `check_results`, `incidents` |
+| scheduler | `monitors` |
+| worker | `monitors` |
+| alerter | `monitors`, `check_results` |
+
+The second diagram is a hypothetical: the monitor alerter does not call `Retry`, and [In the Uptime Monitor](#in-the-uptime-monitor) explains what it does instead. Suppose the alerter wraps its webhook send in the `Retry` function from the example, with a budget of 10 seconds, four attempts, a base of 500 ms and a cap of 4 seconds.
 
 <Diagram
   id="retry-budget"
@@ -131,24 +123,18 @@ alerter: alerter
 retry: Retry
 hook: webhook
 
-alerter -> retry: "Retry(ctx with 10 s deadline, 4, 500ms, 4s, send)"
-retry -> hook: "attempt 1: POST"
-hook -> retry: "503 after 200 ms"
-retry -> retry: "sleep: random in 0 to 500 ms, 310 ms"
-retry -> hook: "attempt 2: POST"
-hook -> retry: "503 after 200 ms"
-retry -> retry: "sleep: random in 0 to 1 s, 840 ms"
-retry -> hook: "attempt 3: POST"
-hook -> retry: "200 OK"
+alerter -> retry: "Retry(ctx 10 s, 4, 500ms, 4s, send)"
+retry -> hook: "attempt 1: 503 after 200 ms"
+retry -> hook: "sleep 310 ms, attempt 2: 503"
+retry -> hook: "sleep 840 ms, attempt 3: 200 OK"
 retry -> alerter: nil
 `}
   steps={[
     { hl: ['alerter', 'retry', 'alerter->retry'], caption: 'In this hypothetical, the alerter creates a context with a 10-second deadline and calls Retry. Every attempt and every sleep below takes from those 10 seconds.' },
-    { hl: ['retry', 'hook', 'retry->hook', 'hook->retry'], caption: 'Attempt 1 gets a 503: the receiver is restarting. A 503 is transient: send returns it as a plain error, and Retry tries again.' },
-    { hl: ['retry', 'retry->retry'], caption: 'Before attempt 2, Retry sleeps a random time between zero and the ceiling of 500 ms. Other alerters that failed at the same moment draw other times and spread out.' },
-    { hl: ['retry', 'hook', 'retry->hook#1', 'hook->retry#1'], caption: 'Attempt 2 also gets a 503. The ceiling doubles to 1 second.' },
-    { hl: ['retry', 'retry->retry#1'], caption: 'Retry sleeps a random 840 ms. When the deadline falls inside a sleep, sleep returns context.DeadlineExceeded at the deadline, and Retry stops without another attempt.' },
-    { hl: ['retry', 'hook', 'alerter', 'retry->hook#2', 'hook->retry#2', 'retry->alerter'], caption: 'Attempt 3 succeeds, and Retry returns nil after about 1.75 seconds of the budget. A 404 at any point returns at once, wrapped in Permanent.' },
+    { hl: ['retry', 'hook', 'retry->hook'], caption: 'Attempt 1 gets a 503 after 200 ms: the receiver is restarting. A 503 is transient: send returns it as a plain error, and Retry tries again.' },
+    { hl: ['retry', 'hook', 'retry->hook#1'], caption: 'Before attempt 2, Retry sleeps a random time between zero and the ceiling of 500 ms, here 310 ms. Other alerters that failed at the same moment draw other times and spread out. Attempt 2 also gets a 503, and the ceiling doubles to 1 second.' },
+    { hl: ['retry', 'hook', 'retry->hook#2'], caption: 'Retry sleeps a random 840 ms, and attempt 3 gets a 200 OK. When the deadline falls inside a sleep, sleep returns context.DeadlineExceeded at the deadline, and Retry stops without another attempt.' },
+    { hl: ['retry', 'alerter', 'retry->alerter'], caption: 'Retry returns nil after about 1.75 seconds of the budget. A 404 at any point returns at once, wrapped in Permanent.' },
   ]}
 />
 
