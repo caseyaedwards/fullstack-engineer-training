@@ -10,7 +10,8 @@
  * Dark mode is Gruvbox dark hard: the page is bg0_h #1d2021 (dark, not black),
  * raised surfaces (sidebar, nav, code frames) are bg0 #282828 and bg1 #3c3836.
  * Headings are fg0 #fbf1c7, body text fg1 #ebdbb2, secondary text fg3 #bdae93.
- * Gruvbox's #928374 gray is never used for text. Light mode is Gruvbox light hard:
+ * Gruvbox's #928374 gray is never used for text (only for light-mode borders).
+ * Light mode is Gruvbox light hard:
  * page bg0_h #f9f5d7, raised bg0 #fbf1c7 and bg1 #ebdbb2, body text fg1 #3c3836.
  * Every text role passes WCAG AA (4.5:1) on the surfaces it sits on.
  *
@@ -21,7 +22,8 @@
  * --sl-color-text-accent) and the fill of the current sidebar item: #b8bb26 in
  * dark mode. In light mode #79740e is 4.4:1 on bg0_h, just short of AA, and
  * Gruvbox has no darker green, so text uses #79740e darkened with fg0 #282828
- * (75% / 25% = #656115: the same 57 degree hue, 5.8:1 on the page).
+ * (70% / 30% = #615d16: the same 57 degree hue, 6.2:1 on the page and 5.0:1 on
+ * bg1).
  * --sl-color-accent-low is the tinted surface of callouts, notes, completed weeks
  * and lit diagram shapes, and in dark mode the text of the current sidebar item.
  * It is a Gruvbox green blended over the page: neutral green #98971a 20% over
@@ -48,7 +50,7 @@
     --sl-color-gray-1: #fbf1c7; /* fg0 */
     --sl-color-gray-2: #ebdbb2; /* fg1: body text */
     --sl-color-gray-3: #bdae93; /* fg3: secondary text */
-    --sl-color-gray-4: #7c6f64; /* bg4: borders, never text */
+    --sl-color-gray-4: #7c6f64; /* bg4: borders, never text (3.4:1 on the page) */
     --sl-color-gray-5: #3c3836; /* bg1 */
     --sl-color-gray-6: #282828; /* bg0: sidebar, nav, code frames */
     --sl-color-black: #1d2021; /* bg0_h: the page */
@@ -75,13 +77,13 @@
 [data-theme='light'] ::backdrop {
   --sl-color-accent-low: #e6e2b9; /* faded green #79740e 15% over bg0_h */
   --sl-color-accent: #79740e; /* faded green */
-  --sl-color-accent-high: #656115; /* #79740e 75% + fg0 #282828 25% */
+  --sl-color-accent-high: #615d16; /* #79740e 70% + fg0 #282828 30% */
 
   --sl-color-white: #282828; /* fg0: headings */
   --sl-color-gray-1: #282828; /* fg0 */
   --sl-color-gray-2: #3c3836; /* fg1: body text */
   --sl-color-gray-3: #665c54; /* fg3: secondary text */
-  --sl-color-gray-4: #a89984; /* bg4: borders, never text */
+  --sl-color-gray-4: #928374; /* gray: borders, never text (3.3:1 on the page) */
   --sl-color-gray-5: #d5c4a1; /* bg2 */
   --sl-color-gray-6: #ebdbb2; /* bg1 */
   --sl-color-gray-7: #fbf1c7; /* bg0: nav, code frames */
@@ -89,7 +91,7 @@
 
   --sl-color-green-low: #e6e2b9;
   --sl-color-green: #79740e;
-  --sl-color-green-high: #656115;
+  --sl-color-green-high: #615d16;
   --sl-color-orange-low: #f4deb9; /* #d65d0e 15% over bg0_h */
   --sl-color-orange: #d65d0e;
   --sl-color-orange-high: #af3a03;
@@ -109,19 +111,21 @@
 
 /*
  * Printing: Gruvbox light text and accents on white paper, whichever mode the
- * reader picked on screen.
+ * reader picked on screen. :root[data-theme] matches the light-mode rule's
+ * specificity and comes later, so printing from light mode is white too.
  */
 @media print {
-  :root {
+  :root,
+  :root[data-theme] {
     --sl-color-accent-low: #e6e2b9;
     --sl-color-accent: #79740e;
-    --sl-color-accent-high: #656115;
+    --sl-color-accent-high: #615d16;
 
     --sl-color-white: #282828;
     --sl-color-gray-1: #282828;
     --sl-color-gray-2: #3c3836;
     --sl-color-gray-3: #665c54;
-    --sl-color-gray-4: #a89984;
+    --sl-color-gray-4: #928374;
     --sl-color-gray-5: #d5c4a1;
     --sl-color-gray-6: #ebdbb2;
     --sl-color-gray-7: #fbf1c7;
@@ -129,7 +133,7 @@
 
     --sl-color-green-low: #e6e2b9;
     --sl-color-green: #79740e;
-    --sl-color-green-high: #656115;
+    --sl-color-green-high: #615d16;
     --sl-color-orange-low: #f4deb9;
     --sl-color-orange: #d65d0e;
     --sl-color-orange-high: #af3a03;
@@ -142,6 +146,32 @@
 
     --sl-color-text-accent: var(--sl-color-accent-high);
     --sl-color-bg-accent: var(--sl-color-accent-high);
+  }
+}
+
+/*
+ * Printed code. Expressive Code picks token colours by data-theme, so printing
+ * from dark mode would keep gruvbox-dark-hard's pale tokens (and its #ebdbb2
+ * default text) on the light print surfaces. Print uses the light theme's tokens
+ * (--1, the second theme in astro.config.mjs) and frames from either mode.
+ * These rules are unlayered, so they beat Expressive Code's layered theme rules.
+ */
+@media print {
+  .expressive-code {
+    --ec-codeFg: var(--sl-color-gray-2);
+    --ec-frm-edBg: var(--sl-color-gray-7);
+    --ec-frm-trmBg: var(--sl-color-gray-7);
+    --ec-frm-edActTabBg: var(--sl-color-gray-7);
+    --ec-frm-edTabBarBg: var(--sl-color-gray-6);
+    --ec-frm-trmTtbBg: var(--sl-color-gray-6);
+    --ec-frm-edActTabIndTopCol: var(--sl-color-accent);
+  }
+  .expressive-code .ec-line :where(span[style^='--']:not([class])) {
+    color: var(--1, inherit);
+    background-color: var(--1bg, transparent);
+    font-style: var(--1fs, inherit);
+    font-weight: var(--1fw, inherit);
+    text-decoration: var(--1td, inherit);
   }
 }
 

@@ -7,6 +7,8 @@ import { test, expect, type Page } from '@playwright/test';
 
 const WEEK = 'weeks/04-networking/';
 const HOME = '';
+const FIXTURE = 'dev/diagrams/';
+const CODE_TOKEN = '.expressive-code .ec-line span:not(:has(*))';
 const AA = 4.5;
 
 // The Gruvbox accents (src/styles/theme.css). Links and strokes are Gruvbox green;
@@ -24,10 +26,10 @@ const GRUVBOX = {
   light: {
     '--sl-color-accent-low': '#e6e2b9',
     '--sl-color-accent': '#79740e',
-    '--sl-color-accent-high': '#656115',
+    '--sl-color-accent-high': '#615d16',
     '--sl-color-blue-low': '#e6e2b9',
     '--sl-color-blue': '#79740e',
-    '--sl-color-blue-high': '#656115',
+    '--sl-color-blue-high': '#615d16',
   },
 } as const;
 // Gruvbox greens sit at hue 55-65 degrees (#79740e 57, #98971a 60, #b8bb26 61);
@@ -207,7 +209,7 @@ for (const theme of ['dark', 'light'] as const) {
         ['callout text', '.callout p'],
         ['note aside text', '.starlight-aside--note p'],
         ['note aside title', '.starlight-aside--note .starlight-aside__title'],
-        ['code token', '.expressive-code .ec-line span:not(:has(*))'],
+        ['code token', CODE_TOKEN],
       ];
       for (const [name, sel] of checks) expectAtLeast(await measure(page, name, sel), AA);
 
@@ -218,6 +220,19 @@ for (const theme of ['dark', 'light'] as const) {
       const lit = await measure(page, 'highlighted diagram label', `${fig} .dg-hl text`);
       expectAtLeast(lit, AA);
       expect.soft(worst(lit).ratio, 'highlighted labels stand out from dimmed ones').toBeGreaterThan(worst(dimmed).ratio * 1.5);
+    });
+
+    test(`fixture: asides and highlighted code meet WCAG AA`, async ({ page }) => {
+      await load(page, FIXTURE, theme);
+      const checks: [string, string][] = [['code token', CODE_TOKEN]];
+      for (const kind of ['note', 'tip', 'caution', 'danger']) {
+        checks.push(
+          [`${kind} aside title`, `.starlight-aside--${kind} .starlight-aside__title`],
+          [`${kind} aside text`, `.starlight-aside--${kind} .starlight-aside__content p`],
+          [`${kind} aside link`, `.starlight-aside--${kind} .starlight-aside__content a`],
+        );
+      }
+      for (const [name, sel] of checks) expectAtLeast(await measure(page, name, sel), AA);
     });
 
     test(`home page: text meets WCAG AA`, async ({ page }) => {
@@ -240,26 +255,43 @@ for (const theme of ['dark', 'light'] as const) {
 }
 
 // Printers drop backgrounds, so printed text sits on white paper whatever theme the
-// reader picked on screen.
-test(`print from dark mode: text meets WCAG AA on white`, async ({ page }) => {
-  await page.emulateMedia({ media: 'print' });
-  await load(page, WEEK, 'dark');
-  const white: RGBA = [255, 255, 255, 1];
-  for (const [name, sel] of [
-    ['body text', '.sl-markdown-content > p'],
-    ['link', '.sl-markdown-content p a'],
-    ['heading', '.sl-markdown-content h2'],
-  ]) {
-    const fg = await page.locator(sel).first().evaluate((el) => getComputedStyle(el).color);
-    const c = await page.evaluate((css) => (window as unknown as { __contrast: { parse(s: string): RGBA } }).__contrast.parse(css), fg);
-    const r = ratio(c, white);
-    expect.soft(r, `${name}: ${r.toFixed(2)}:1 (${fg})`).toBeGreaterThanOrEqual(AA);
-  }
-  // Printed accents are the light-mode Gruvbox greens.
-  for (const name of ['--sl-color-accent', '--sl-color-accent-high'] as const) {
-    expect.soft(toHex(await variable(page, name)), `print ${name}`).toBe(GRUVBOX.light[name]);
-  }
-});
+// reader picked on screen. Code is checked both on white and on its printed frame
+// (if the printer keeps backgrounds): Expressive Code picks token colours by
+// data-theme, so printing from dark mode must still switch to the light tokens.
+const white: RGBA = [255, 255, 255, 1];
+for (const theme of ['dark', 'light'] as const) {
+  test(`print from ${theme} mode: text meets WCAG AA on white`, async ({ page }) => {
+    await page.emulateMedia({ media: 'print' });
+    await load(page, WEEK, theme);
+    for (const [name, sel] of [
+      ['body text', '.sl-markdown-content > p'],
+      ['link', '.sl-markdown-content p a'],
+      ['heading', '.sl-markdown-content h2'],
+    ]) {
+      const fg = await page.locator(sel).first().evaluate((el) => getComputedStyle(el).color);
+      const c = await page.evaluate((css) => (window as unknown as { __contrast: { parse(s: string): RGBA } }).__contrast.parse(css), fg);
+      const r = ratio(c, white);
+      expect.soft(r, `${name}: ${r.toFixed(2)}:1 (${fg})`).toBeGreaterThanOrEqual(AA);
+    }
+    // Printed accents are the light-mode Gruvbox greens, on white paper.
+    for (const name of ['--sl-color-accent', '--sl-color-accent-high'] as const) {
+      expect.soft(toHex(await variable(page, name)), `print ${name}`).toBe(GRUVBOX.light[name]);
+    }
+    expect.soft(toHex(await variable(page, '--sl-color-bg')), 'print page background').toBe('#ffffff');
+
+    // Week 4's code is plain text (the default colour); the fixture's Go code has syntax tokens.
+    for (const path of [WEEK, FIXTURE]) {
+      if (path !== WEEK) {
+        await page.goto(path);
+        await page.evaluate(pageHelpers);
+      }
+      const code = await measure(page, `print code token (${path})`, CODE_TOKEN);
+      expectAtLeast(code, AA);
+      const onWhite = code.map((m) => ({ ...m, name: `${m.name} on white`, bg: white, ratio: ratio(m.fg, white) }));
+      expectAtLeast(onWhite, AA);
+    }
+  });
+}
 
 // Casey asked for a dark background that is not pure black: Gruvbox bg0_h.
 test(`dark mode page background is Gruvbox bg0_h`, async ({ page }) => {
