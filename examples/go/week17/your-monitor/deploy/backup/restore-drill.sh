@@ -15,8 +15,8 @@ start=$(date +%s)
 
 fail() { echo "restore drill: FAILED: $*"; exit 1; }
 
-# An empty value is what a failed kubectl in $(...) leaves behind, and
-# without this check the drill passes a backup of an empty database.
+# An empty value is what a failed kubectl in $(...) leaves behind. The
+# drill stops here, because every comparison below needs the count.
 live=${LIVE_MONITORS-}
 case $live in
   '' | *[!0-9]*) fail "LIVE_MONITORS must be the monitor count of the live database, a number; got '$live'" ;;

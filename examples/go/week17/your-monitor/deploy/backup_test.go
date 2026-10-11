@@ -182,8 +182,8 @@ func TestBackupUploadsOnlyCiphertext(t *testing.T) {
 
 // TestRestoreDrill takes a real backup, then runs the drill on copies of
 // the remote: as it is, with a copy dated 2 minutes ahead, which the clock
-// skew allows, and broken ten ways. Each way fails with its own
-// message, which is what the reader sees in the drill log. The live
+// skew allows, and broken ten ways. Each way fails with a message that
+// names its cause, which is what the reader sees in the drill log. The live
 // database holds two monitors, which LIVE_MONITORS=2 tells the drill.
 func TestRestoreDrill(t *testing.T) {
 	env := live(t, pgBin(t))
