@@ -32,7 +32,7 @@ import { weekHref, trackHref } from '../../../lib/links';
 
 <WeekHeader />
 
-At the end of <a href={weekHref(5)}>Week 5</a>, `your-monitor` is one Go program in one folder: it checks 100 URLs on a pool of workers and stops cleanly on SIGTERM. The finished app is five programs, a database and a status page. This week opens the Build the App phase. You learn what the frontend and the backend are and how they talk, then you give the repository the shape that Weeks 7 to 10 fill in, and start the backend with one command. From this week, you can also generate code with an AI assistant, as long as you read every line, test it, and can explain it: see [AI This Week](#ai-this-week).
+At the end of <a href={weekHref(5)}>Week 5</a>, `your-monitor` is one Go program in one folder: it checks 100 URLs on a pool of workers and stops cleanly on SIGTERM. The finished app is four Go services, a database that also holds the job queue, and a status page. This week opens the Build the App phase. You learn what the frontend and the backend are and how they talk, then you give the repository the shape that Weeks 7 to 10 fill in, and start the backend with one command. From this week, you can also generate code with an AI assistant, as long as you read every line, test it, and can explain it: see [AI This Week](#ai-this-week).
 
 ## Goals
 
@@ -71,7 +71,7 @@ queue: "job queue\\nin Postgres"
 worker: "worker\\nGo"
 alerter: "alerter\\nGo"
 sites: "monitored sites"
-notify: "email, chat"
+notify: "webhook, chat"
 
 browser -> web: "HTML, JS, CSS"
 browser -> api: "JSON"
@@ -80,8 +80,7 @@ scheduler -> pg: due monitors
 scheduler -> queue: jobs
 queue -> worker: jobs
 worker -> pg: results
-worker -> queue: failures
-queue -> alerter: failures
+pg -> alerter: results
 worker -> sites: checks
 alerter -> notify: sends
 `}
@@ -90,7 +89,7 @@ alerter -> notify: sends
     { hl: ['browser', 'api', 'pg', 'browser->api', 'api->pg'], caption: 'The page asks the api for data over HTTP and gets JSON back. The api is the only part the browser talks to, and it checks every request before it reads or writes Postgres.' },
     { hl: ['scheduler', 'pg', 'queue', 'scheduler->pg', 'scheduler->queue'], caption: 'The scheduler reads which monitors are due and puts one check job per monitor into the queue, a table in Postgres.' },
     { hl: ['queue', 'worker', 'sites', 'pg', 'queue->worker', 'worker->sites', 'worker->pg'], caption: 'Workers take jobs from the queue, check the sites with the timing code from Week 4, and write each result to Postgres.' },
-    { hl: ['worker', 'queue', 'alerter', 'notify', 'worker->queue', 'queue->alerter', 'alerter->notify'], caption: 'A failed check becomes an event in the queue. The alerter reads it, applies the alert rules and sends the notification.' },
+    { hl: ['pg', 'alerter', 'notify', 'pg->alerter', 'alerter->notify'], caption: 'The alerter reads the newest results from Postgres, opens an incident after three failed checks in a row, and posts it to a webhook.' },
     { hl: ['browser', 'web', 'api', 'worker', 'pg'], caption: 'This week builds the skeleton: a web page, an api with one route, the worker as your Week 5 monitor, and an empty Postgres. Weeks 7 to 10 fill it in.' },
   ]}
 />
@@ -104,9 +103,9 @@ The browser adds one rule that `curl` does not have: the **same-origin policy**.
 A server allows other origins with response headers, such as `Access-Control-Allow-Origin: http://localhost:5173`. That protocol is **CORS**, Cross-Origin Resource Sharing. Two details help when you debug it:
 
 - For a plain `GET`, the request reaches the server, and the server does the work and answers. The browser then withholds the answer from your code, which sees only `TypeError: Failed to fetch`. CORS protects the user in the browser. It does not protect your server.
-- For a request that changes data, such as a `POST` with a JSON body, the browser first sends a **preflight**: an `OPTIONS` request that asks whether the real request is allowed. The real request goes out only when the preflight answer allows it.
+- For a request outside the simple set, such as `PUT`, `DELETE` or a `POST` with `Content-Type: application/json`, the browser first sends a **preflight**: an `OPTIONS` request that asks whether the real request is allowed. The real request goes out only when the preflight answer allows it. A plain HTML form `POST` gets no preflight: it reaches the server like the `GET` above.
 
-Your monitor keeps the page and the API on one origin, which means it needs no CORS at all. In development, the Vite dev server serves the page on port `5173` and passes `/healthz` and `/api/` requests on to the api. A server that passes requests on like that is a **proxy**. In production, the ingress from <a href={weekHref(16)}>Week 16</a> does the same job. <a href={weekHref(7)}>Week 7</a> puts the JSON routes under `/api/` to fit.
+Your monitor keeps the page and the API on one origin, which means it needs no CORS at all. In development, the Vite dev server serves the page on port `5173` and passes `/healthz` and `/api/` requests on to the api. A server that passes requests on like that is a **proxy**. In production, nginx in the web image (<a href={weekHref(10)}>Week 10</a>) does the same job. <a href={weekHref(7)}>Week 7</a> puts the JSON routes under `/api/` to fit.
 
 <Diagram
   id="dev-proxy"
@@ -187,7 +186,7 @@ net.worker -> net.pg: "postgres:5432"
 
 ### Make
 
-`make` runs commands by name. A `Makefile` holds **rules**: a target, a colon, the prerequisites, and below them the **recipe**, the commands to run, each line indented with one tab character. `make build` runs the recipe of `build`. Make exists to rebuild files: when a target names a file, Make runs its recipe only when the file is missing or older than one of its prerequisites. Most of your targets name commands, not files, and the `.PHONY` line declares them. Everyone who clones your repository gets the same short commands, and CI in <a href={weekHref(14)}>Week 14</a> runs the same ones.
+`make` runs commands by name. A `Makefile` holds **rules**: a target, a colon, the prerequisites, and below them the **recipe**, the commands to run, each line indented with one tab character. `make build` runs the recipe of `build`. Make exists to rebuild files: when a target names a file, Make runs its recipe only when the file is missing or older than one of its prerequisites. Most of your targets name commands, not files, and the `.PHONY` line declares them. Everyone who clones your repository gets the same short commands, and CI in <a href={weekHref(14)}>Week 14</a> runs the same checks.
 
 ## Build
 
@@ -209,7 +208,7 @@ your-monitor/
 
 ### Step 1: Move the Monitor Into the New Layout
 
-Start a branch, then move the files with `git mv`, which records each move. Afterward, `git log --follow cmd/worker/main.go` still shows the history back to Week 1:
+Start a branch, then move the files with `git mv`. Git stores no record of a move: it detects a rename when the old and new files have nearly the same content. Only the import lines change here. That is why `git log --follow cmd/worker/main.go` still shows the history back to Week 1:
 
 ```sh
 git switch main && git pull && git switch -c week-06
@@ -258,7 +257,7 @@ Add the imports and `main` above the routes:
 
 ### Step 3: Test the API Stub
 
-Create `cmd/api/main_test.go`. The first test drives the router with `httptest.NewRecorder`, which records the answer in memory, with no network:
+Create `cmd/api/main_test.go`. It starts with `package main` and imports `context`, `encoding/json`, `net`, `net/http`, `net/http/httptest`, `testing` and `time`. The first test drives the router with `httptest.NewRecorder`, which records the answer in memory, with no network:
 
 <CodeFrom file="go/week06/your-monitor/cmd/api/main_test.go" region="healthz" lang="go" title="cmd/api/main_test.go" />
 
@@ -381,7 +380,7 @@ $ docker compose exec postgres psql -U monitor -d monitor -c 'SELECT current_use
 Vite needs Node 22.12 or newer: check with `node --version`. From the repository root, create the app, install its packages, and add Vitest, the test runner built on Vite:
 
 ```sh
-npm create vite@latest web -- --template react-ts --no-interactive
+npm create vite@9 web -- --template react-ts --no-interactive
 npm --prefix web install
 npm --prefix web install --save-dev vitest
 npm --prefix web pkg set scripts.test="vitest run"
@@ -553,7 +552,7 @@ $ docker inspect --format '{{.State.OOMKilled}}' hog
 true
 ```
 
-When the container reaches its limit, the out-of-memory killer of the kernel ends `tail` with SIGKILL: exit code 137, 128 plus 9, as in Week 3. Kubernetes sets the same cgroup limit for a pod from its `resources.limits.memory`. Clean up with `docker rm -f lab hog`.
+When the container reaches its limit, the out-of-memory killer of the kernel ends `tail` with SIGKILL: exit code 137, 128 plus 9, as in Week 3. Kubernetes sets the same cgroup limit for each container from its `resources.limits.memory`. Clean up with `docker rm -f lab hog`.
 
 </SideLab>
 
