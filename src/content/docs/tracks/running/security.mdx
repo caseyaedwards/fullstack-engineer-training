@@ -1,36 +1,218 @@
 ---
 title: "Security"
+description: Where the trust boundaries of a web service sit, what each OWASP Top 10 category means for the uptime monitor, and how to stop a monitor that fetches user URLs from reaching your own network.
 track: security
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+Application security is the work of keeping a service doing only what its owners intend, for only the people they intend, while someone tries to make it do something else. A full-stack engineer writes the code that every one of those attempts goes through: the login, the SQL, the HTTP client. An uptime monitor carries one risk that most web apps do not: its whole job is to send requests to URLs that strangers type in.
+
 ## What It Is
 
-This section is not written yet.
+### Assets, Threats and Trust Boundaries
+
+An **asset** is something worth protecting: the password hashes, the session table, the database password, the cloud credentials of the server, the ability to page you at 03:00. A **threat** is a way someone gets at an asset. A **trust boundary** is a line in the system where data or a request passes from a side you trust less to a side you trust more. Every boundary needs a check, because everything that arrives there is input an attacker can shape.
+
+**Threat modeling** is the habit of drawing the system, marking its boundaries and asking at each one: who can send what across this line, and what happens when they lie? The monitor has five boundaries worth a check: the internet to the api, the api to Postgres, the worker to the URLs it fetches, continuous integration (CI) to the cluster, and your laptop to the virtual private server (VPS).
+
+<Diagram
+  id="trust-boundaries"
+  title="Trust boundaries of the uptime monitor on the VPS"
+  code={`direction: right
+internet: internet {
+  user: "browser"
+  sites: "monitored sites"
+}
+ci: "GitHub runner"
+vps: VPS {
+  traefik: Traefik
+  api: api
+  worker: worker
+  pg: Postgres
+  kube: "Kubernetes API"
+}
+cloud: "provider network" {
+  meta: "metadata service\\n169.254.169.254"
+}
+internet.user -> vps.traefik: "TLS, login, sameOrigin"
+vps.traefik -> vps.api
+vps.api -> vps.pg: "SQL parameters"
+vps.worker -> internet.sites: "user URLs"
+vps.worker -> cloud.meta: "must never reach" {style.stroke-dash: 4}
+vps.worker -> vps.kube: "must never reach" {style.stroke-dash: 4}
+ci -> vps.kube: "SSH tunnel, RBAC"
+`}
+/>
+
+### Defense in Depth
+
+**Defense in depth** means stacking independent checks: one failure does not hand over the asset. Week 11 guards writes with three locks on one door: `sameOrigin`, the `SameSite` cookie attribute and a JSON-only body. Any one of them stops the cross-site form. When a refactor removes one, the other two still hold, and a test catches the missing one. The same thinking puts Postgres on a private network, gives CI a Role limited to one namespace, and closes port `6443` at the firewall even though the API server checks every token. The <TrackLink slug="iam">IAM track</TrackLink> covers the access side of this: least privilege for people and programs.
+
+### The OWASP Top 10
+
+The Open Worldwide Application Security Project (OWASP) publishes the **OWASP Top 10**, a ranked list of the kinds of weakness it finds most in web applications. The current edition is 2025. Each entry is a category, not a single bug, and each maps to a habit in the code:
+
+| Category | What goes wrong | The usual fix |
+| --- | --- | --- |
+| A01 Broken Access Control | A user reads or changes data that belongs to someone else, or reaches a server-side resource through the app. Since 2025, the category includes server-side request forgery | Check every request on the server, deny by default, check the object and not only the route |
+| A02 Security Misconfiguration | A debug page in production, a default password, a port open to the internet, a missing security header | A minimal, reviewed configuration in Git, and a test that checks it |
+| A03 Software Supply Chain Failures | A dependency, a build tool or a base image carries malicious or vulnerable code | Pinned versions with checksums, fewer dependencies, a vulnerability scan in CI |
+| A04 Cryptographic Failures | Plain HTTP, a fast hash for passwords, a hardcoded key, a weak random number | Transport Layer Security (TLS) everywhere, bcrypt or Argon2id for passwords, `crypto/rand` for tokens |
+| A05 Injection | Input becomes code: SQL built by string concatenation, HTML shown without escaping, a shell command with user text in it | Parameters in SQL, escaping in templates, no shell |
+| A06 Insecure Design | The design itself has no answer to a threat: no rate limit on a login, no limit on what a URL can reach | Threat modeling before building, abuse cases next to use cases |
+| A07 Authentication Failures | Guessable passwords, unlimited guesses, a session that never ends or survives logout | Slow hashes, a login limit, random session tokens with an expiry |
+| A08 Software or Data Integrity Failures | Code or data loaded without proof of origin: an unsigned update, a deserialized object from a cookie | Signatures and checksums, and no trust in data the client sends back |
+| A09 Security Logging and Alerting Failures | An attack leaves no trace, or a trace nobody reads, or a log line holds a password | A log line per security event, an alert on the pattern, no secrets in logs |
+| A10 Mishandling of Exceptional Conditions | An error path skips a check, fails open or leaks a stack trace to the client | Fail closed, keep error details in the log, test the error paths |
+
+### Server-Side Request Forgery
+
+**Server-side request forgery** (SSRF) makes your server send a request that the attacker chooses. The server sits inside your network, with network access and credentials the attacker does not have. A request from the server reaches what the internet cannot.
+
+An uptime monitor is SSRF as a feature: a user types a URL, and the worker fetches it every 30 seconds. Nothing stops the URL from naming an address inside your own network:
+
+- `http://169.254.169.254/` is the **metadata service** of AWS, Google Cloud, DigitalOcean, Hetzner Cloud and others: an HTTP server, reachable only from the machine itself, that answers questions about the machine. On AWS, with version 1 of the Instance Metadata Service (IMDS) enabled, a plain `GET` returns temporary credentials for the role of the machine.
+- `https://10.43.0.1/` is the Kubernetes API inside a K3s cluster, and `http://postgres:5432/` is the database.
+- `http://127.0.0.1:6061/debug/pprof/profile` is the Go profiler of the worker itself, when you start it with `-pprof-addr`. It listens only on loopback because its owner trusts the machine. Each request keeps a CPU busy for 30 seconds.
+
+The monitor shows only the status code and the timings, not the body. That still leaks: an attacker maps which internal addresses and ports answer, and an internal service that changes state on a `GET` changes it every 30 seconds.
+
+Checking the URL text before the request fails, for four reasons:
+
+1. **A name hides the address.** `http://evil.example/` resolves to whatever its owner sets, including `169.254.169.254`.
+2. **The answer changes.** In a **DNS rebinding** attack, the name resolves to a public address when your check asks and to an internal address a second later, when the HTTP client asks again. The gap between the check and the use is the bug: a time-of-check to time-of-use race.
+3. **One address has many spellings.** `::ffff:169.254.169.254` is the same address in IPv6 form. The C library and `curl` also accept `2852039166` and `0xA9FEA9FE` for `169.254.169.254`.
+4. **Redirects.** A public URL answers `302` with a `Location` header that names an internal one.
+
+The fix moves the check to the one moment that cannot lie: after DNS resolution, immediately before the connect, against the address the socket uses. Go gives you that moment in `net.Dialer.Control`, a function the dialer calls for every address it tries, before the connect system call. The OWASP SSRF Prevention Cheat Sheet gives the same rule: validate the resolved address, then connect only to the address you validated.
 
 ## Diagrams
 
-This section is not written yet.
+The walkthrough follows a URL that looks harmless through the worker. The check happens at dial time, after DNS:
+
+<Diagram
+  id="ssrf-blocked"
+  title="A monitor URL that resolves to the metadata address, refused at dial time"
+  code={`shape: sequence_diagram
+att: attacker
+api: api
+worker: worker
+dns: "DNS resolver"
+dialer: "SafeDialer Control"
+meta: "169.254.169.254"
+
+att -> api: "POST /api/monitors url=http://evil.example/"
+api -> worker: "job: check http://evil.example/"
+worker -> dns: "evil.example A?"
+dns -> worker: "169.254.169.254"
+worker -> dialer: "dial 169.254.169.254:80"
+dialer -> worker: "ErrBlockedAddress"
+`}
+  steps={[
+    { hl: ['att', 'api', 'att->api'], caption: 'A logged-in user adds a monitor. The URL passes every text check: the scheme is http, and the host is a public-looking name.' },
+    { hl: ['api', 'worker', 'api->worker'], caption: 'The scheduler queues a check, and a worker claims it. Nothing up to here knows which address evil.example names.' },
+    { hl: ['worker', 'dns', 'worker->dns', 'dns->worker'], caption: 'The HTTP client resolves the name. The attacker controls the DNS records for evil.example and answers with the metadata address.' },
+    { hl: ['worker', 'dialer', 'worker->dialer', 'dialer->worker'], caption: 'Before the connect, the dialer calls Control with 169.254.169.254:80. CheckAddr finds a link-local address and returns ErrBlockedAddress. No packet leaves for the metadata service.' },
+    { hl: ['worker', 'meta'], caption: 'The metadata service never sees a request. The check records a failed result with the error text, and a second lookup cannot change the outcome, because the check runs on the address of this very connect.' },
+  ]}
+/>
+
+The address classes the check refuses, and the range each one covers:
+
+<Diagram
+  id="blocked-ranges"
+  title="Address classes that a user-supplied URL must never reach"
+  code={`direction: right
+check: "CheckAddr"
+loop: "loopback\\n127.0.0.0/8, ::1"
+priv: "private\\n10/8, 172.16/12, 192.168/16\\nfc00::/7"
+ll: "link-local\\n169.254/16, fe80::/10"
+cgn: "shared address space\\n100.64.0.0/10"
+misc: "unspecified, this network,\\nmulticast"
+pub: "public unicast"
+check -> loop: refuse
+check -> priv: refuse
+check -> ll: refuse
+check -> cgn: refuse
+check -> misc: refuse
+check -> pub: allow
+`}
+/>
 
 ## Example
 
-This section is not written yet.
+`CheckAddr` takes one address and decides. `netip.Addr` is the address type of the Go `net/netip` package: a small value that compares with `==` and carries methods for each class. `Unmap` turns an IPv4-mapped IPv6 address, such as `::ffff:127.0.0.1`, into its IPv4 form first. `IsLoopback` and `IsLinkLocalUnicast` handle the mapped form on their own, as the table below shows, but `Prefix.Contains` does not, and the two prefixes need it:
+
+<CodeFrom file="go/tracks/security/security.go" region="check" lang="go" title="security.go" />
+
+`IsPrivate` covers the three private IPv4 ranges of Request for Comments (RFC) 1918, the series that defines internet standards, and the IPv6 **unique local** range `fc00::/7` of RFC 4193, which includes `fd00:ec2::254`, the IPv6 metadata address of AWS. The **shared address space** `100.64.0.0/10`, from RFC 6598, belongs to carrier networks, and private networks borrow it: Tailscale hands out addresses from it, and Alibaba Cloud serves its metadata service at `100.100.100.200`.
+
+`SafeDialer` puts the check into `Control`. The dialer passes the resolved address as `ip:port`, which `netip.ParseAddrPort` reads, zone and all:
+
+<CodeFrom file="go/tracks/security/security.go" region="dialer" lang="go" title="security.go" />
+
+`NewClient` wires the dialer into a transport and sets `Proxy` to `nil`. `http.DefaultTransport` reads `HTTPS_PROXY` and `HTTP_PROXY` from the environment. Through a proxy, the dialer connects to the proxy, `Control` checks the proxy address, and the proxy fetches the internal URL for you:
+
+<CodeFrom file="go/tracks/security/security.go" region="client" lang="go" title="security.go" />
+
+The address table holds one row per class and the edges of each range, such as `100.127.255.254` inside the shared space and `100.128.0.1` just above it. The `::ffff:100.64.0.1` row fails the day someone deletes `Unmap`:
+
+<CodeFrom file="go/tracks/security/security_test.go" region="table" lang="go" title="security_test.go" />
+
+The dial test starts an `httptest` server on `127.0.0.1`. A plain client reaches it first, which proves the setup works. Then the safe client tries the same server by address and by the name `localhost`, and both fail with `ErrBlockedAddress`. The server counts its requests: one, from the control:
+
+<CodeFrom file="go/tracks/security/security_test.go" region="dial" lang="go" title="security_test.go" />
+
+The error the safe client returns reads:
+
+```txt
+Get "http://localhost:34021": dial tcp 127.0.0.1:34021: blocked address: 127.0.0.1
+```
+
+Replace the body of `Control` with `return nil`, and the test fails with `server saw 3 requests, want 1`.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={11} anchor="who-are-you-and-what-can-you-do">Week 11</WeekLink> is the security week. The api stores bcrypt hashes, keeps sessions in Postgres with a random token, sets the cookie with `HttpOnly`, `Secure` and `SameSite=Lax`, and refuses cross-site writes with `sameOrigin`. <WeekLink n={11} anchor="sessions-or-tokens">Sessions or Tokens</WeekLink> explains why the monitor keeps sessions in a table instead of signed tokens. <WeekLink n={11} anchor="the-owasp-top-10">The OWASP Top 10</WeekLink> maps eight of the ten categories to code in the monitor, and <WeekLink n={11} anchor="step-11-keep-secrets-out-of-git">Step 11</WeekLink> checks that no commit holds a secret.
+
+The SSRF risk sits in the worker. `probe.Check` sends a `GET` through `http.DefaultClient` to any `http` or `https` URL that the api accepted. The login of Week 11 narrows who can add a URL: only people with an account. It does not narrow what the URL reaches. To close the gap, set the `client` variable of the probe package to a client built like `NewClient`. `Check` copies the client and replaces only `CheckRedirect`, which keeps the safe transport. With redirects off, as the probe has them, the probe never follows a `302` to an internal address. With redirects on, the dialer still checks every new connection.
+
+Three details of your own setup need care:
+
+- **The self-check on your laptop.** Week 18 adds a monitor of `http://web:8080/healthz` on the Compose network, a private address. The safe client refuses it. Allow that one host by name in configuration, or run the self-check through the public URL, as the VPS does.
+- **Your own public address.** `CheckAddr` allows `203.0.113.10`, the public address of the VPS, like any public address. ufw passes pod traffic, as Week 16 sets it up, and a monitor of `https://203.0.113.10:6443/` from the worker pod reaches the API server. Add the public addresses of your own machines to the refused list.
+- **The cluster network.** Pods in K3s use `10.42.0.0/16` and Services `10.43.0.0/16`, both private, both refused.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **Checking the hostname, or resolving it once before the request.** DNS rebinding answers your check with a public address and the HTTP client with an internal one. Check the address in `Control`, the one the socket connects to.
+- **A block list without IPv6.** The worker resolves AAAA records, the IPv6 answers, too, and `[::1]` or `[fd00:ec2::254]` walk past an IPv4-only list. Test both families, and the IPv4-mapped forms.
+- **Leaving the proxy on.** On a machine with `HTTPS_PROXY` set, `http.DefaultTransport` sends every request to the proxy, and the check guards the proxy address. Set `Proxy: nil` on the transport for user URLs.
+- **Showing the response body.** A monitor that displays what it fetched turns a blind SSRF into a reader of the metadata service. Show the status code and the timings.
+- **A second HTTP client somewhere else.** A preview feature, a webhook sender or the alerter built with `http.Client{}` skips the guard. Every client that fetches a user URL needs the safe dialer. The alerter webhook URL comes from your own configuration, not from users, which keeps it out of scope.
+- **Secrets in Git, logs or error messages.** A token in a commit lives on in every clone and fork. Rotate it first, then clean the history, as Week 11 says.
+- **Trusting a check in the browser.** A form that refuses `localhost` stops nobody who sends the `POST` with `curl`. Validate on the server.
 
 ## Going Deeper
 
-This section is not written yet.
+- **An egress proxy.** Stripe built Smokescreen, a proxy that applies the address rules for every outbound request of a fleet, which keeps the check out of each program.
+- **Kubernetes NetworkPolicy for egress.** K3s ships a network policy controller, and a policy on the worker pod that allows only public addresses on ports `80` and `443` adds a second lock below the Go code.
+- **IMDSv2 on AWS.** Version 2 of the metadata service needs a `PUT` for a session token first and a hop limit on the response, which blocks most SSRF through a plain `GET`.
+- **govulncheck.** The Go tool reports the known vulnerabilities in your dependencies that your code actually calls, which keeps the A03 scan quiet until it matters.
+- **STRIDE.** The threat model checklist from Microsoft names six kinds of threat: spoofing, tampering, repudiation, information disclosure, denial of service and elevation of privilege.
+- **Content Security Policy.** A response header that tells the browser which scripts can run, which limits the damage of a cross-site scripting bug in the status page.
 
 ## Further Reading
 
-This section is not written yet.
+- [OWASP Top 10:2025](https://owasp.org/Top10/2025/): each category with its Common Weakness Enumeration (CWE) entries, examples of attacks and the prevention steps OWASP recommends.
+- [OWASP Server-Side Request Forgery Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html): allow lists, block lists, DNS rebinding and why the check belongs on the resolved address.
+- [CWE-918: Server-Side Request Forgery](https://cwe.mitre.org/data/definitions/918.html): the MITRE definition of the weakness, with real vulnerability reports that trace back to it.
+- [Go package net/netip](https://pkg.go.dev/net/netip): the `Addr` and `Prefix` types and every class method that `CheckAddr` uses.
+- [Go net.Dialer](https://pkg.go.dev/net#Dialer): the `Control` and `ControlContext` hooks and when the dialer calls them.
