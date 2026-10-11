@@ -494,7 +494,7 @@ Nothing reached the remote. Fix the line, and the push goes through.
 
 **3. Compare the two gates.** `git push --no-verify` skips the hook. That is the difference between the two: a hook is a convenience on your laptop that anyone can skip or never install, while the required checks on GitHub apply to every merge. Use the hook to save yourself a red pull request, and the ruleset to protect `main`.
 
-Write down how long `make lint` takes. A pre-push hook over 30 seconds gets skipped. When yours is slower, move the slow checks to CI and keep the hook to the fast ones.
+Write down how long `make lint` takes. A hook that holds every push for 30 seconds trains you to type `--no-verify`. When yours takes that long, keep the fast checks in the hook and leave the slow ones to CI.
 
 </SideLab>
 
