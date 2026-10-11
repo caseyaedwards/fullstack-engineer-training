@@ -49,11 +49,12 @@ func Enqueue(ctx context.Context, db *pgxpool.Pool) (int64, error) {
 
 // Depth returns how many jobs wait in the queue, and how long the oldest
 // of them has waited past its run_at. A growing age means the workers
-// fall behind.
+// fall behind. A retry waits for a run_at in the future: greatest keeps
+// the age at 0 while only retries wait.
 func Depth(ctx context.Context, db *pgxpool.Pool) (queued int, oldest time.Duration, err error) {
 	var seconds float64
 	err = db.QueryRow(ctx, `
-		SELECT count(*), coalesce(extract(epoch FROM now() - min(run_at)), 0)::float8
+		SELECT count(*), greatest(coalesce(extract(epoch FROM now() - min(run_at)), 0), 0)::float8
 		FROM check_jobs`).Scan(&queued, &seconds)
 	return queued, time.Duration(seconds * float64(time.Second)), err
 }
@@ -77,7 +78,11 @@ type CheckFunc func(ctx context.Context, job Job) monitor.Result
 // claimSQL picks the oldest due job and locks its row. SKIP LOCKED passes
 // over rows that another transaction has locked, which means another
 // worker holds that job: this worker takes the next one instead of
-// waiting. FOR UPDATE OF j locks the job row only, not the monitor.
+// waiting. FOR KEY SHARE OF m keeps the monitor from being deleted until
+// the commit, the same lock the foreign key of check_results takes at the
+// insert. Taken at the claim, it makes a DELETE of the monitor wait for
+// the check instead of deadlocking with it. The second SKIP LOCKED passes
+// over a monitor that a DELETE has already locked.
 const claimSQL = `
 SELECT j.id, j.monitor_id, m.url, j.attempts
 FROM check_jobs j
@@ -85,12 +90,14 @@ JOIN monitors m ON m.id = j.monitor_id
 WHERE j.run_at <= now()
 ORDER BY j.run_at, j.id
 LIMIT 1
-FOR UPDATE OF j SKIP LOCKED`
+FOR UPDATE OF j SKIP LOCKED
+FOR KEY SHARE OF m SKIP LOCKED`
 
 // Work claims one due job, runs check on it, and stores the result and
 // deletes the job in the same transaction. It returns false when no job is
-// due. If anything fails before the commit, the transaction rolls back and
-// the job goes back to the queue.
+// due. When the check or the insert fails, the job stays locked: retry
+// counts the failure inside the same transaction. On shutdown, the
+// transaction rolls back and the job goes back to the queue unchanged.
 func Work(ctx context.Context, db *pgxpool.Pool, check CheckFunc) (bool, error) {
 	tx, err := db.Begin(ctx)
 	if err != nil {
@@ -109,11 +116,15 @@ func Work(ctx context.Context, db *pgxpool.Pool, check CheckFunc) (bool, error) 
 	}
 
 	if err := runAndStore(ctx, tx, job, check); err != nil {
-		tx.Rollback(ctx)
 		if ctx.Err() != nil {
-			return true, err // shutting down: the job stays as it is for the next worker
+			// Shutting down: roll back now, with a context that is not
+			// cancelled, which frees the job for the next worker at once.
+			rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+			defer cancel()
+			return true, errors.Join(err, tx.Rollback(rbCtx))
 		}
-		return true, errors.Join(err, retry(ctx, db, job))
+		// Go evaluates the arguments left to right: retry runs before Commit.
+		return true, errors.Join(err, retry(ctx, tx, job), tx.Commit(ctx))
 	}
 	return true, tx.Commit(ctx)
 }
@@ -129,27 +140,36 @@ INSERT INTO check_results
     (monitor_id, checked_at, up, status_code, dns_ms, connect_ms, tls_ms, first_byte_ms, total_ms, error)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
 
-// runAndStore runs the check, then inserts its result and deletes the job
-// inside tx. A panic in check becomes an error, which keeps one bad job
-// from stopping the worker.
+// runAndStore runs the check, then inserts its result and deletes the job,
+// inside a savepoint of tx. On failure it rolls back to the savepoint:
+// the insert and the delete are gone, and tx still holds the lock on the
+// job. A panic in check becomes an error, which keeps one bad job from
+// stopping the worker.
 func runAndStore(ctx context.Context, tx pgx.Tx, job Job, check CheckFunc) (err error) {
+	sp, err := tx.Begin(ctx) // a transaction inside a transaction is a SAVEPOINT
+	if err != nil {
+		return fmt.Errorf("job %d: savepoint: %w", job.ID, err)
+	}
 	defer func() {
 		if p := recover(); p != nil {
 			err = fmt.Errorf("job %d: check panicked: %v", job.ID, p)
+		}
+		if err != nil {
+			sp.Rollback(ctx) // ROLLBACK TO SAVEPOINT
 		}
 	}()
 	r := check(ctx, job)
 	if ctx.Err() != nil {
 		return fmt.Errorf("job %d: %w", job.ID, ctx.Err())
 	}
-	if _, err := tx.Exec(ctx, insertResultSQL, job.MonitorID, r.CheckedAt, r.Up, r.StatusCode,
+	if _, err := sp.Exec(ctx, insertResultSQL, job.MonitorID, r.CheckedAt, r.Up, r.StatusCode,
 		r.DNSMs, r.ConnectMs, r.TLSMs, r.FirstByteMs, r.TotalMs, r.Error); err != nil {
 		return fmt.Errorf("job %d: insert result: %w", job.ID, err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM check_jobs WHERE id = $1`, job.ID); err != nil {
+	if _, err := sp.Exec(ctx, `DELETE FROM check_jobs WHERE id = $1`, job.ID); err != nil {
 		return fmt.Errorf("job %d: delete: %w", job.ID, err)
 	}
-	return nil
+	return sp.Commit(ctx) // RELEASE SAVEPOINT
 }
 
 // endregion: store
@@ -159,18 +179,19 @@ func runAndStore(ctx context.Context, tx pgx.Tx, job Job, check CheckFunc) (err 
 // MaxAttempts is how many failed tries a job gets before Work drops it.
 const MaxAttempts = 3
 
-// retry counts a failed try of job outside the rolled-back transaction.
-// It moves run_at 30 seconds further out for each failure, and drops the
-// job after MaxAttempts failures. The scheduler queues a fresh job for the
-// monitor once its interval has passed.
-func retry(ctx context.Context, db *pgxpool.Pool, job Job) error {
+// retry counts a failed try of job in tx, which still holds the lock:
+// no other worker takes the job before the commit. It moves run_at 30
+// seconds further out for each failure, and drops the job after
+// MaxAttempts failures. The scheduler queues a fresh job for the monitor
+// once its interval has passed.
+func retry(ctx context.Context, tx pgx.Tx, job Job) error {
 	if job.Attempts+1 >= MaxAttempts {
-		if _, err := db.Exec(ctx, `DELETE FROM check_jobs WHERE id = $1`, job.ID); err != nil {
+		if _, err := tx.Exec(ctx, `DELETE FROM check_jobs WHERE id = $1`, job.ID); err != nil {
 			return err
 		}
 		return fmt.Errorf("job %d: dropped after %d attempts", job.ID, MaxAttempts)
 	}
-	_, err := db.Exec(ctx, `
+	_, err := tx.Exec(ctx, `
 		UPDATE check_jobs
 		SET attempts = attempts + 1,
 		    run_at = now() + make_interval(secs => 30 * (attempts + 1))

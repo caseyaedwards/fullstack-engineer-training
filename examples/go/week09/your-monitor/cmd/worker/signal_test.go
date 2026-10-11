@@ -15,8 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"fsp/examples/week09/your-monitor/internal/db"
 	"fsp/examples/week09/your-monitor/internal/db/dbtest"
+	"fsp/examples/week09/your-monitor/internal/monitor"
 	"fsp/examples/week09/your-monitor/internal/queue"
 )
 
@@ -37,8 +40,8 @@ func build(t *testing.T) string {
 // that never answer, and sends a signal while all three checks wait. On
 // SIGTERM and SIGINT the worker exits at once with code 0; SIGKILL ends it
 // with no chance to clean up. Either way, every job still waits in the
-// queue, untouched, for the next worker: Postgres rolls back the
-// transaction of a connection that closes.
+// queue, untouched, and a second worker claims all three: Postgres rolls
+// back the transaction of a connection that closes, and frees its locks.
 func TestSignalReturnsJobsToTheQueue(t *testing.T) {
 	bin := build(t)
 	tests := []struct {
@@ -112,8 +115,37 @@ func TestSignalReturnsJobsToTheQueue(t *testing.T) {
 			if n := dbtest.Count(t, pool, `SELECT count(*) FROM check_results`); n != 0 {
 				t.Errorf("%d results stored, want 0: a cancelled check is not a result", n)
 			}
+			if n := secondWorker(t, pool); n != 3 {
+				t.Errorf("a second worker claimed %d jobs after %v, want 3", n, tt.sig)
+			}
 		})
 	}
 }
 
 // endregion: signals
+
+// secondWorker claims jobs with a stub check, the way the next worker
+// does, and returns how many it claimed. Postgres frees the locks of a
+// killed worker once it reads the end of the connection, a moment after
+// the process dies: secondWorker tries for up to 5 seconds.
+func secondWorker(t *testing.T, pool *pgxpool.Pool) int {
+	t.Helper()
+	stub := func(_ context.Context, job queue.Job) monitor.Result {
+		return monitor.Result{MonitorID: job.MonitorID, CheckedAt: time.Now(), Up: true}
+	}
+	claimed := 0
+	for deadline := time.Now().Add(5 * time.Second); claimed < 3 && time.Now().Before(deadline); {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		worked, err := queue.Work(ctx, pool, stub)
+		cancel()
+		if err != nil {
+			t.Fatalf("second worker: %v", err)
+		}
+		if worked {
+			claimed++
+		} else {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	return claimed
+}

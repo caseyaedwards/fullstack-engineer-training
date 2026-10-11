@@ -161,7 +161,7 @@ open -> open: "check fails:\\nnothing new"
 
 The alerter keeps no state in memory. Each round, it reads the newest three results and the open incident of each monitor from Postgres and decides again. Restart it at any moment, and the next round picks up where the last one stopped.
 
-A **webhook** is a URL that accepts an HTTP `POST` and does something with it, such as posting a message to a chat channel. The alerter inserts the incident and sends the webhook inside one transaction, and commits only after the webhook answers with a `2xx` status. A webhook that fails rolls the insert back, and the next round tries both again. Notifications, too, arrive at least once: a crash between the webhook and the commit sends the same incident twice. The receiver spots a repeat by the `incident_id` in each event.
+A **webhook** is a URL that accepts an HTTP `POST` and does something with it, such as posting a message to a chat channel. The alerter inserts the incident and sends the webhook inside one transaction, and commits only after the webhook answers with a `2xx` status. A webhook that fails rolls the insert back, and the next round tries both again. Notifications, too, arrive at least once: a crash between the webhook and the commit sends the same incident twice. The receiver spots a repeat by the `incident_id` and the `kind` of each event.
 
 ## Build
 
@@ -204,8 +204,8 @@ Create `internal/queue/queue.go`. The scheduler needs one function:
 Three choices keep the queue correct:
 
 - **One clock.** Every time comes from `now()` in Postgres, never from the clock of the machine that runs the scheduler. Two schedulers on two machines with clocks that disagree still agree on what is due.
-- **No pile-up.** `NOT EXISTS` skips a monitor that still has a job waiting. When every worker is down, the queue holds one job per monitor, not one per round.
-- **Two schedulers, one job.** When two schedulers run the `UPDATE` at the same moment, the second waits for the row locks of the first. After the first commits, Postgres checks the `WHERE` again against the new row, sees a fresh `last_enqueued_at`, and skips it. `TestTwoSchedulersDoNotQueueAMonitorTwice` runs four schedulers on 50 monitors and counts 50 jobs.
+- **No pile-up.** `NOT EXISTS` skips a monitor that still has a job waiting. When every worker is down, the queue holds one job per monitor, not one per round. `TestEnqueueAddsOneJobPerDueMonitor` fails without that line.
+- **Two schedulers, one job.** When two schedulers run the `UPDATE` at the same moment, the second waits for the row locks of the first. After the first commits, Postgres checks the `WHERE` again against the new row, sees a fresh `last_enqueued_at`, and skips it. `TestTwoSchedulersDoNotQueueAMonitorTwice` runs four schedulers on 50 monitors and counts 50 jobs. A test transaction locks every monitor first, and the test waits until all four schedulers wait for it: the four `UPDATE`s overlap on every run, not only on a lucky one.
 
 ### Step 3: Claim and Run One Job
 
@@ -213,21 +213,21 @@ Add the worker side to the same file:
 
 <CodeFrom file="go/week09/your-monitor/internal/queue/queue.go" region="claim" lang="go" title="internal/queue/queue.go" />
 
-`ORDER BY j.run_at, j.id LIMIT 1` picks the oldest due job. `defer tx.Rollback(ctx)` is the safety net: on every path that returns before `Commit`, the transaction rolls back and the job goes back to the queue. After a successful `Commit`, the deferred `Rollback` does nothing.
+`ORDER BY j.run_at, j.id LIMIT 1` picks the oldest due job. `FOR KEY SHARE OF m` keeps the monitor from being deleted until the commit. Without it, a `DELETE` of a monitor in the middle of its check deadlocks with the worker: the `DELETE` waits for the job row, and the result `INSERT` waits for the monitor through its foreign key. `TestDeleteDuringCheck` reproduces that deadlock. `defer tx.Rollback(ctx)` is the safety net: on every path that returns before `Commit`, the transaction rolls back and the job goes back to the queue. After a successful `Commit`, the deferred `Rollback` does nothing.
 
-`Work` checks `ctx.Err()` before it counts a failure. On SIGTERM, the signal context from Week 3 cancels the check in flight. That check proves nothing about the site, and the job stays unchanged for the next worker. The transaction body:
+`Work` checks `ctx.Err()` before it counts a failure. On SIGTERM, the signal context from Week 3 cancels the check in flight. That check proves nothing about the site: `Work` rolls back with a context that is not cancelled, which frees the job for the next worker at once. The transaction body:
 
 <CodeFrom file="go/week09/your-monitor/internal/queue/queue.go" region="store" lang="go" title="internal/queue/queue.go" />
 
-The `INSERT` is the one Week 8 runs, inside the transaction this time. `recover` catches a **panic**, the Go crash that a nil pointer or an index out of range causes, and turns it into an error. Without it, one bad job stops a whole worker process.
+The `INSERT` is the one Week 8 runs, inside the transaction this time. `recover` catches a **panic**, the Go crash that a nil pointer or an index out of range causes, and turns it into an error. Without it, one bad job stops a whole worker process. The check runs inside a **savepoint**, a mark inside the transaction: on failure, `sp.Rollback` undoes the insert and the delete, and the transaction keeps its lock on the job.
 
 ### Step 4: Retry a Failing Job
 
-A job that fails, for example because of a panic or a lost database connection, gets two more tries, further apart each time. That growing gap is called **backoff**. A job that fails on every try is a **poison job**, and after `MaxAttempts` the worker drops it:
+A job that fails, for example because of a panic or a failed insert, gets two more tries, further apart each time. That growing gap is called **backoff**. A job that fails on every try is a **poison job**, and after `MaxAttempts` the worker drops it:
 
 <CodeFrom file="go/week09/your-monitor/internal/queue/queue.go" region="retry" lang="go" title="internal/queue/queue.go" />
 
-`retry` runs outside the rolled-back transaction, which means its `UPDATE` survives. A worker that dies on SIGKILL never reaches `retry`: its job comes back with the same `attempts`, and the next worker tries at once.
+`retry` runs in the same transaction, which still holds the job: no other worker takes it before the new `run_at` commits. A worker that dies on SIGKILL never reaches `retry`: its job comes back with the same `attempts`, and the next worker tries at once.
 
 ### Step 5: Test the Queue Against Postgres
 
@@ -248,21 +248,21 @@ go test -race ./internal/queue
 
 A concurrency test that never runs two things at once proves nothing. `maxPar` records the most checks in flight at one moment, and the test fails unless the workers overlap. The 2 ms sleep makes each fake check last long enough for the others to start.
 
-Break the claim on purpose, the way you broke the lock in Week 4, and watch the tests catch it. Delete the last line of `claimSQL`, `FOR UPDATE OF j SKIP LOCKED`, and run the tests:
+Break the claim on purpose, the way you broke the lock in Week 4, and watch the tests catch it. Delete the two locking lines at the end of `claimSQL`, and run the tests:
 
 ```txt
---- FAIL: TestEachJobRunsOnce (0.96s)
-    queue_test.go:152: job 94 ran 4 times, want 1
-    queue_test.go:152: job 111 ran 4 times, want 1
+--- FAIL: TestEachJobRunsOnce (0.92s)
+    queue_test.go:198: job 198 ran 4 times, want 1
+    queue_test.go:198: job 42 ran 4 times, want 1
 ```
 
-Without a lock, all four workers read the same oldest job and run it. Put back `FOR UPDATE OF j` without `SKIP LOCKED`:
+Without a lock, all four workers read the same oldest job and run it. Put back only `FOR UPDATE OF j`, without `SKIP LOCKED`:
 
 ```txt
 --- FAIL: TestEachJobRunsOnce (0.87s)
-    queue_test.go:156: at most 1 check ran at a time, want the workers to overlap
---- FAIL: TestLockedJobIsSkipped (2.06s)
-    queue_test.go:202: second Work = false, claim: timeout: context deadline exceeded; want false, nil: it must skip the locked job
+    queue_test.go:202: at most 1 check ran at a time, want the workers to overlap
+--- FAIL: TestLockedJobIsSkipped (2.05s)
+    queue_test.go:248: second Work = false, claim: timeout: context deadline exceeded; want false, nil: it must skip the locked job
 ```
 
 Every job ran once, but the workers took turns, and the second worker in `TestLockedJobIsSkipped` waited for the lock until its 2-second deadline. Restore the line. `TestCancelledWorkLeavesTheJob` cancels a check halfway and finds the job untouched, and `TestFailingJobIsRetriedThenDropped` panics in every check and watches the job get dropped after three attempts.
@@ -285,11 +285,11 @@ Without `MaxConns`, `pgxpool` opens at most 4 connections, or one per CPU on a m
 
 <CodeFrom file="go/week09/your-monitor/cmd/worker/main.go" region="run" lang="go" title="cmd/worker/main.go" />
 
-After a job, a goroutine asks again at once, because more jobs can be waiting. When the queue is empty, it waits `-poll` before the next look. `TestRunDrainsThenPolls` in `cmd/worker/main_test.go` counts the calls to prove both, and `TestWorkerChecksQueuedJobs` runs the real check against two `httptest` sites through the real queue.
+After a job, a goroutine asks again at once, because more jobs can be waiting. When the queue is empty, it waits `-poll` before the next look. `TestRunDrainsThenPolls` in `cmd/worker/main_test.go` counts the calls to prove both, and `TestWorkerChecksQueuedJobs` runs the real check against two `httptest` sites through the real queue. Delete `save`, `summary`, `summarize` and `internal/pool`: the queue replaces the rounds and the fixed pool. Replace `run_test.go`, which tests the old loop, with `main_test.go`, and keep `TestToResult` from it. In the `Makefile`, set `ARGS ?= -workers 10`. Delete `TestProgramSignals` and `TestWorkerStoresResults` from `cmd/worker/signal_test.go`: both pass `-interval`, which no longer exists. Keep `build`, and add a test with queued jobs in place of rounds:
 
-Delete `save`, `summary`, `summarize` and `internal/pool`: the queue replaces the rounds and the fixed pool. Replace `run_test.go`, which tests the old loop, with `main_test.go`, and keep `TestToResult` from it. In the `Makefile`, set `ARGS ?= -workers 10`.
+<CodeFrom file="go/week09/your-monitor/cmd/worker/signal_test.go" region="signals" lang="go" title="cmd/worker/signal_test.go" />
 
-Keep the idea of the Week 8 signal test, with queued jobs in place of rounds. `TestSignalReturnsJobsToTheQueue` in `cmd/worker/signal_test.go` builds the worker, queues three jobs for a site that never answers, and sends SIGTERM, SIGINT or SIGKILL while all three checks wait. On SIGTERM and SIGINT, the worker must log `stopped` and exit with code `0` within 5 seconds. After all three signals, the three jobs must still wait in `check_jobs` with `attempts` at `0`: when a connection closes, Postgres rolls back its transaction.
+On SIGTERM and SIGINT, the worker must log `stopped` and exit with code `0` within 5 seconds. After all three signals, the three jobs still wait in `check_jobs` with `attempts` at `0`, and `secondWorker`, in the same file, claims all three with `queue.Work`: when a connection closes, Postgres rolls back its transaction and frees its locks.
 
 ### Step 7: Add the Scheduler
 
@@ -444,7 +444,7 @@ The scheduler round line is the pulse of the queue. `queued` counts the jobs wai
 
 Follow it with `docker compose logs --follow scheduler`, and read these signs:
 
-- **`queued` returns to 0 between rounds, and `oldest_ms` stays under 1000.** The workers keep up.
+- **`queued` equals `enqueued`, and `oldest_ms` stays under 1000.** The workers keep up: the jobs of the last round are done.
 - **`queued` stays near the number of monitors, and `oldest_ms` grows every round.** No worker takes jobs: the workers are down, or each one waits for a database connection. `NOT EXISTS` keeps the queue from growing past one job per monitor.
 - **`oldest_ms` climbs during busy minutes and falls after them.** The workers keep up on average but not at the peak. Raise `WORKERS`, or start a second worker container with `docker compose up --detach --scale worker=2`.
 
@@ -463,7 +463,9 @@ During a round of checks, the `idle in transaction` row counts the checks in fli
 
 <OperateIt>
 
-**A worker gets SIGKILL in the middle of a check.** Try it: `docker compose kill --signal SIGKILL worker` while checks run. Postgres rolls back the open transactions, and the jobs wait in `check_jobs` with `attempts` unchanged. `restart: on-failure` starts the worker again, and it claims them. No result is lost, and none is stored twice.
+**A worker gets SIGKILL in the middle of a check.** Try it: `docker compose kill --signal SIGKILL worker` while checks run. Postgres rolls back the open transactions, and the jobs wait in `check_jobs` with `attempts` unchanged. The container stays down, because Docker never restarts a container that a person stopped by hand, and `docker compose kill` counts as one. Run `docker compose start worker`, and it claims the jobs. No result is lost, and none is stored twice.
+
+**A job crashes the worker process itself,** for example by running out of memory. The process dies before `retry`, the job never gains an attempt, and every worker that claims it dies too: a crash loop. A lease, from the At-Least-Once section, solves this case: the claim counts the attempt and commits before the check starts.
 
 **The scheduler is down.** The queue empties, no new results arrive, and the alerter stays quiet: no results means no failures. A monitor that stops monitoring looks exactly like a site that is up. `SELECT max(checked_at) FROM check_results` shows the time of the newest check: when it is older than the shortest interval plus a minute, the checks have stopped. Week 18 turns that into a check freshness SLO.
 
@@ -475,6 +477,7 @@ During a round of checks, the `idle in transaction` row counts the checks in fli
 | --- | --- |
 | `queued` near the number of monitors and `oldest_ms` growing | No worker claims jobs: the workers are down, stuck or out of connections |
 | No new rows in `check_results`, and `queued=0` | The scheduler is down, or no monitors exist |
+| A `DELETE /api/monitors/{id}` takes up to 5 seconds | A worker checks that monitor: the `DELETE` waits for the check, up to `-timeout` |
 | `job 12: dropped after 3 attempts` in the worker log | A poison job: the same job fails on every try. The error on the line before names the cause |
 | The alerter logs `round failed` every 10 seconds | The webhook or the database is down. The incident opens once both answer |
 | Two notifications for one `incident_id` | The alerter died between the webhook and its commit, and sent the event again: at-least-once delivery |
@@ -543,7 +546,7 @@ monitor=# SELECT pid, state, wait_event_type, wait_event, left(query, 40) AS que
 
 Terminal A is `idle in transaction`: it holds the lock and waits for you. Terminal B waits on `transactionid`, the transaction of A. `SELECT locktype, mode, granted FROM pg_locks WHERE NOT granted;` shows that request: a `ShareLock` with `granted` set to `f`, for false. When your monitor runs, its own sessions show up in the list too.
 
-**5. Release it.** Type `COMMIT;` in terminal A, and terminal B returns job 1 at once. Run `ROLLBACK;` in B and `DROP TABLE lab_jobs;` in A to clean up. A worker that hangs with an open transaction blocks others the same way. The Postgres setting `idle_in_transaction_session_timeout` ends such sessions after a time you choose.
+**5. Release it.** Type `COMMIT;` in terminal A, and terminal B returns job 1 at once. Run `DROP TABLE lab_jobs;` in A to clean up. A worker that hangs with an open transaction blocks others the same way. The Postgres setting `idle_in_transaction_session_timeout` ends such sessions after a time you choose.
 
 </SideLab>
 

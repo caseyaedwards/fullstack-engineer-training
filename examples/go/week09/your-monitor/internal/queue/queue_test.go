@@ -29,6 +29,28 @@ func addMonitors(t *testing.T, pool *pgxpool.Pool, n int) {
 		SELECT 'https://site' || i || '.example', 60 FROM generate_series(1, $1) AS i`, n)
 }
 
+// waitBlocked waits until n backends wait for a lock that the backend
+// with process ID pid holds. It proves that the goroutines of a test
+// overlap, instead of hoping that they do.
+func waitBlocked(t *testing.T, pool *pgxpool.Pool, pid uint32, n int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	// A backend that waits behind another waiter counts too.
+	const blockedSQL = `
+		WITH RECURSIVE blocked AS (
+		    SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))
+		    UNION
+		    SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid = ANY(pg_blocking_pids(a.pid))
+		)
+		SELECT count(*) FROM blocked`
+	for dbtest.Count(t, pool, blockedSQL, pid) < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("fewer than %d backends wait for the lock of backend %d after 10 s", n, pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // up returns a CheckFunc result for a site that answered 200.
 func up(job Job) monitor.Result {
 	code := 200
@@ -49,6 +71,8 @@ func TestEnqueueAddsOneJobPerDueMonitor(t *testing.T) {
 	}{
 		{"never queued: all three are due", "", 3},
 		{"jobs still waiting: none is due", "", 0},
+		{"jobs still waiting, queued 60 s ago: NOT EXISTS keeps them from piling up",
+			"UPDATE monitors SET last_enqueued_at = now() - interval '60 seconds'", 0},
 		{"jobs done, queued 10 s ago: not due yet",
 			"DELETE FROM check_jobs; UPDATE monitors SET last_enqueued_at = now() - interval '10 seconds'", 0},
 		{"queued 60 s ago: due again",
@@ -68,9 +92,27 @@ func TestEnqueueAddsOneJobPerDueMonitor(t *testing.T) {
 	}
 }
 
+// TestTwoSchedulersDoNotQueueAMonitorTwice starts four schedulers at the
+// same moment. A test transaction locks every monitor first, and the four
+// Enqueue calls wait for it, all inside their UPDATE. Then it commits, and
+// all four go at once.
 func TestTwoSchedulersDoNotQueueAMonitorTwice(t *testing.T) {
 	pool := newDB(t)
+	ctx := context.Background()
 	addMonitors(t, pool, 50)
+
+	gate, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Rollback(ctx)
+	if _, err := gate.Exec(ctx, `SELECT id FROM monitors FOR UPDATE`); err != nil {
+		t.Fatal(err)
+	}
+	var gatePID uint32
+	if err := gate.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&gatePID); err != nil {
+		t.Fatal(err)
+	}
 
 	var wg sync.WaitGroup
 	var total atomic.Int64
@@ -84,6 +126,10 @@ func TestTwoSchedulersDoNotQueueAMonitorTwice(t *testing.T) {
 			}
 			total.Add(n)
 		}()
+	}
+	waitBlocked(t, pool, gatePID, 4)
+	if err := gate.Commit(ctx); err != nil {
+		t.Fatal(err)
 	}
 	wg.Wait()
 	if got := total.Load(); got != 50 {
@@ -245,6 +291,57 @@ func TestCancelledWorkLeavesTheJob(t *testing.T) {
 
 // endregion: crash-test
 
+// region: delete-test
+
+// TestDeleteDuringCheck deletes a monitor while a worker checks it. The
+// DELETE must wait for the check and then remove the monitor, its job and
+// the new result, with no deadlock on either side.
+func TestDeleteDuringCheck(t *testing.T) {
+	pool := newDB(t)
+	ctx := context.Background()
+	addMonitors(t, pool, 1)
+	if _, err := Enqueue(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, release := make(chan uint32), make(chan struct{})
+	worked := make(chan error)
+	go func() {
+		_, err := Work(ctx, pool, func(ctx context.Context, job Job) monitor.Result {
+			var pid uint32 // the backend of this worker's transaction
+			pool.QueryRow(ctx, `SELECT pid FROM pg_locks WHERE locktype = 'relation'
+				AND relation = 'check_jobs'::regclass AND mode = 'RowShareLock' LIMIT 1`).Scan(&pid)
+			claimed <- pid
+			<-release
+			return up(job)
+		})
+		worked <- err
+	}()
+	workerPID := <-claimed
+
+	deleted := make(chan error)
+	go func() {
+		_, err := pool.Exec(ctx, `DELETE FROM monitors`)
+		deleted <- err
+	}()
+	waitBlocked(t, pool, workerPID, 1) // the DELETE waits for the check
+	close(release)
+
+	if err := <-worked; err != nil {
+		t.Errorf("Work: %v", err)
+	}
+	if err := <-deleted; err != nil {
+		t.Errorf("DELETE: %v", err)
+	}
+	for _, table := range []string{"monitors", "check_jobs", "check_results"} {
+		if n := dbtest.Count(t, pool, `SELECT count(*) FROM `+table); n != 0 {
+			t.Errorf("%s has %d rows after the DELETE, want 0", table, n)
+		}
+	}
+}
+
+// endregion: delete-test
+
 // region: retry-test
 
 // TestFailingJobIsRetriedThenDropped panics in every check. Each failure
@@ -296,5 +393,11 @@ func TestDepthReportsTheOldestJob(t *testing.T) {
 	}
 	if queued != 2 || oldest < 90*time.Second || oldest > 95*time.Second {
 		t.Errorf("Depth = %d, %v; want 2 and about 90s", queued, oldest)
+	}
+
+	// Only retries wait, with run_at in the future: the age is 0, not negative.
+	dbtest.Exec(t, pool, `UPDATE check_jobs SET run_at = now() + interval '30 seconds'`)
+	if queued, oldest, err = Depth(ctx, pool); err != nil || queued != 2 || oldest != 0 {
+		t.Errorf("Depth = %d, %v, %v; want 2, 0s, nil while only retries wait", queued, oldest, err)
 	}
 }

@@ -269,7 +269,7 @@ components:
         resolved_at:
           type: [string, "null"]
           format: date-time
-          description: When the first successful check ran; null while the incident is open.
+          description: When the first successful check after the failures ran, looking back at most -threshold checks; null while the incident is open.
         cause:
           type: string
           description: The error or status code of the newest failed check.

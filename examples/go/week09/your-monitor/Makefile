@@ -13,6 +13,8 @@ ARGS ?= -workers 10
 POSTGRES_PORT ?= 5432
 DATABASE_URL ?= postgres://monitor:$(POSTGRES_PASSWORD)@127.0.0.1:$(POSTGRES_PORT)/monitor?sslmode=disable
 export DATABASE_URL
+# make run-alerter posts to the webhook in .env.
+export ALERT_WEBHOOK_URL
 # endregion: database
 
 # Build every program under cmd/ into bin/, with the flags the Dockerfile uses.
