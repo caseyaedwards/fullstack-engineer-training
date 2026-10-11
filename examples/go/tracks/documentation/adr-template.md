@@ -11,7 +11,7 @@ of the old one.
 
 ## Status
 
-Proposed | Accepted | Superseded by NNNN
+Proposed | Accepted | Rejected | Deprecated | Superseded by NNNN
 
 Date: Month D, YYYY
 

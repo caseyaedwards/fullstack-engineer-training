@@ -116,7 +116,7 @@ deploy -> commit: SHA tag
     { hl: ['branch', 'ticket', 'branch->ticket'], caption: 'The branch name starts with the key. Once you connect them to GitHub, trackers such as Jira and Linear list the branch on the ticket as soon as you push it.' },
     { hl: ['pr', 'branch', 'ticket', 'pr->branch', 'pr->ticket'], caption: 'The pull request comes from the branch and carries the key in its title. The ticket shows the review status next to the description.' },
     { hl: ['commit', 'pr', 'commit->pr'], caption: 'Merging writes a commit on main. Its message names the pull request number, as GitHub writes it: Merge pull request #57.' },
-    { hl: ['deploy', 'commit', 'deploy->commit'], caption: 'The images job tags every image with the commit SHA, as in Week 14. A running pod names its image, the image names the commit, and the trail leads back to MON-42.' },
+    { hl: ['deploy', 'commit', 'deploy->commit'], caption: 'The images job tags every image with the commit SHA, as in Week 14. A running pod, the unit Kubernetes runs a container in, names its image, the image names the commit, and the trail leads back to MON-42.' },
   ]}
 />
 
@@ -142,7 +142,7 @@ The last row records a limit of the pattern, not a bug to fix: `UTF-8` and `SHA-
 
 <WeekLink n={0} anchor="step-10-practice-the-weekly-rhythm">Week 0</WeekLink> sets up the smallest working version of this track. Each week is one unit of work: one branch, `week-00` to `week-18`, one pull request, and the Done When items of the week in the description as a task list, where GitHub turns each `- [ ] item` line into a checkbox. The merged pull request is the record that the week is done, and the <WeekLink n={0} anchor="the-weekly-rhythm-one-branch-and-one-pull-request">weekly rhythm</WeekLink> repeats it for every week of the course.
 
-When a week grows beyond one pull request, or a bug turns up in the code from an earlier week, open a GitHub issue for it in your `your-monitor` repository, name the branch after it, and close it from the pull request with `Closes #N`. <WeekLink n={18} anchor="pages-tickets-and-the-watchdog">Week 18</WeekLink> routes alerts the same way: a page needs action now, while a **ticket alert** needs action within a working day, and a slow burn of the error budget opens one. The <TrackLink slug="git">Git track</TrackLink> covers branches and merges, and the <TrackLink slug="ci-cd">CI/CD track</TrackLink>, short for continuous integration and continuous delivery, covers the images tagged with the commit SHA.
+When a week grows beyond one pull request, or a bug turns up in the code from an earlier week, open a GitHub issue for it in your `your-monitor` repository, name the branch after it, and close it from the pull request with `Closes #N`. <WeekLink n={18} anchor="pages-tickets-and-the-watchdog">Week 18</WeekLink> routes alerts the same way: a page needs action now, while a **ticket alert** needs action within a working day, and a slow burn of the **error budget**, the share of requests your reliability target allows to fail over 30 days, opens one. The <TrackLink slug="git">Git track</TrackLink> covers branches and merges, and the <TrackLink slug="ci-cd">CI/CD track</TrackLink>, short for continuous integration and continuous delivery, covers the images tagged with the commit SHA.
 
 ## Common Mistakes
 
@@ -164,9 +164,9 @@ When a week grows beyond one pull request, or a bug turns up in the code from an
 
 ## Further Reading
 
-- [About issues](https://raw.githubusercontent.com/github/docs/main/content/issues/tracking-your-work-with-issues/learning-about-issues/about-issues.md): the source of the GitHub documentation page on issues, sub-issues and how teams use them.
-- [Linking a pull request to an issue](https://raw.githubusercontent.com/github/docs/main/content/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue.md): every closing keyword GitHub accepts, and the default-branch rule.
-- [Creating a branch for an issue](https://raw.githubusercontent.com/github/docs/main/content/issues/tracking-your-work-with-issues/using-issues/creating-a-branch-for-an-issue.md): how GitHub creates a branch from an issue and keeps the two linked.
-- [About Projects](https://raw.githubusercontent.com/github/docs/main/content/issues/planning-and-tracking-with-projects/learning-about-projects/about-projects.md): boards, tables and roadmaps on top of GitHub Issues.
-- [Configuring autolinks](https://raw.githubusercontent.com/github/docs/main/content/repositories/managing-your-repositorys-settings-and-features/managing-repository-settings/configuring-autolinks-to-reference-external-resources.md): turning keys such as `MON-42` into links to an external tracker.
+- [About issues](https://docs.github.com/en/issues/tracking-your-work-with-issues/learning-about-issues/about-issues): the GitHub documentation page on issues, sub-issues and how teams use them.
+- [Linking a pull request to an issue](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue): every closing keyword GitHub accepts, and the default-branch rule.
+- [Creating a branch for an issue](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/creating-a-branch-for-an-issue): how GitHub creates a branch from an issue and keeps the two linked.
+- [About Projects](https://docs.github.com/en/issues/planning-and-tracking-with-projects/learning-about-projects/about-projects): boards, tables and roadmaps on top of GitHub Issues.
+- [Configuring autolinks](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/managing-repository-settings/configuring-autolinks-to-reference-external-resources): turning keys such as `MON-42` into links to an external tracker.
 - [regexp](https://pkg.go.dev/regexp): the Go package the example uses, with its full syntax, including `\b`.

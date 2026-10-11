@@ -11,6 +11,8 @@ import (
 // against Percentile and against the draft in draft_test.go.
 type percentileFunc func(values []float64, p float64) (float64, error)
 
+// region: run
+
 // run calls f and turns a panic into a problem description, which
 // lets a case report a crash as a failure instead of ending the test.
 func run(f percentileFunc, values []float64, p float64) (got float64, err error, problem string) {
@@ -22,6 +24,8 @@ func run(f percentileFunc, values []float64, p float64) (got float64, err error,
 	got, err = f(values, p)
 	return got, err, ""
 }
+
+// endregion: run
 
 // region: cases
 

@@ -12,7 +12,7 @@ import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
-Git is the version control system that records every change to your project as a snapshot, on your laptop and on GitHub. Every pull request, every continuous integration (CI) run and every container image tag on this course names a Git commit. Once you know the handful of objects Git stores and that a branch is only a name pointing at one of them, commands such as `merge`, `rebase` and `reset` stop being spells and become moves on a graph you can draw.
+Git is the version control system that records every change to your project as a snapshot, on your laptop and on GitHub. Every pull request, every continuous integration (CI) run and, from Week 14, every container image, the packaged program that Docker runs, names a Git commit. Once you know the handful of objects Git stores and that a branch is only a name pointing at one of them, commands such as `merge`, `rebase` and `reset` stop being spells and become moves on a graph you can draw.
 
 ## What It Is
 
@@ -21,7 +21,7 @@ Git is the version control system that records every change to your project as a
 Git keeps your history in an **object database** under `.git/objects`. It stores four kinds of object:
 
 - A **blob** holds the bytes of one file, and nothing else: no name, no permissions, no date.
-- A **tree** is one directory: a list of entries, each with a mode, a type, an object ID and a name. A tree points at blobs for files and at other trees for subdirectories.
+- A **tree** is one directory: a list of entries, each with a mode, an object ID and a name. A tree points at blobs for files and at other trees for subdirectories.
 - A **commit** points at one tree, the snapshot of the whole project, and at its **parent** commits. It adds an author, a committer, two times and a message. The first commit has no parent. A merge commit has two.
 - An **annotated tag** names one object, such as a commit, and adds a tagger, a date and a message.
 
@@ -55,7 +55,7 @@ Three places hold versions of your files:
 
 ### Remotes, Fetch and Push
 
-A **remote** is another copy of the repository, such as the one on GitHub that `git clone` names `origin`. Git keeps a local record of each remote branch, such as `origin/main`, which `git fetch` updates. By default, `git pull` is `git fetch` followed by a merge of the remote branch into yours. `git push` sends your commits and asks the remote to move its branch to your commit. Without `--force`, the remote accepts only a **fast-forward**: a move where the old commit is an ancestor of the new one, which loses nothing.
+A **remote** is another copy of the repository, such as the one on GitHub that `git clone` names `origin`. Git keeps a local record of each remote branch, such as `origin/main`, which `git fetch` updates. `git pull` runs `git fetch`, then fast-forwards your branch. When both sides have new commits, Git stops and asks you to choose: `git pull --no-rebase` merges, `git pull --rebase` rebases, and the `pull.rebase` setting makes the choice permanent. `git push` sends your commits and asks the remote to move its branch to your commit. Without `--force`, the remote accepts only a **fast-forward**: a move where the old commit is an ancestor of the new one, which loses nothing.
 
 `git push --force` skips that check, and the remote branch drops every commit that only it holds. `git push --force-with-lease` refuses when the remote branch has moved since your last fetch, which makes it the safe form for your own branches. Never force-push `main`.
 
@@ -77,7 +77,7 @@ The exception is work you never committed or staged: `git reset --hard` and `git
 
 ## Diagrams
 
-The diagram shows the first two commits of the `week-00` branch from Week 0. `HEAD` names the branch, the branch names a commit, and each commit names a tree and its parent. The `go.mod` file stays the same in both commits, and both trees point at the same blob.
+The diagram shows the first two commits of the `week-00` branch from Week 0, with two of their three files. `HEAD` names the branch, the branch names a commit, and each commit names a tree and its parent. The `go.mod` file stays the same in both commits, and both trees point at the same blob.
 
 <Diagram
   id="git-objects"
@@ -171,7 +171,7 @@ $ git cat-file -p 'HEAD^{tree}'
 100644 blob e69de29bb2d1d6434b8b29ae775ad8c2e48c5391	empty.txt
 ```
 
-`git cat-file -p` prints any object by ID. Each line of the tree is a mode, a type, a blob ID and a name: the name lives in the tree, which is why renaming a file leaves its blob ID unchanged.
+`git cat-file -p` prints any object by ID. It prints each tree entry as a mode, a type that it derives from the mode, a blob ID and a name: the name lives in the tree, which is why renaming a file leaves its blob ID unchanged.
 
 ## In the Uptime Monitor
 
@@ -187,7 +187,7 @@ The <TrackLink slug="ci-cd">CI/CD track</TrackLink>, short for continuous integr
 - **Force-pushing a shared branch.** The remote drops the commits that others pushed, and their next pull fails or loses work. Never force-push `main`. On your own branch, use `git push --force-with-lease`.
 - **Rebasing commits that someone else has.** The rebased commits get new IDs, and anyone who built on the old ones now has two copies of the same change. Rebase only commits that exist on your laptop or on a branch nobody else uses.
 - **Committing a secret, then deleting it in the next commit.** The blob stays in history, and anyone who clones the repository can read it. Revoke the secret at its service, issue a new one, and add the file to `.gitignore`.
-- **Running `git reset --hard` with uncommitted work.** Git overwrites the files, and that work never reached the object database. Commit or stash first: `git stash push -m "before reset"` keeps a named copy.
+- **Running `git reset --hard` with uncommitted work.** Git overwrites the files, and changes you never staged never reached the object database. Commit or stash first: `git stash push -m "before reset"` keeps a named copy.
 - **Panicking after a bad rebase or reset.** The old commits still exist. Run `git reflog`, find the line before the mistake, and run `git branch rescue <id>`.
 - **Writing messages such as `fix` or `wip`.** `git log` and `git blame` then tell you nothing six months later. Write what the commit changes in a subject line of 50 characters or fewer, and why in the body below it.
 - **Committing generated files.** `bin/`, `node_modules/` and coverage profiles bloat every clone and conflict on every merge. List them in `.gitignore` before the first commit.
@@ -202,9 +202,9 @@ The <TrackLink slug="ci-cd">CI/CD track</TrackLink>, short for continuous integr
 
 ## Further Reading
 
-- [Pro Git, Git Objects](https://raw.githubusercontent.com/progit/progit2/main/book/10-git-internals/sections/objects.asc): the source of the Git internals chapter of the free Pro Git book, which builds blobs, trees and commits by hand.
-- [The Git user manual](https://raw.githubusercontent.com/git/git/master/Documentation/user-manual.adoc): the manual from the Git project, from first clone to the object database.
-- [git hash-object](https://raw.githubusercontent.com/git/git/master/Documentation/git-hash-object.adoc): the reference page for the command that the example matches.
-- [Everyday Git](https://raw.githubusercontent.com/git/git/master/Documentation/giteveryday.adoc): the Git project guide to everyday Git in about 20 commands, grouped by role.
-- [Hash function transition](https://raw.githubusercontent.com/git/git/master/Documentation/technical/hash-function-transition.adoc): the design document for moving Git from SHA-1 to SHA-256.
+- [Pro Git, Git Objects](https://git-scm.com/book/en/v2/Git-Internals-Git-Objects): the Git internals chapter of the free Pro Git book, which builds blobs, trees and commits by hand.
+- [The Git user manual](https://git-scm.com/docs/user-manual): the manual from the Git project, from first clone to the object database.
+- [git hash-object](https://git-scm.com/docs/git-hash-object): the reference page for the command that the example matches.
+- [Everyday Git](https://git-scm.com/docs/giteveryday): the Git project guide to everyday Git in about 20 commands, grouped by role.
+- [Hash function transition](https://git-scm.com/docs/hash-function-transition): the design document for moving Git from SHA-1 to SHA-256.
 - [crypto/sha1](https://pkg.go.dev/crypto/sha1): the Go package the example uses, with its warning about SHA-1 for new designs.

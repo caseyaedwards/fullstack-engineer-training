@@ -47,7 +47,7 @@ AI use on this course loosens in three stages. The **AI This Week** box on every
 
 **Stage 2, review everything**, starts in <WeekLink n={6} anchor="ai-this-week">Week 6</WeekLink>. The assistant writes code, and you own every line as if you typed it. You run the tests, read the diff, break the code on purpose to watch a test catch it, and explain it in the pull request in your own words.
 
-**Stage 3, pair partner**, starts in <WeekLink n={13} anchor="ai-this-week">Week 13</WeekLink>. You hand it work where you already know what right looks like: a Grafana panel, four manifests on the pattern of a first one you wrote, a refactor, a review of your own pull request. The decisions stay with you.
+**Stage 3, pair partner**, starts in <WeekLink n={13} anchor="ai-this-week">Week 13</WeekLink>. You hand it work where you already know what right looks like: a panel for the Grafana dashboard you build that week, the Week 15 configuration files for Kubernetes, the system that runs your containers, on the pattern of a first one you wrote yourself, a refactor, a review of your own pull request. The decisions stay with you.
 
 ### Ask for Explanations and Hints
 
@@ -90,16 +90,16 @@ Treat every exact identifier in an answer as unverified until you check it at th
 
 With a hosted assistant, everything you paste leaves your machine. Your plan and its settings decide whether the provider stores it, for how long, and whether it trains models on it: read the data policy before you paste code. At work, your employer decides which tools can see company code.
 
-Never paste a secret: an API key, a password, a session token, a private key, a kubeconfig or `.env`. Replace each with `REDACTED` first. When a secret leaks anyway, revoke it at the service that issued it and create a new one, as with a secret pushed to GitHub. Keep secrets out of the folders an agent works in, too.
+Never paste a secret: an API key, a password, a session token, a private key, a kubeconfig, which is the file that holds the credentials for a Kubernetes cluster, or `.env`. Replace each with `REDACTED` first. When a secret leaks anyway, revoke it at the service that issued it and create a new one, as with a secret pushed to GitHub. Keep secrets out of the folders an agent works in, too.
 
 ### What Stays Human at Stage 3
 
 At stage 3, the assistant writes most of the boilerplate. Two kinds of decision stay with you:
 
-- **Architecture**: which programs exist, what they own, how they talk, what a metric label costs, which limits protect the service. An assistant optimizes for the prompt in front of it, without the constraints you know from running the system.
-- **Incident response**: when production breaks, you follow the runbook, read your graphs and choose the mitigation. A model handed a pasted log suggests the most common fix for that error text, not the fix for your system.
+- **Architecture**: which programs exist, what they own, how they talk, which details each metric records, which limits protect the service. Week 13 shows how one extra detail on a metric multiplies its storage. An assistant optimizes for the prompt in front of it, without the constraints you know from running the system.
+- **Incident response**: when production breaks, you follow the **runbook**, the page that tells the person on call what to do for each alert, read your graphs and choose the **mitigation**, the action that stops the damage before the real fix. A model handed a pasted log suggests the most common fix for that error text, not the fix for your system.
 
-Use it around those decisions: to list options before you decide, to review your decision record, and to check a postmortem timeline for gaps.
+Use it around those decisions: to list options before you decide, to review the record where you write down a decision and its reasons, and to check the timeline of a **postmortem**, the write-up after an incident, for gaps.
 
 ## Diagrams
 
@@ -164,7 +164,7 @@ This draft has the shape that an assistant returns for the prompt "write a Go fu
 
 <CodeFrom file="go/tracks/aiassisted/draft_test.go" region="draft" lang="go" title="draft_test.go" />
 
-It compiles, and the median of 1 to 5 comes out as 3. Read it line by line, though, and three questions come up: what happens to the slice the caller passes in, what `values[i]` does when `i` equals `len(values)`, and why the error is always `nil`.
+It compiles, and the median of `1` to `5` comes out as `3`. Read it line by line, though, and three questions come up: what happens to the slice the caller passes in, what `values[i]` does when `i` equals `len(values)`, and why the error is always `nil`.
 
 ### The Cases You Write First
 
@@ -172,7 +172,11 @@ Before you read the draft, write down what a percentile function must do. Each c
 
 <CodeFrom file="go/tracks/aiassisted/percentile_test.go" region="cases" lang="go" title="percentile_test.go" />
 
-Each check takes the function under test, which runs the same cases against any function with this signature. `run` turns a panic into a failure message, which keeps one crash from hiding the other cases:
+Each check takes the function under test as an argument, and the same cases run against any function with this signature. `wantError` and `wantValue` sit at the end of the same file. A helper, `run`, recovers a panic and turns it into a failure message, which keeps one crash from hiding the other cases:
+
+<CodeFrom file="go/tracks/aiassisted/percentile_test.go" region="run" lang="go" title="percentile_test.go" />
+
+The test runs each case as a subtest:
 
 <CodeFrom file="go/tracks/aiassisted/percentile_test.go" region="test" lang="go" title="percentile_test.go" />
 
@@ -215,7 +219,7 @@ At stage 1, you write `Percentile` yourself and ask the assistant why NaN slips 
 
 <WeekLink n={6} anchor="ai-this-week">Week 6</WeekLink> starts stage 2: the assistant writes the api stub and a test, and you break the handler on purpose, add the missing cases and explain each function. <WeekLink n={11} anchor="ai-this-week">Week 11</WeekLink> keeps `.env`, session tokens and password hashes out of the chat.
 
-<WeekLink n={13} anchor="ai-this-week">Week 13</WeekLink> starts stage 3. The assistant builds a Grafana panel, and you choose the metric labels, because each label is a cardinality decision for Prometheus. The p95 latency on that dashboard is the 95th percentile from the example, estimated from histogram buckets. <WeekLink n={14} anchor="step-7-read-every-sha-yourself">Week 14</WeekLink> reads every action SHA from `git ls-remote`. <WeekLink n={18} anchor="ai-this-week">Week 18</WeekLink> keeps the incident drill in your hands and asks the assistant afterward to check the postmortem for gaps.
+<WeekLink n={13} anchor="ai-this-week">Week 13</WeekLink> starts stage 3. The assistant builds a panel for Grafana, the dashboard tool of that week, and you choose the labels on each metric: every distinct label value creates one more series that Prometheus, the metrics database, stores. The p95 latency on that dashboard is the 95th percentile from the example, which Prometheus estimates from counts of requests per duration range. <WeekLink n={14} anchor="step-7-read-every-sha-yourself">Week 14</WeekLink> reads every action SHA from `git ls-remote`. <WeekLink n={18} anchor="ai-this-week">Week 18</WeekLink> keeps the incident drill in your hands and asks the assistant afterward to check the postmortem for gaps.
 
 ## Common Mistakes
 

@@ -48,7 +48,7 @@ A **doc comment** is the comment directly above a package, type, function, const
 - Start with the name of the thing: `// FormatDuration formats d ...`. A reader scanning a list sees the name and its purpose together.
 - Write full sentences that say what the function returns or does, for which inputs, and what it does with bad input.
 - Name concrete values: `1500 milliseconds gives "1.5s"` beats `formats durations nicely`.
-- Link another name in square brackets, such as `[time.Duration.String]`. Since Go 1.19, `go doc` and `pkg.go.dev` render it as a link.
+- Link another name in square brackets, such as `[time.Duration.String]`. Since Go 1.19, `pkg.go.dev` renders it as a link, and `go doc` prints the plain name.
 - Put a **package comment**, starting with `// Package name`, above one `package` clause in the package.
 
 ### Examples That Run
@@ -59,9 +59,9 @@ The same idea runs this site: every code block that a week shows through `CodeFr
 
 ### Architecture Decision Records
 
-An **architecture decision record**, or ADR, is a short file that records one significant decision: why the job queue lives in Postgres, why the status page has no login, why the cluster runs k3s. Michael Nygard proposed the format in 2011: a numbered title, then four sections.
+An **architecture decision record**, or ADR, is a short file that records one significant decision: why the job queue lives in Postgres, why the status page has no login, why the server runs k3s, the small Kubernetes distribution of Week 16. Michael Nygard proposed the format in 2011: a numbered title, then four sections.
 
-- **Status**: proposed, accepted, rejected, deprecated or superseded by a later record.
+- **Status**: proposed, accepted, deprecated or superseded by a later record. Many teams add rejected, to keep the proposals they turned down.
 - **Context**: the forces at the time of the decision, with numbers: the load, the deadline, the options.
 - **Decision**: what the team chose, in one paragraph.
 - **Consequences**: what gets easier, what gets harder, and what tells you to revisit it.
@@ -215,9 +215,9 @@ The decision in the example ADR, the queue in Postgres, is the one that Week 9 e
 
 ## Further Reading
 
-- [Go Doc Comments](https://raw.githubusercontent.com/golang/website/master/_content/doc/comment.md): the source of the Go guide to doc comments, published at `go.dev/doc/comment`, with the syntax for links, lists and code blocks.
+- [Go Doc Comments](https://go.dev/doc/comment): the Go guide to doc comments, with the syntax for links, lists and code blocks.
 - [The testing package: examples](https://pkg.go.dev/testing#hdr-Examples): the reference for `Example` functions, `// Output:` and `// Unordered output:`.
 - [go/doc/comment](https://pkg.go.dev/go/doc/comment): the package that parses doc comments for `go doc` and `pkg.go.dev`, with the full syntax.
-- [ADR 0001: Record architecture decisions](https://raw.githubusercontent.com/npryce/adr-tools/master/doc/adr/0001-record-architecture-decisions.md): the first record of the adr-tools project, which adopts the Nygard format and links his original post.
-- [Architecture decision record examples](https://raw.githubusercontent.com/joelparkerhenderson/architecture-decision-record/main/README.md): a collection of ADR templates and examples, with advice on when to write one.
-- [Diátaxis](https://raw.githubusercontent.com/evildmp/diataxis-documentation-framework/main/README.rst): the project page of the framework, which points to the full text at `diataxis.fr`.
+- [ADR 0001: Record architecture decisions](https://github.com/npryce/adr-tools/blob/master/doc/adr/0001-record-architecture-decisions.md): the first record of the adr-tools project, which adopts the Nygard format and links his original post.
+- [Architecture decision record examples](https://github.com/joelparkerhenderson/architecture-decision-record/blob/main/README.md): a collection of ADR templates and examples, with advice on when to write one.
+- [Diátaxis](https://diataxis.fr/): the full framework by Daniele Procida, with a page for each of the four kinds and the compass for sorting a page.
