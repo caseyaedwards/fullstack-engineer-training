@@ -1,0 +1,8 @@
+# Never sent to docker build: keeps the context small and secrets out.
+.git
+.env
+bin
+# contract stub: week 10
+web/node_modules
+web/dist
+web/test-results
