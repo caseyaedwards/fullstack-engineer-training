@@ -90,6 +90,26 @@ http_requests_total{code="202",handler="hints"} 1
 	}
 }
 
+// TestInstrumentCountsSwitchingProtocols upgrades the connection with 101,
+// which net/http treats as a final response, unlike the other 1xx codes.
+func TestInstrumentCountsSwitchingProtocols(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	upgrade := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Upgrade", "websocket")
+		w.WriteHeader(http.StatusSwitchingProtocols)
+	})
+	serve(Instrument(reg, "upgrade", upgrade))
+
+	want := `
+# HELP http_requests_total HTTP requests answered, by handler and status code.
+# TYPE http_requests_total counter
+http_requests_total{code="101",handler="upgrade"} 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(want), "http_requests_total"); err != nil {
+		t.Error(err)
+	}
+}
+
 // TestInstrumentSharesOneRegistry wraps two handlers with one registry, as an
 // api with several routes does. Registering the same metric twice must not
 // panic, and each handler gets its own series.

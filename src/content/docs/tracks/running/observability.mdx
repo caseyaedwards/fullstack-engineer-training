@@ -146,7 +146,7 @@ Each bucket carries an `le` label, short for less than or equal, that holds its 
 
 <CodeFrom file="go/tracks/observability/observability.go" region="recorder" lang="go" title="observability.go" />
 
-An `http.ResponseWriter` does not report which status it sent. `statusRecorder` embeds the original writer and overrides `WriteHeader` to keep the code. Go sends `200` when a handler writes a body without calling `WriteHeader`, which is why `status` starts at `200`. `wrote` ignores a second final status, which `net/http` ignores too. Codes below `200`, such as `103 Early Hints`, are informational: `net/http` sends them before the final status, and `WriteHeader` skips them. `Unwrap` keeps `http.ResponseController` working through the wrapper.
+An `http.ResponseWriter` does not report which status it sent. `statusRecorder` embeds the original writer and overrides `WriteHeader` to keep the code. Go sends `200` when a handler writes a body without calling `WriteHeader`, which is why `status` starts at `200`. `wrote` ignores a second final status, which `net/http` ignores too. Codes below `200`, such as `103 Early Hints`, are informational, except `101 Switching Protocols`: `net/http` sends them before the final status, and `WriteHeader` skips them. `101` is final, because the connection switches to another protocol after it, and `WriteHeader` records it. `Unwrap` keeps `http.ResponseController` working through the wrapper.
 
 The tests use a fresh registry each, which starts every count at zero, and compare the exact text that Prometheus scrapes:
 

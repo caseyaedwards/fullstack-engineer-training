@@ -70,7 +70,8 @@ func Instrument(reg prometheus.Registerer, handler string, next http.Handler) ht
 // statusRecorder remembers the final status code that next writes. A handler
 // that never calls WriteHeader sends 200, which is where status starts.
 // Informational codes below 200, such as 103 Early Hints, come before the
-// final code and are not recorded.
+// final code and are not recorded. 101 Switching Protocols is the exception:
+// net/http treats it as final, and the connection changes protocol after it.
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
@@ -78,7 +79,7 @@ type statusRecorder struct {
 }
 
 func (s *statusRecorder) WriteHeader(code int) {
-	if !s.wrote && code >= 200 {
+	if !s.wrote && (code >= 200 || code == http.StatusSwitchingProtocols) {
 		s.status, s.wrote = code, true
 	}
 	s.ResponseWriter.WriteHeader(code)
