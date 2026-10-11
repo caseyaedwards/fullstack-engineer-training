@@ -34,19 +34,22 @@ The writable layer belongs to one container. Remove the container, and everythin
   id="layers"
   title="A container sees its image layers and one writable layer as one filesystem"
   code={`direction: down
-proc: "the process\\nsees one root filesystem"
-rw: "writable layer\\nper container, gone on removal"
-image: "image: read-only, shared" {
-  app: "COPY /hello\\n1.44 MB"
-  certs: "root certificates,\\ntzdata, passwd"
-  base: "base-files"
+proc: "the process"
+fs: "one root filesystem" {
+  grid-columns: 1
+  vertical-gap: 16
+  rw: "writable layer\\none per container, gone on removal" {width: 340}
+  image: "image layers: read-only, shared" {
+    grid-columns: 1
+    vertical-gap: 0
+    app: "COPY /hello, 1.44 MB" {width: 300}
+    certs: "root certificates, tzdata, passwd" {width: 300}
+    base: "base-files" {width: 300}
+  }
 }
 vol: "volume\\noutlives the container"
 
-proc -> rw: overlayfs view
-rw -> image.app
-image.app -> image.certs
-image.certs -> image.base
+proc -> fs: "overlayfs view"
 proc -> vol: "mounted at a path"
 `}
 />
@@ -88,20 +91,24 @@ What happens between `docker run` and your program running as PID 1:
 <Diagram
   id="docker-run"
   title="From docker run to a process in its own namespaces and cgroup"
-  code={`direction: down
+  code={`grid-rows: 2
+grid-columns: 4
+horizontal-gap: 110
+vertical-gap: 80
 cli: "docker CLI"
 dockerd: "dockerd"
-reg: "registry"
 ctd: "containerd"
-runc: "runc"
+reg: "registry"
+proc: "/hello\\nPID 1"
 kernel: "Linux kernel"
-proc: "/hello\\nPID 1 in its namespace"
+runc: "runc"
+gap: "" {style.opacity: 0}
 
-cli -> dockerd: "docker run hello"
-dockerd -> ctd: "pull, create, start"
-ctd -> reg: "pull missing layers"
+cli -> dockerd: "docker run"
+dockerd -> ctd: "create, start"
+ctd -> reg: "pull layers"
 ctd -> runc: "OCI bundle"
-runc -> kernel: "namespaces, cgroup, mounts"
+runc -> kernel: "namespaces,\\ncgroup"
 kernel -> proc: exec
 `}
   steps={[

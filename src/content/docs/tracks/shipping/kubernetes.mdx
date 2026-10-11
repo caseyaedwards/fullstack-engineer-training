@@ -31,31 +31,44 @@ The **control plane** stores the desired state and decides what runs where. The 
 <Diagram
   id="cluster"
   title="The control plane stores and decides, the nodes run the pods"
-  code={`direction: right
-you: "you\\nkubectl"
+  code={`grid-rows: 2
+grid-columns: 2
+horizontal-gap: 50
+vertical-gap: 90
+y: "" {
+  style.opacity: 0
+  you: "you:\\nkubectl\\napply"
+}
 cp: control plane {
+  grid-rows: 2
+  grid-columns: 2
+  horizontal-gap: 110
+  vertical-gap: 70
+  cm: "controller\\nmanager"
+  sched: scheduler
   api: "API server"
   etcd: etcd
-  sched: scheduler
-  cm: "controller\\nmanager"
-  api -> etcd: "reads and writes"
-  sched -> api: watches
   cm -> api: watches
+  sched -> api: watches
+  api -> etcd: "reads, writes"
 }
+gap: "" {style.opacity: 0}
 node: node {
+  grid-columns: 4
+  horizontal-gap: 52
+  proxy: "kube-proxy"
   kubelet: kubelet
   cri: "containerd"
-  proxy: "kube-proxy"
   pods: pods
   kubelet -> cri: "CRI"
   cri -> pods: runs
 }
-you -> cp.api: "kubectl apply"
-node.kubelet -> cp.api: watches
+y.you -> cp.api
 node.proxy -> cp.api: watches
+node.kubelet -> cp.api: watches
 `}
   steps={[
-    { hl: ['you', 'cp.api', 'cp.etcd', 'you->cp.api', 'cp.api->cp.etcd'], caption: 'The API server is the only door. It authenticates each request, checks that the caller holds the permission for it, validates the object against its schema, and stores it in etcd, a key-value database that keeps the cluster state.' },
+    { hl: ['y.you', 'cp.api', 'cp.etcd', 'y.you->cp.api', 'cp.api->cp.etcd'], caption: 'The API server is the only door. It authenticates each request, checks that the caller holds the permission for it, validates the object against its schema, and stores it in etcd, a key-value database that keeps the cluster state.' },
     { hl: ['cp.cm', 'cp.api', 'cp.cm->cp.api'], caption: 'The controller manager runs dozens of control loops in one process: Deployments, ReplicaSets, Jobs, nodes, and EndpointSlices, the lists of ready pod addresses behind each Service. Each loop watches its objects through the API server and writes new ones.' },
     { hl: ['cp.sched', 'cp.api', 'cp.sched->cp.api'], caption: 'The scheduler watches for pods with no node. It filters out nodes that lack the processor time and memory the pod requests, or break a rule, scores the rest, and writes the best node name into the pod.' },
     { hl: ['node.kubelet', 'node.cri', 'node.pods', 'node.kubelet->cp.api', 'node.kubelet->node.cri', 'node.cri->node.pods'], caption: 'The kubelet on each node watches for pods assigned to it, and starts their containers through containerd over the Container Runtime Interface, CRI. It runs the probes, the health checks defined for each container, and reports the pod status back.' },

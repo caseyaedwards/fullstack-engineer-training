@@ -109,32 +109,31 @@ An Ansible run against a fresh server, then the same run again:
 <Diagram
   id="ansible-runs"
   title="The chrony playbook on a fresh server, first run and second run"
-  code={`shape: sequence_diagram
-ctl: "control node\\nyour laptop"
-host: "managed node\\nmonitor.example.com"
+  code={`grid-rows: 2
+grid-columns: 3
+horizontal-gap: 90
+vertical-gap: 70
+facts: "SSH, gather facts\\nevery run"
+pkg: "package: chrony\\nfirst run: changed\\nsecond run: ok"
+tpl: "template: chrony.conf\\nfirst run: changed\\nsecond run: ok"
+hdl: "handler: Restart chrony\\nfirst run: runs once\\nsecond run: not notified"
+cmd: "command: chronyc\\nfirst run: ok\\nsecond run: ok"
+svc: "service: chrony\\nfirst run: ok\\nsecond run: ok"
 
-ctl -> host: "SSH, gather facts"
-ctl -> host: "package: chrony present"
-host -> ctl: "changed: installed"
-ctl -> host: "template: chrony.conf"
-host -> ctl: "changed: notify Restart chrony"
-ctl -> host: "service: started, enabled"
-host -> ctl: ok
-ctl -> host: "command: chronyc -n sources"
-host -> ctl: ok
-ctl -> host: "handler: Restart chrony"
-host -> ctl: changed
-ctl -> host: "second run: the same four tasks"
-host -> ctl: "ok, ok, ok, ok: changed=0"
+facts -> pkg
+pkg -> tpl
+tpl -> svc
+svc -> cmd
+cmd -> hdl: "if notified"
 `}
   steps={[
-    { hl: ['ctl', 'host', 'ctl->host'], caption: 'ansible-playbook connects over SSH to every host in the monitor group and gathers facts: Ubuntu, with apt as its package manager.' },
-    { hl: ['ctl', 'host', 'ctl->host#1', 'host->ctl'], caption: 'The package module finds no chrony, installs it with apt, and reports changed. The Ubuntu package starts the service with its own default configuration.' },
-    { hl: ['ctl', 'host', 'ctl->host#2', 'host->ctl#1'], caption: 'The template module renders chrony.conf, finds that the file on the host differs, checks the new file with chronyd -p, and moves it into place. It reports changed, which queues the Restart chrony handler.' },
-    { hl: ['ctl', 'host', 'ctl->host#3', 'host->ctl#2'], caption: 'The service module finds chrony running and enabled at boot, and reports ok. It does not restart anything: running is the state it asks for.' },
-    { hl: ['ctl', 'host', 'ctl->host#4', 'host->ctl#3'], caption: 'The command module runs chronyc -n sources, which lists the time servers chrony reaches. changed_when: false makes it report ok.' },
-    { hl: ['ctl', 'host', 'ctl->host#5', 'host->ctl#4'], caption: 'After the last task, the queued handler runs once and restarts chrony, which now reads the new configuration.' },
-    { hl: ['ctl', 'host', 'ctl->host#6', 'host->ctl#5'], caption: 'Run the playbook again. Every task finds the host already in its desired state and reports ok. Nothing notifies the handler, and chrony keeps running without a restart.' },
+    { hl: ['facts'], caption: 'ansible-playbook connects from your laptop, the control node, over SSH to every host in the monitor group, and gathers facts: Ubuntu, with apt as its package manager.' },
+    { hl: ['pkg', 'facts->pkg'], caption: 'The package module finds no chrony, installs it with apt, and reports changed. The Ubuntu package starts the service with its own default configuration.' },
+    { hl: ['tpl', 'pkg->tpl'], caption: 'The template module renders chrony.conf, finds that the file on the host differs, checks the new file with chronyd -p, and moves it into place. It reports changed, which queues the Restart chrony handler.' },
+    { hl: ['svc', 'tpl->svc'], caption: 'The service module finds chrony running and enabled at boot, and reports ok. It does not restart anything: running is the state it asks for.' },
+    { hl: ['cmd', 'svc->cmd'], caption: 'The command module runs chronyc -n sources, which lists the time servers chrony reaches. changed_when: false makes it report ok.' },
+    { hl: ['hdl', 'cmd->hdl'], caption: 'After the last task, the queued handler runs once and restarts chrony, which now reads the new configuration.' },
+    { hl: ['facts', 'pkg', 'tpl', 'svc', 'cmd', 'hdl'], caption: 'Run the playbook again. Every task finds the host already in its desired state and reports ok. Nothing notifies the handler, and chrony keeps running without a restart.' },
   ]}
 />
 

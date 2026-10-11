@@ -86,18 +86,22 @@ A pipeline from a pushed branch to production, with each gate a commit has to pa
 <Diagram
   id="pipeline"
   title="The stages of a pipeline, from git push to production"
-  code={`direction: down
+  code={`grid-rows: 2
+grid-columns: 4
+horizontal-gap: 110
+vertical-gap: 70
 dev: your branch
 pr: pull request
 ci: "CI checks"
 art: "image tagged\\nwith the SHA"
-reg: registry
-stg: staging
+gap: "" {style.opacity: 0}
 prod: production
+stg: staging
+reg: registry
 
 dev -> pr: git push
 pr -> ci: pull_request
-ci -> art: merge to main
+ci -> art: merge
 art -> reg: push
 reg -> stg: deploy
 stg -> prod: promote
