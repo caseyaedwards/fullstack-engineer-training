@@ -40,7 +40,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		// The lock belongs to this connection. If the unlock fails, close the
 		// connection, which ends the lock, instead of handing a locked
 		// connection back to the pool, where it blocks the Migrate of every
-		// other program.
+		// other program until the pool drops it, up to an hour later.
 		ctx := context.WithoutCancel(ctx)
 		if _, err := conn.Exec(ctx, `SELECT pg_advisory_unlock(8008)`); err != nil {
 			conn.Conn().Close(ctx)

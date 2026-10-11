@@ -14,11 +14,12 @@ on:
 permissions:
   contents: read
 
-# A new push to a pull request cancels the run of its older commit.
-# Runs on main never cancel each other: each one pushes images.
+# A pull request gets one group: a new push cancels the run of its older
+# commit. A push to main gets a group of its own, named by its run ID, and
+# no other run shares it: every commit on main builds its images.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 # endregion: head
 
 # region: lint

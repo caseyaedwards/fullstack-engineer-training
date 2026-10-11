@@ -12,8 +12,10 @@ automountServiceAccountToken: false
 # region: role
 # What deploy.yml needs, in this namespace only: kubectl apply reads each
 # object, then creates or patches it, and kubectl rollout status watches
-# the Deployments. No delete, no Secrets, no Roles: CI cannot read the
-# database password or give itself more rights.
+# the Deployments. No delete, no Secrets, no Pods, no Roles: CI cannot
+# give itself more rights or reach another namespace. It can still run
+# any image here, and a pod it starts can read the Secrets of this
+# namespace: whoever holds this token holds the database password too.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

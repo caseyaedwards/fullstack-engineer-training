@@ -4,7 +4,7 @@
 .PHONY: build test lint ci run run-api run-scheduler run-alerter up down logs web e2e check-obs
 
 # Arguments for make run. Override them: make run ARGS="-workers 20"
-ARGS ?= -workers 10 -debug-addr 127.0.0.1:6060
+ARGS ?= -workers 10 -debug-addr 127.0.0.1:6060 -pprof-addr 127.0.0.1:6061
 
 # Build every program under cmd/ into bin/, with the flags the Dockerfile uses.
 build:

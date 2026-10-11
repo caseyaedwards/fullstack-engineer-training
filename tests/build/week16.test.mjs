@@ -73,6 +73,33 @@ test('week 16 keeps port 6443 behind the SSH tunnel', () => {
   assert.doesNotMatch(code(firewall), /6443/);
 });
 
+test('week 16 closes the ports that ufw cannot see and enforces restricted Pod Security', () => {
+  const yaml = blocks('yaml').join('\n');
+  assert.match(yaml, /kind: ValidatingAdmissionPolicy\n/);
+  assert.match(yaml, /expression: object\.spec\.type == 'ClusterIP'/);
+  assert.match(yaml, /validationActions: \[Deny\]/);
+  for (const label of ['enforce: restricted', 'enforce-version: v1.36', 'warn: restricted', 'warn-version: v1.36']) {
+    assert.ok(yaml.includes(`pod-security.kubernetes.io/${label}`), `the namespace lacks ${label}`);
+  }
+  assert.doesNotMatch(html, /baseline:latest/);
+});
+
+test('week 16 runs Kubernetes 1.36 on the VPS and checks the overlay against it', () => {
+  const sh = blocks('sh').join('\n');
+  assert.match(sh, /INSTALL_K3S_CHANNEL=v1\.36 sh k3s-install\.sh/);
+  assert.match(sh, /-kubernetes-version 1\.36\.0/);
+  assert.doesNotMatch(html, /Kubernetes 1\.33|v1\.33|1\.33\.0/);
+});
+
+test('week 16 shows the RBAC test where the reader keeps it, with its render helper', () => {
+  const go = blocks('go').join('\n');
+  assert.match(go, /func render\(t \*testing\.T, dir string\) \(objs \[\]object, rendered bool\)/);
+  assert.match(go, /exec\.Command\(kubectl, "kustomize", filepath\.Join\(tmp, dir\)\)/);
+  assert.match(go, /func TestDeployerCanApplyTheProdOverlay/);
+  assert.match(go, /func allows\(rules \[\]rule/);
+  assert.ok(html.includes('deploy/k8s/manifests_test.go'), 'the page must say where the test goes');
+});
+
 test('week 16 issues from Let\'s Encrypt staging first and reads the cert-manager release', () => {
   const yaml = blocks('yaml').join('\n');
   assert.ok(yaml.includes('https://acme-staging-v02.api.letsencrypt.org/directory'), 'no staging server');

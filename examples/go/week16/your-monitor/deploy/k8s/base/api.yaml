@@ -1,56 +1,110 @@
-# contract stub: week 15
-apiVersion: v1
-kind: Service
-metadata:
-  name: api
-spec:
-  selector:
-    app: api
-  ports:
-    - name: http
-      port: 8080
-      targetPort: http
----
+# contract stub: week 15 (copied from content/week-15 at a328ab5, in review)
+# The api: two pods behind one Service. web reaches it as http://api:8080.
+# region: deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: api
+  labels:
+    app.kubernetes.io/name: api
 spec:
-  replicas: 1
+  replicas: 2
+  # The Deployment owns every pod whose labels match this selector.
   selector:
     matchLabels:
-      app: api
+      app.kubernetes.io/name: api
+  # Each new pod is made from this template, and carries its labels.
   template:
     metadata:
       labels:
-        app: api
+        app.kubernetes.io/name: api
     spec:
+      # region: pod-security
+      # Refuse to start a container whose user is root, and filter the
+      # system calls it can make with the default seccomp profile.
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      # endregion: pod-security
       containers:
         - name: api
+          # Only the name: each overlay sets the registry and the tag.
           image: your-monitor-api
-          imagePullPolicy: IfNotPresent
-          env:
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: your-monitor
-                  key: POSTGRES_PASSWORD
-            - name: DATABASE_URL
-              value: postgres://monitor:$(POSTGRES_PASSWORD)@postgres:5432/monitor?sslmode=disable
+          args: ["-metrics-addr", ":2112"]
           ports:
             - name: http
               containerPort: 8080
+            - name: metrics
+              containerPort: 2112
+          # region: env
+          # Every key of the ConfigMap and the Secret becomes a variable.
+          envFrom:
+            - configMapRef:
+                name: monitor-config
+            - secretRef:
+                name: postgres
+          env:
+            # $(NAME) takes the value of a variable defined before it, here
+            # from the ConfigMap and the Secret. postgres is the Service name.
+            - name: DATABASE_URL
+              value: postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)?sslmode=disable
+          # endregion: env
+          # region: probes
+          # Ready: the Service sends requests to this pod. Two failures in
+          # a row, 10 seconds, take it out of the Service until it passes.
           readinessProbe:
             httpGet:
               path: /healthz
               port: http
+            periodSeconds: 5
+            failureThreshold: 2
+          # Alive: three failures in a row, 30 seconds, restart the container.
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # endregion: probes
+          # region: resources
+          # requests: what the scheduler reserves on a node for this container.
+          # limits: above 500m of CPU, the kernel slows the container down;
+          # above 256Mi of memory, the kernel kills it (OOMKilled).
           resources:
             requests:
               cpu: 50m
               memory: 64Mi
             limits:
-              memory: 128Mi
+              cpu: 500m
+              memory: 256Mi
+          # endregion: resources
+          # region: container-security
+          # The image writes no files: mount its filesystem read-only, and
+          # give the process no way to gain privileges it does not start with.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # endregion: container-security
+# endregion: deployment
+---
+# region: service
+# A stable name and address for the ready api pods: the DNS name api,
+# port 8080. Inside the cluster only.
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  labels:
+    app.kubernetes.io/name: api
+spec:
+  selector:
+    app.kubernetes.io/name: api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+# endregion: service

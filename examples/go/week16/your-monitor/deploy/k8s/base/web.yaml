@@ -1,48 +1,75 @@
-# contract stub: week 15
-apiVersion: v1
-kind: Service
-metadata:
-  name: web
-spec:
-  selector:
-    app: web
-  ports:
-    - name: http
-      port: 8080
-      targetPort: http
----
+# contract stub: week 15 (copied from content/week-15 at a328ab5, in review)
+# web: nginx serves the status page and passes /api/ on to the api Service.
+# region: web
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: web
+  labels:
+    app.kubernetes.io/name: web
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: web
+      app.kubernetes.io/name: web
   template:
     metadata:
       labels:
-        app: web
+        app.kubernetes.io/name: web
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: web
           image: your-monitor-web
-          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8080
           readinessProbe:
             httpGet:
-              path: /
+              path: /healthz
               port: http
+            periodSeconds: 5
           livenessProbe:
             httpGet:
-              path: /
+              path: /healthz
               port: http
+            periodSeconds: 10
+            failureThreshold: 3
           resources:
             requests:
-              cpu: 20m
+              cpu: 25m
               memory: 32Mi
             limits:
-              memory: 64Mi
+              cpu: 250m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # nginx writes its PID file and request buffers under /tmp. With a
+          # read-only root filesystem, /tmp is an empty directory of its own.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+# endregion: web
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  labels:
+    app.kubernetes.io/name: web
+spec:
+  selector:
+    app.kubernetes.io/name: web
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

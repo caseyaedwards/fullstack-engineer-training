@@ -109,7 +109,7 @@ func TestRolloutWaitsForEveryDeployment(t *testing.T) {
 	}
 	waited := strings.Fields(m[1])
 	var rendered []string
-	for _, d := range ofKind(render(t, prodDir), "Deployment") {
+	for _, d := range ofKind(render(t, filepath.Join(repo, "deploy/k8s/overlays/prod")), "Deployment") {
 		rendered = append(rendered, d.Metadata.Name)
 	}
 	slices.Sort(waited)

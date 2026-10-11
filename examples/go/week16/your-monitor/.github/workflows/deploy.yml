@@ -2,7 +2,7 @@
 # Deploy: applies the Kubernetes manifests to the cluster that the
 # KUBECONFIG secret names, with the images that CI pushed for one commit.
 # It runs only when you start it from the Actions tab or with
-# gh workflow run deploy.yml. The cluster is k3s on one VPS: the job
+# gh workflow run deploy.yml. The cluster is K3s on one VPS: the job
 # reaches its API server through an SSH tunnel, because the firewall
 # keeps port 6443 closed to the internet.
 name: Deploy
@@ -18,7 +18,8 @@ on:
 permissions:
   contents: read
 
-# One deploy at a time. A second run waits for the first to finish.
+# One deploy at a time. A second run waits for the first to finish. A
+# third run cancels the waiting second one: the newest request wins.
 concurrency:
   group: deploy-production
   cancel-in-progress: false
@@ -37,7 +38,7 @@ jobs:
           persist-credentials: false
       - uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
         with:
-          version: v1.33.13
+          version: v1.36.5
 
       # kubectl reads KUBECONFIG as a path to a file, not as the file itself.
       # umask 077: only the runner user can read the file.

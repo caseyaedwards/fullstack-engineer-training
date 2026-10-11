@@ -6,9 +6,10 @@
 //
 //	DATABASE_URL=postgres://... go run ./week16/your-monitor/cmd/worker
 //
-// With -debug-addr, it serves pprof and its Prometheus metrics, on
-// /metrics, on that address. With OTEL_EXPORTER_OTLP_ENDPOINT set, it
-// sends a trace for each job to that OpenTelemetry collector.
+// With -debug-addr, it serves its Prometheus metrics, on /metrics, on that
+// address. With -pprof-addr, a loopback address, it serves pprof there.
+// With OTEL_EXPORTER_OTLP_ENDPOINT set, it sends a trace for each job to
+// that OpenTelemetry collector.
 
 // region: imports
 package main
@@ -20,7 +21,6 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	_ "net/http/pprof" //nolint:gosec // G108: pprof answers only on -debug-addr, which you bind to 127.0.0.1
 	"os"
 	"os/signal"
 	"sync"
@@ -49,7 +49,8 @@ func main() {
 	timeout := flag.Duration("timeout", 5*time.Second, "how long to wait for each check")
 	workers := flag.Int("workers", 10, "how many checks run at the same time")
 	poll := flag.Duration("poll", time.Second, "how long a worker waits before it looks again when the queue is empty")
-	debugAddr := flag.String("debug-addr", "", "address for the pprof debug server, for example 127.0.0.1:6060; empty turns it off")
+	debugAddr := flag.String("debug-addr", "", "address for the /metrics server, for example 127.0.0.1:6060; empty turns it off")
+	pprofAddr := flag.String("pprof-addr", "", "loopback address for the pprof server, for example 127.0.0.1:6061; empty turns it off")
 	flag.Parse()
 	if *timeout <= 0 || *poll <= 0 || *workers < 1 {
 		fmt.Fprintln(os.Stderr, "-timeout and -poll must be more than 0, and -workers at least 1")
@@ -72,10 +73,21 @@ func main() {
 		}
 	}()
 	if *debugAddr != "" {
-		// pprof registers its pages on http.DefaultServeMux; /metrics joins them.
-		http.Handle("/metrics", promhttp.Handler())
+		// Prometheus scrapes this address from another container: it
+		// serves /metrics and nothing else.
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.Handler())
 		go func() {
-			slog.Error("debug server stopped", "err", obs.NewServer(*debugAddr, http.DefaultServeMux).ListenAndServe())
+			slog.Error("debug server stopped", "err", obs.NewServer(*debugAddr, mux).ListenAndServe())
+		}()
+	}
+	if *pprofAddr != "" {
+		srv, err := obs.NewPprofServer(*pprofAddr)
+		if err != nil {
+			obs.Fatal(err)
+		}
+		go func() {
+			slog.Error("pprof server stopped", "err", srv.ListenAndServe())
 		}()
 	}
 	// endregion: setup
