@@ -1,0 +1,33 @@
+# region: load-pod
+# A one-off pod for the load drill: ab, the benchmarking tool of the
+# Apache HTTP server, sends 300,000 requests to the api Service, 20 at a
+# time, past Traefik. You apply it by hand; it is not part of an overlay.
+# The namespace enforces the restricted Pod Security Standard, so the pod
+# runs as nobody (65534) with no extra rights.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: load
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: ab
+      image: httpd:2.4
+      command: ["ab", "-n", "300000", "-c", "20", "http://api:8080/api/monitors"]
+      resources:
+        requests:
+          cpu: 100m
+          memory: 32Mi
+        limits:
+          memory: 128Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+# endregion: load-pod

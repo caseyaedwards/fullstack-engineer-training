@@ -1,0 +1,10 @@
+# Never sent to docker build: keeps the context small and secrets out.
+.git
+.env
+bin
+web/node_modules
+web/dist
+web/test-results
+# The Postgres password of the kind cluster.
+deploy/k8s/overlays/kind/postgres.env
+backups

@@ -1,0 +1,18 @@
+# region: rollout
+# Applied to api, worker and web. A rollout starts one new pod, waits until
+# it has passed its readiness probe for 10 seconds, then stops one old
+# pod, and repeats. Nothing serves less than the full count.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: any # the target in kustomization.yaml picks the Deployments
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  minReadySeconds: 10
+  progressDeadlineSeconds: 180
+  revisionHistoryLimit: 5
+# endregion: rollout
