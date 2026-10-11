@@ -235,7 +235,7 @@ In the function you pass to `every`, give `round` a context with a deadline of t
 Do the same in the other two programs:
 
 - **alerter**: add the Go command-line flag `-metrics-addr`, start the same server, give each `Round` the same deadline, and beat after it, failed or not. `maxAge` is three times `-interval`: 30 seconds.
-- **worker**: add `mux.Handle("GET /healthz", health)` to the mux of its `-debug-addr` server, next to `/metrics`, and call `health.Beat()` at the top of the function you pass to `run`. pprof stays on its own loopback server, `-pprof-addr`. `maxAge` is `3 * (*timeout + *poll)`, 18 seconds: no beat for that long means every worker goroutine is stuck.
+- **worker**: add `mux.Handle("GET /healthz", health)` to the mux that `metricsMux` returns, next to `/metrics`, and call `health.Beat()` at the top of the function you pass to `run`. pprof stays on its own loopback server, `-pprof-addr`. `maxAge` is `3 * (*timeout + *poll)`, 18 seconds: no beat for that long means every worker goroutine is stuck.
 
 The test sleeps past `maxAge` and expects `503`, then beats and expects `200`:
 

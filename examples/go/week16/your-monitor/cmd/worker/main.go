@@ -91,8 +91,7 @@ func main() {
 	if *debugAddr != "" {
 		// Prometheus scrapes /metrics on this address from another
 		// container, and the kubelet probes /healthz. pprof stays off it.
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.Handler())
+		mux := metricsMux()
 		mux.Handle("GET /healthz", health)
 		go func() {
 			slog.Error("debug server stopped", "err", obs.NewServer(*debugAddr, mux).ListenAndServe())
@@ -129,6 +128,19 @@ func main() {
 }
 
 // endregion: main
+
+// region: metricsmux
+
+// metricsMux returns the mux of -debug-addr with /metrics on it; main adds
+// /healthz. It is a mux of its own, never http.DefaultServeMux, which a
+// blank import of net/http/pprof fills with the profiling pages.
+func metricsMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	return mux
+}
+
+// endregion: metricsmux
 
 // region: connect
 

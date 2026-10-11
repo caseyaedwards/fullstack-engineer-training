@@ -263,7 +263,11 @@ Delete the blank import. gosec reports only a blank import of `net/http/pprof`, 
 
 <CodeFrom file="go/week14/your-monitor/cmd/worker/main.go" region="setup" lang="go" title="cmd/worker/main.go" />
 
-Add `-pprof-addr 127.0.0.1:6061` to `ARGS` in the `Makefile`, and use `http://127.0.0.1:6061/debug/pprof/` wherever <a href={weekHref(5)}>Week 5</a> used port 6060. Two tests in `serve_test.go` check that the server refuses `:6061` and `0.0.0.0:6061`, and that the pages answer.
+The mux of `-debug-addr` moves into a function of its own, which a test can call. Add it below `main`:
+
+<CodeFrom file="go/week14/your-monitor/cmd/worker/main.go" region="metricsmux" lang="go" title="cmd/worker/main.go" />
+
+Add `-pprof-addr 127.0.0.1:6061` to `ARGS` in the `Makefile`, and use `http://127.0.0.1:6061/debug/pprof/` wherever <a href={weekHref(5)}>Week 5</a> and <a href={weekHref(12)}>Week 12</a> used port 6060. Two tests in `serve_test.go` check that the server refuses `:6061` and `0.0.0.0:6061`, and that the pages answer. `TestMetricsMuxServesNoPprof` in `main_test.go` checks the other side: `-debug-addr` answers `/metrics`, and `/debug/pprof/` on it is a `404`.
 
 Run `make lint` again until it prints `0 issues.`, then run `make test`.
 

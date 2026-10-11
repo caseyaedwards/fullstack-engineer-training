@@ -31,8 +31,10 @@ age --encrypt --recipient="$AGE_RECIPIENT" --output="$work/$name.dump.age" "$wor
   fail "age exited with $?"
 rm "$work/$name.dump"
 
-# The key may add objects and nothing else: rclone must not list the
-# bucket, check whether it exists, or read an object back. The counts go
+# The upload key needs to add objects and nothing else, so rclone does not
+# list the bucket, check whether it exists, or read an object back. No
+# provider offers a key that can only add: versioning and the lifecycle
+# rule of the bucket cover what it can do beyond that. The counts go
 # last, so a .counts object always has its dump beside it.
 for f in "$name.dump.age" "$name.counts"; do
   rclone copyto --no-check-dest --s3-no-check-bucket --s3-no-head \

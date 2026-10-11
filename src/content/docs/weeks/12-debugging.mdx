@@ -375,8 +375,8 @@ Before the fix, it fails with two lines: `poll_test.go:15: defaultPoll = 1µs, w
 The fourth commit says it changes no behavior. Look at an HTTPS monitor: `GET /api/monitors/<id>` shows its `url`, and the results show its timings. Use the `id` of a monitor whose `url` starts with `https://`. This example output leaves out the other fields:
 
 ```sh
-curl -s http://127.0.0.1:8080/api/monitors/1
-curl -s 'http://127.0.0.1:8080/api/monitors/1/results?limit=1'
+curl -s http://127.0.0.1:8080/api/monitors/<id>
+curl -s 'http://127.0.0.1:8080/api/monitors/<id>/results?limit=1'
 ```
 
 ```txt
@@ -425,7 +425,7 @@ Breakpoint 1 set at 0x86cf2b for github.com/you/your-monitor/internal/probe.Chec
 (*time.Time)(0xc000010ea0)
 ```
 
-Go names the function literals inside `Check` in order: `begin` is `func1`, `end` is `func2`, and the hooks follow. Line 64 is the `ConnectDone` hook, and `from` points to `connectStart`. That one is right. Continue to the next call:
+Go names the function literals inside `Check` in order: `begin` is `func1`, `end` is `func2`, `result` is `func3`, and the hooks follow from `func4`. `ConnectDone`, on line 64, is `func7`, and `from` points to `connectStart`. That one is right. Continue to the next call:
 
 ```txt
 (dlv) continue

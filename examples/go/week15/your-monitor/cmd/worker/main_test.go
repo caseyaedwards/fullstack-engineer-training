@@ -23,6 +23,27 @@ import (
 	"fsp/examples/week15/your-monitor/internal/queue"
 )
 
+// TestMetricsMuxServesNoPprof checks the handler of -debug-addr, which
+// listens on every interface: it serves /metrics, and /debug/pprof/ is a 404.
+func TestMetricsMuxServesNoPprof(t *testing.T) {
+	srv := httptest.NewServer(metricsMux())
+	defer srv.Close()
+	for path, want := range map[string]int{
+		"/metrics":             http.StatusOK,
+		"/debug/pprof/":        http.StatusNotFound,
+		"/debug/pprof/cmdline": http.StatusNotFound,
+	} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Errorf("GET %s = %d, want %d", path, resp.StatusCode, want)
+		}
+	}
+}
+
 // captureLog sends the default logger to a buffer, as JSON, for the
 // length of the test.
 func captureLog(t *testing.T) *bytes.Buffer {
