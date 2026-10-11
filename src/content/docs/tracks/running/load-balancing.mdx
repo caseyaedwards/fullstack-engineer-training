@@ -28,9 +28,9 @@ The balancer itself becomes the one thing every request needs. Cloud providers r
 
 ### Layer 4 and Layer 7
 
-Networking describes a connection in layers. **Layer 4**, the transport layer, is TCP, the Transmission Control Protocol, and UDP, the User Datagram Protocol: addresses, ports and connections. **Layer 7**, the application layer, is the protocol inside the connection, here HTTP. The <TrackLink slug="networking">Networking track</TrackLink> covers the layers in full.
+Networking describes a connection in layers. **Layer 4**, the transport layer, is TCP, the Transmission Control Protocol, and UDP, the User Datagram Protocol: ports and connections. They travel between addresses of **layer 3**, the network layer, where the Internet Protocol (IP) moves each packet from one IP address to another. **Layer 7**, the application layer, is the protocol inside the connection, here HTTP. The <TrackLink slug="networking">Networking track</TrackLink> covers the layers in full.
 
-A **layer 4 balancer** sees only the IP address and port of each packet. It picks a backend when a TCP connection opens and forwards every byte of that connection to the same backend, without reading it. It cannot route by path, and it does not end TLS: the encrypted bytes pass through to the backend. It is fast and protocol-agnostic. kube-proxy and ServiceLB in k3s, and network load balancers in the cloud, work at layer 4.
+A **layer 4 balancer** sees only the IP address and port of each packet. It picks a backend when a TCP connection opens and forwards every byte of that connection to the same backend, without reading it. It cannot route by path, and it does not end Transport Layer Security (TLS), the encryption under HTTPS: the encrypted bytes pass through to the backend. It is fast and protocol-agnostic. Three balancers on your path work at layer 4: kube-proxy, the part of Kubernetes that implements Services on each node; ServiceLB in k3s; and network load balancers in the cloud.
 
 A **layer 7 balancer** is a **reverse proxy**: it accepts the connection itself, ends TLS, reads each HTTP request and opens its own connection to the backend it picks. It routes by host name, path or header, retries a failed request on another backend, adds headers such as `X-Forwarded-For`, and limits rates. It picks a backend per request, not per connection. Traefik, nginx, HAProxy and Envoy, and application load balancers in the cloud, work at layer 7.
 
@@ -42,14 +42,14 @@ The rule that picks the next backend is the **algorithm**:
 
 - **Round robin** hands out backends in turn: A, B, C, A, B, C. It needs no information about the backends and works well when every request costs about the same. **Weighted round robin** gives a bigger machine more turns. Traefik and nginx use weighted round robin by default, with every weight at one unless you set it.
 - **Least connections** picks the backend with the fewest requests in progress. When some requests take 5 ms and others 5 seconds, a backend stuck on slow requests stops receiving new ones.
-- **Random** picks any healthy backend. kube-proxy in its default iptables mode picks a pod at random for each new connection. **Power of two choices** picks two backends at random and sends the request to the less busy one, which comes close to least connections without tracking every backend.
+- **Random** picks any healthy backend. kube-proxy in its default iptables mode, which writes rules into the packet filter of the Linux kernel, picks a pod at random for each new connection. **Power of two choices** picks two backends at random and sends the request to the less busy one, which comes close to least connections without tracking every backend.
 - **Hashing** maps a key, such as the client address or a cookie, to a backend, which keeps one client on one backend. This is a **sticky session**. It suits caches, and it hides a design problem when a backend keeps user state only in its own memory.
 
 ### Health Checks
 
 A balancer must stop sending traffic to a backend that cannot answer. An **active health check** sends a request on a schedule, such as `GET /healthz` every 5 seconds, and counts the results. A backend leaves the pool after a number of failures in a row, the **unhealthy threshold**, and rejoins after a number of successes in a row, the **healthy threshold**. Two thresholds stop one slow answer from flapping a backend in and out. A **passive health check** watches real traffic instead: nginx marks a server unavailable for `fail_timeout`, 10 seconds by default, after `max_fails` failed attempts, one by default.
 
-Kubernetes splits the job. The kubelet on each node runs the **readiness probe** of every pod, and a pod that fails it leaves the **endpoints** of its Service: the list of pod addresses behind the Service name. kube-proxy and Traefik watch that list and stop sending new connections and requests to the pod. The balancers in the cluster run no health checks of their own.
+Kubernetes splits the job. The **kubelet**, the agent on each node that starts and watches its pods, runs the **readiness probe** of every pod, and a pod that fails it leaves the **endpoints** of its Service: the list of pod addresses behind the Service name. kube-proxy and Traefik watch that list and stop sending new connections and requests to the pod. The balancers in the cluster run no health checks of their own.
 
 ### Draining
 
@@ -59,7 +59,7 @@ A backend that leaves the pool on purpose, for a deploy or a scale-down, still h
 
 Kubernetes defines the Service type `LoadBalancer` but leaves the implementation to the platform. On a cloud, the cloud controller creates a load balancer with an address of its own, which survives the loss of any node. It health-checks the nodes, spreads connections over nodes in several availability zones, and costs a monthly fee plus traffic.
 
-**ServiceLB**, the k3s implementation, creates no new machine and no new address. For each `LoadBalancer` Service, it starts a DaemonSet, one pod per node, whose pods hold the Service ports on the node itself through a `hostPort`. The Service gets the node addresses as its external addresses, and the pods forward incoming traffic to the Service. Your DNS record points at the VPS, and the balancing between pods happens behind it, in Traefik and kube-proxy.
+**ServiceLB**, the k3s implementation, creates no new machine and no new address. For each `LoadBalancer` Service, it starts a DaemonSet, one pod per node, whose pods hold the Service ports on the node itself through a `hostPort`. The Service gets the node addresses as its external addresses, and the pods forward incoming traffic to the Service. Your Domain Name System (DNS) record points at the VPS, and the balancing between pods happens behind it, in Traefik and kube-proxy.
 
 | | ServiceLB on k3s | Cloud load balancer |
 | --- | --- | --- |
@@ -152,7 +152,7 @@ The example implements the two most common algorithms over a pool of backends. I
 
 <CodeFrom file="go/tracks/loadbalancing/loadbalancing_test.go" region="test" lang="go" title="loadbalancing_test.go" />
 
-The tests use addresses from `192.0.2.0/24`, a range reserved for documentation. `TestRoundRobinSkipsUnhealthy` also checks recovery: once the backend passes again, it gets its turn on the next cycle. A fifth test, `TestRoundRobinConcurrent`, calls `Next` 3,000 times from 100 goroutines and expects exactly 1,000 picks per backend. Under `go test -race`, removing the mutex fails it with a data race report.
+The region calls two helpers from the top of the test file: `pool` returns three healthy backends, and `picks` calls `Next` a given number of times and returns the addresses. The tests use addresses from `192.0.2.0/24`, a range reserved for documentation. `TestRoundRobinSkipsUnhealthy` also checks recovery: once the backend passes again, it gets its turn on the next cycle. A fifth test, `TestRoundRobinConcurrent`, calls `Next` 3,000 times from 100 goroutines and expects exactly 1,000 picks per backend. Under `go test -race`, removing the mutex fails it with a data race report.
 
 ## In the Uptime Monitor
 

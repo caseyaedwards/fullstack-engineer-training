@@ -12,7 +12,8 @@ import (
 // Backend is one server in the pool. A health checker sets Healthy; the
 // proxy raises Active when it opens a request to the backend and lowers it
 // when the request ends. In a real balancer, those writes happen while
-// requests are picked, and need the same lock or atomic values.
+// other goroutines pick backends: it guards Healthy and Active with its own
+// lock or keeps them in atomic values.
 type Backend struct {
 	Addr    string
 	Healthy bool

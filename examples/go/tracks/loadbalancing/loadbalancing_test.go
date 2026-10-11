@@ -2,6 +2,7 @@ package loadbalancing
 
 import (
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 )
@@ -29,18 +30,6 @@ func picks(t *testing.T, rr *RoundRobin, n int) []string {
 	return got
 }
 
-func equal(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 // region: test
 
 func TestRoundRobinCycles(t *testing.T) {
@@ -49,7 +38,7 @@ func TestRoundRobinCycles(t *testing.T) {
 		"192.0.2.10:8080", "192.0.2.11:8080", "192.0.2.12:8080",
 		"192.0.2.10:8080", "192.0.2.11:8080", "192.0.2.12:8080",
 	}
-	if got := picks(t, rr, 6); !equal(got, want) {
+	if got := picks(t, rr, 6); !slices.Equal(got, want) {
 		t.Errorf("picks %v, want %v", got, want)
 	}
 }
@@ -60,13 +49,13 @@ func TestRoundRobinSkipsUnhealthy(t *testing.T) {
 	bs[1].Healthy = false // fails its health check
 
 	want := []string{"192.0.2.10:8080", "192.0.2.12:8080", "192.0.2.10:8080", "192.0.2.12:8080"}
-	if got := picks(t, rr, 4); !equal(got, want) {
+	if got := picks(t, rr, 4); !slices.Equal(got, want) {
 		t.Errorf("picks %v, want %v", got, want)
 	}
 
 	bs[1].Healthy = true // passes again and rejoins the pool
 	want = []string{"192.0.2.10:8080", "192.0.2.11:8080", "192.0.2.12:8080"}
-	if got := picks(t, rr, 3); !equal(got, want) {
+	if got := picks(t, rr, 3); !slices.Equal(got, want) {
 		t.Errorf("after recovery, picks %v, want %v", got, want)
 	}
 }
