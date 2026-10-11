@@ -70,7 +70,7 @@ A network call can wait forever: a silent server never sends the byte your `Read
 Each layer adds a header in front of the data from the layer above:
 
 <Diagram
-  id="layers"
+  id="layer-stack"
   title="The layer stack, from your code to the wire"
   code={`direction: down
 app: "application\\nGET / HTTP/1.1"
@@ -90,7 +90,7 @@ One packet from your laptop to a server, through a home router that does NAT:
 <Diagram
   id="packet-path"
   title="A packet from a laptop to a server, through NAT"
-  code={`direction: right
+  code={`direction: down
 laptop: "laptop\\n192.168.1.20"
 router: "home router, NAT\\n198.51.100.7"
 isp: "internet routers"
