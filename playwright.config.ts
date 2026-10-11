@@ -1,7 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
 const base = (process.env.BASE_PATH ?? '/').replace(/\/?$/, '/');
-const port = 4321;
+const port = Number(process.env.E2E_PORT ?? 4321);
 const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE;
 
 export default defineConfig({

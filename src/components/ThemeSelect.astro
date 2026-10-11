@@ -1,0 +1,60 @@
+---
+/*
+ * Overrides Starlight's ThemeSelect (registered under `components` in
+ * astro.config.mjs). Starlight renders ThemeSelect in the header and again in
+ * the mobile menu, so the page width select lands beside the theme select in
+ * both. It reuses Starlight's Select so it is styled like the theme select.
+ * The stored choice is applied as data-width on <html> by an inline head
+ * script (astro.config.mjs); the CSS is src/styles/width.css.
+ */
+import DefaultThemeSelect from '@astrojs/starlight/components/ThemeSelect.astro';
+import Select from '@astrojs/starlight/components/Select.astro';
+---
+
+<DefaultThemeSelect />
+<starlight-width-select>
+	<Select
+		icon="window"
+		label="Page width"
+		options={[
+			{ label: 'Slim', selected: false, value: 'slim' },
+			{ label: 'Medium', selected: true, value: 'medium' },
+			{ label: 'Wide', selected: false, value: 'wide' },
+			{ label: 'Full', selected: false, value: 'full' },
+		]}
+		width="6.75em"
+	/>
+</starlight-width-select>
+
+<script>
+	const widths = ['slim', 'medium', 'wide', 'full'];
+	const storageKey = 'fsp-width';
+	const parse = (v: unknown) => (typeof v === 'string' && widths.includes(v) ? v : 'medium');
+
+	/** Show the current width in every width select (header and mobile menu). */
+	function syncSelects(width: string) {
+		document.querySelectorAll<HTMLSelectElement>('starlight-width-select select').forEach((s) => {
+			s.value = width;
+		});
+	}
+
+	class StarlightWidthSelect extends HTMLElement {
+		constructor() {
+			super();
+			const select = this.querySelector('select');
+			if (!select) return;
+			select.value = parse(document.documentElement.dataset.width);
+			select.addEventListener('change', () => {
+				const width = parse(select.value);
+				document.documentElement.dataset.width = width;
+				syncSelects(width);
+				try {
+					localStorage.setItem(storageKey, width);
+				} catch {
+					// Storage blocked: the choice still applies until the page unloads.
+				}
+			});
+		}
+	}
+	customElements.define('starlight-width-select', StarlightWidthSelect);
+</script>
