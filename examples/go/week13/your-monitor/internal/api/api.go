@@ -17,20 +17,19 @@ import (
 	"fsp/examples/week13/your-monitor/internal/monitor"
 )
 
-// handler holds what the route handlers share: the stores.
+// handler holds what the route handlers share: the three stores, and the
+// auth service since Week 11.
 type handler struct {
 	store     monitor.Store
 	results   monitor.ResultStore
-	incidents Incidents // Week 9
-	auth      Auth      // Week 11
+	incidents Incidents
+	auth      Auth
 }
-
-// The results route is a contract stub: week 08.
 
 // region: auth-routes
 
 // routes maps each route pattern to the method that serves it. Since Go
-// 1.22, a pattern starts with a method, and {id} matches one path segment.
+// 1.22, a pattern can start with a method, and {id} matches one path segment.
 // Reads stay public, for the status page. requireUser guards every route
 // that changes data.
 func (h *handler) routes() map[string]http.HandlerFunc {
@@ -53,15 +52,16 @@ func (h *handler) routes() map[string]http.HandlerFunc {
 }
 
 // NewHandler returns the API: every route, with JSON error bodies, served
-// from the stores. Week 8 adds results, Week 9 incidents and Week 11 the
-// auth service.
+// from the monitors in store, the check results in results and the
+// incidents in incidents, with logins checked by auth. sameOrigin stands
+// in front of every route.
 func NewHandler(store monitor.Store, results monitor.ResultStore, incidents Incidents, auth Auth) http.Handler {
 	h := &handler{store: store, results: results, incidents: incidents, auth: auth}
 	mux := http.NewServeMux()
 	for pattern, fn := range h.routes() {
 		mux.HandleFunc(pattern, fn)
 	}
-	return jsonFallback(mux)
+	return secureHeaders(cacheControl(sameOrigin(jsonFallback(mux))))
 }
 
 // endregion: auth-routes
@@ -162,8 +162,8 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
 		return
 	}
-	var req createRequest
-	if status, err := decodeJSON(w, r, &req); err != nil {
+	req, status, err := decodeJSON[createRequest](w, r)
+	if err != nil {
 		writeError(w, status, err.Error())
 		return
 	}

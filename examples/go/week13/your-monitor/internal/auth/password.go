@@ -16,7 +16,7 @@ const Cost = 12
 // The password rules. bcrypt reads only the first 72 bytes of a password,
 // and a character outside ASCII takes 2 to 4 bytes in UTF-8.
 const (
-	MinPasswordChars = 12
+	MinPasswordChars = 15
 	MaxPasswordBytes = 72
 )
 

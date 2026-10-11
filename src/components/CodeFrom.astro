@@ -2,8 +2,9 @@
 // Shows one named region of a tested example file, so the code on the page is the
 // code the examples/ tests run. Regions are marked in the source with
 //   // region: <name>   ...   // endregion: <name>
-// (or `#` comments, or `--` comments in SQL). Marker lines are not shown. Any problem throws, which fails
-// the build and names the file and region.
+// (or `#` comments, `--` comments in SQL, or `/* region: <name> */` in CSS).
+// Marker lines are not shown. Any problem throws, which fails the build and
+// names the file and region.
 import { posix } from 'node:path';
 import { Code } from '@astrojs/starlight/components';
 
@@ -37,7 +38,7 @@ if (!load) {
   throw new Error(`${where}: no file at examples/${normalized}.`);
 }
 
-const marker = /^\s*(?:\/\/|#|--)\s*(region|endregion):\s*(\S+)\s*$/;
+const marker = /^\s*(?:\/\/|#|--|\/\*)\s*(region|endregion):\s*(\S+?)\s*(?:\*\/)?\s*$/;
 const lines = (await load()).split(/\r?\n/);
 
 let start = -1;

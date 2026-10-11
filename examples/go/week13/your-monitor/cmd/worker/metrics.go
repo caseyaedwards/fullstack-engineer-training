@@ -7,7 +7,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"fsp/examples/week13/your-monitor/internal/monitor"
+	"fsp/examples/week13/your-monitor/internal/check"
 )
 
 // checkMetrics counts and times the checks this worker runs.
@@ -43,12 +43,12 @@ func newCheckMetrics(reg prometheus.Registerer) *checkMetrics {
 
 // observe counts r under its result, records how long the check took, and
 // returns the result label.
-func (m *checkMetrics) observe(r monitor.Result, took time.Duration) string {
+func (m *checkMetrics) observe(r check.Result, took time.Duration) string {
 	result := "up"
 	switch {
-	case r.Error != "":
+	case r.Err != nil:
 		result = "error" // no HTTP answer: DNS, connect, TLS or timeout
-	case !r.Up:
+	case !r.Up():
 		result = "down" // an answer with status 400 or more
 	}
 	m.checks.WithLabelValues(result).Inc()

@@ -25,7 +25,9 @@ type attempts struct {
 }
 
 // maxKeys caps the memory the limiter uses. Each guess at a new email
-// adds a key until its window ends.
+// adds a key until its window ends. When the map is full, a new key first
+// pushes out the keys whose window has ended and then the oldest key, so a
+// flood of made-up emails never locks out a real user.
 const maxKeys = 10_000
 
 func newLimiter(max int, window time.Duration) *limiter {
@@ -41,11 +43,8 @@ func (l *limiter) take(key string, now time.Time) (bool, time.Duration) {
 	defer l.mu.Unlock()
 	a, ok := l.entries[key]
 	if !ok || now.Sub(a.start) >= l.window {
-		if len(l.entries) >= maxKeys {
-			l.prune(now)
-		}
-		if len(l.entries) >= maxKeys {
-			return false, l.window // full of fresh keys: refuse until some expire
+		if _, seen := l.entries[key]; !seen && len(l.entries) >= maxKeys {
+			l.makeRoom(now)
 		}
 		a = attempts{start: now}
 	}
@@ -64,12 +63,21 @@ func (l *limiter) reset(key string) {
 	delete(l.entries, key)
 }
 
-// prune deletes the keys whose window has ended. The caller holds mu.
-func (l *limiter) prune(now time.Time) {
+// makeRoom deletes the keys whose window has ended. If none has, it
+// deletes the key with the oldest start. The caller holds mu.
+func (l *limiter) makeRoom(now time.Time) {
+	var oldest string
+	var oldestStart time.Time
 	for key, a := range l.entries {
-		if now.Sub(a.start) >= l.window {
+		switch {
+		case now.Sub(a.start) >= l.window:
 			delete(l.entries, key)
+		case oldestStart.IsZero() || a.start.Before(oldestStart):
+			oldest, oldestStart = key, a.start
 		}
+	}
+	if len(l.entries) >= maxKeys {
+		delete(l.entries, oldest)
 	}
 }
 
