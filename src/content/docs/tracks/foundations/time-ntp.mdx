@@ -44,7 +44,7 @@ From those four, the client computes two numbers. The **offset** is how far the 
 
 A client repeats the exchange every 64 to 1,024 seconds, keeps the best measurements from several servers, and throws out a server that disagrees with the rest. Then it corrects the clock in one of two ways:
 
-- **Slew:** it runs the clock slightly fast or slow until the offset is gone. The clock never jumps, and durations measured on the wall clock stay nearly right. Small offsets get slewed.
+- **Slew:** it runs the clock slightly fast or slow until the offset is gone. The clock never jumps, and durations measured on the wall clock stay nearly right. The client slews a small offset.
 - **Step:** it sets the clock to the right time at once. Clients step only for a large offset, such as at boot. A step backward makes the wall clock repeat a stretch of time.
 
 A client also learns the drift rate of its own crystal and corrects for it between exchanges, which keeps the clock close even when the network goes away for hours.
@@ -147,7 +147,8 @@ From then on, every log line, every check result in Postgres and every alert car
 
 ## Further Reading
 
+- [RFC 5905: Network Time Protocol Version 4](https://www.rfc-editor.org/rfc/rfc5905): the NTP specification, with the four timestamps, the offset and delay formulas, strata and the clock filter.
+- [RFC 8915: Network Time Security for NTP](https://www.rfc-editor.org/rfc/rfc8915): how NTS authenticates NTP replies with keys agreed over TLS.
+- [The chrony documentation](https://chrony-project.org/documentation.html): the manual pages for `chronyd`, `chronyc` and `chrony.conf`, with the settings for servers, slewing and stepping.
+- [The Go proposal for monotonic time](https://go.dev/design/12914-monotonic): why Go carries two clocks in one `time.Time`, and how the design keeps existing programs working.
 - [The time package, Monotonic Clocks section](https://pkg.go.dev/time): the exact rules for when Go uses the wall and the monotonic reading, and which methods strip it.
-- [The beevik/ntp package](https://pkg.go.dev/github.com/beevik/ntp): a small NTP client for Go whose documentation walks through offset, delay, stratum and the other fields of a reply.
-- [The golang.org/x/sys/unix package](https://pkg.go.dev/golang.org/x/sys/unix): `ClockGettime` with `CLOCK_REALTIME` and `CLOCK_MONOTONIC`, the two kernel clocks behind `time.Now`.
-- [The context package](https://pkg.go.dev/context): `WithTimeout` computes a deadline from `time.Now()`, and the timer behind it runs on the monotonic clock.
