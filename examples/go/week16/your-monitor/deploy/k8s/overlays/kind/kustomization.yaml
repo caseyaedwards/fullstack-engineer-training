@@ -1,0 +1,15 @@
+# contract stub: week 15
+# The laptop cluster: images come from kind load docker-image, and the
+# Secret holds a password that guards nothing outside your laptop.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: your-monitor
+resources:
+  - namespace.yaml
+  - ../../base
+secretGenerator:
+  - name: your-monitor
+    literals:
+      - POSTGRES_PASSWORD=kind-only-password
+generatorOptions:
+  disableNameSuffixHash: true

@@ -71,7 +71,8 @@ const RULES = [
   ),
   { re: /\b\w+n['’]t\b/gi, rule: 'contraction', fix: 'write it out: is not, do not' },
   { re: /\b\w+['’](?:re|ve|ll|d)\b/gi, rule: 'contraction', fix: 'write it out' },
-  { re: /\b(?:it|that|let|here|there|what|who|where|he|she|how|why|when)['’]s\b/gi, rule: 'contraction', fix: 'write it out: it is, that is' },
+  // Let's Encrypt is the name of a certificate authority, not a contraction.
+  { re: /\b(?:it|that|let|here|there|what|who|where|he|she|how|why|when)['’]s\b(?!\s+Encrypt\b)/gi, rule: 'contraction', fix: 'write it out: it is, that is' },
   { re: /\by['’]all\b/gi, rule: 'contraction', fix: 'you, all of you' },
   { re: /\b(?:e\.g|i\.e)\.?/gi, rule: 'latin', fix: 'for example' },
   { re: /\bclick\s+here\b/gi, rule: 'link-text', fix: 'describe the target' },

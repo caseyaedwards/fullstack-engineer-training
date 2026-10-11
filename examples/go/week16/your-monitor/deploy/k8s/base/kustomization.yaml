@@ -1,0 +1,13 @@
+# contract stub: week 15
+# The manifests every environment shares. An overlay adds what differs.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - postgres.yaml
+  - api.yaml
+  - programs.yaml
+  - web.yaml
+configMapGenerator:
+  - name: your-monitor-config
+    literals:
+      - WORKERS=10

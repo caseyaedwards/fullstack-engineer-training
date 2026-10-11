@@ -1,0 +1,11 @@
+# region: namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: your-monitor
+  labels:
+    # Pod Security admission refuses privileged pods, host paths, host
+    # ports and the host network in this namespace. Without it, anyone
+    # who can create a Deployment here can mount the VPS disk.
+    pod-security.kubernetes.io/enforce: baseline
+# endregion: namespace

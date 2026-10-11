@@ -1,0 +1,5 @@
+# contract stub: week 15
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: your-monitor

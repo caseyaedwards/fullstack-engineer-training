@@ -1,17 +1,24 @@
 ---
 title: "Week 16: Going Live"
+description: Put the uptime monitor on one small VPS running K3s, behind a real domain name with a Let's Encrypt certificate, and let deploy.yml ship to it through an SSH tunnel with a ServiceAccount that can touch one namespace.
 week: 16
 phase: run
-hours: [5, 8]
+hours: [6, 8]
 aiStage: 3
 tracks: [dns, tls-pki, load-balancing, iam]
 done:
-  - id: item-1
-    text: "Placeholder item 1: this week is not written yet"
-  - id: item-2
-    text: "Placeholder item 2: this week is not written yet"
-  - id: item-3
-    text: "Placeholder item 3: this week is not written yet"
+  - id: box-hardened
+    text: Your VPS refuses SSH passwords and root logins, sudo works for your own user, and ufw allows 22, 80 and 443 from the internet and nothing else.
+  - id: api-server-private
+    text: From your laptop, a request to port 6443 of the VPS times out, while kubectl through your SSH tunnel lists the node as Ready.
+  - id: staging-then-prod
+    text: You issued a staging certificate first and saw (STAGING) in its issuer, then switched the Ingress to letsencrypt-prod, and curl reports SSL certificate verify ok for your status page.
+  - id: http-redirects
+    text: A plain http request to your status page gets a 301 to the https address, and the page lists your monitors from the live database.
+  - id: ci-deploys
+    text: A deploy.yml run turns green and the five Deployments run the GHCR images of the commit you chose, while kubectl auth can-i says no for the deployer and Secrets.
+  - id: explain-the-path
+    text: Without notes, you can trace one request from the browser to the api pod, and one deploy from the GitHub runner to the API server, naming every port and every check on the way.
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -21,43 +28,528 @@ import AiThisWeek from '../../../components/AiThisWeek.astro';
 import SideLab from '../../../components/SideLab.astro';
 import ReadWith from '../../../components/ReadWith.astro';
 import DoneWhen from '../../../components/DoneWhen.astro';
+import Diagram from '../../../components/Diagram.astro';
+import CodeFrom from '../../../components/CodeFrom.astro';
+import { weekHref, trackHref } from '../../../lib/links';
 
 <WeekHeader />
 
+At the end of <a href={weekHref(15)}>Week 15</a>, the whole monitor runs in a kind cluster on your laptop, and the `deploy.yml` workflow from <a href={weekHref(14)}>Week 14</a> waits for a cluster to deploy to. This week, you rent one small server, run Kubernetes on it, point a domain name at it, get a trusted certificate, and press **Run workflow**. At the end, anyone can open `https://status.example.com`, with your own domain in place of `example.com`.
+
+Everything on this box faces the internet. Most of the week goes into doors: which ones open, who holds the keys, and how you prove that the rest stay shut.
+
 ## Goals
 
-This section is not written yet.
+- Choose a VPS by what the setup needs, and harden it: a user of your own, SSH keys only, a firewall.
+- Install K3s and explain what its bundled Traefik and ServiceLB do with a request.
+- Point a DNS A record at the box and get a Let's Encrypt certificate through cert-manager, staging first.
+- Give CI a ServiceAccount that can deploy into one namespace and nothing more, reach the API server through an SSH tunnel, and read what each layer reports when it fails.
 
 ## Concepts
 
-This section is not written yet.
+### One Box Running Kubernetes
+
+A **VPS**, short for virtual private server, is a virtual machine that a hosting company runs for you in its data center. You get root access, a public IP address and a monthly bill. This course uses one VPS for Weeks 16 to 18, at about $10 to $25 a month. Any provider works when its plan meets three conditions. DigitalOcean, Hetzner Cloud and Linode are three that sell such a plan: compare their prices yourself, because they change.
+
+- **A public IPv4 address**: the DNS A record for your status page points at it, and Let's Encrypt connects to it.
+- **At least 2 GB of RAM and 2 virtual CPUs**: the K3s documentation names 2 cores and 2 GB as the minimum for a server node. Your five programs, Postgres and cert-manager run on top. A 4 GB plan leaves room for the autoscaling of <a href={weekHref(17)}>Week 17</a>.
+- **An Ubuntu LTS image**, 24.04 or newer: the commands on this page use Ubuntu tools, such as `ufw` and `adduser`.
+
+**K3s** is a Kubernetes distribution packed into one binary. It runs the control plane, the node agent and a container runtime as one service, and keeps the cluster state in an SQLite file instead of etcd. It also installs components that a bare cluster lacks:
+
+- **Traefik**, an **ingress controller**: a reverse proxy that reads Ingress objects and routes HTTP requests by host name and path to Services. An **Ingress** is the Kubernetes object that says which host and path go to which Service.
+- **ServiceLB**, a load balancer for Services of type `LoadBalancer`. On a cloud, such a Service gets a load balancer from the provider. ServiceLB instead runs a small pod on each node that holds the Service ports, here `80` and `443`, on the node itself and forwards the traffic to the Service. The <a href={trackHref('load-balancing')}>Load Balancing track</a> compares it with the load balancers that cloud providers sell.
+- CoreDNS, a storage provisioner that keeps volumes on the node disk, and metrics-server.
+
+### The Path of a Request
+
+<Diagram
+  id="request-path"
+  title="A request for https://status.example.com, from the browser to the api pod"
+  code={`direction: right
+browser: your browser
+dns: "DNS\\nA record"
+vps: "VPS 203.0.113.10" {
+  lb: "ServiceLB\\nports 80, 443"
+  traefik: Traefik
+  web: web pod
+  api: api pod
+  lb -> traefik
+  traefik -> web: "Host: status.example.com"
+  web -> api: "/api"
+}
+browser -> dns: "status.example.com?"
+browser -> vps.lb: "TCP to port 443"
+`}
+  steps={[
+    { hl: ['browser', 'dns', 'browser->dns'], caption: 'The browser asks DNS for status.example.com. The A record you create in Step 6 answers with the VPS address, 203.0.113.10.' },
+    { hl: ['browser', 'vps.lb', 'browser->vps.lb'], caption: 'The browser opens a TCP connection to port 443 of that address. ServiceLB holds ports 80 and 443 on the node and forwards the connection to the Traefik Service.' },
+    { hl: ['vps.lb', 'vps.traefik', 'vps.lb->vps.traefik'], caption: 'Traefik ends TLS. It picks the certificate by the name in the TLS handshake, SNI, from the Secret that cert-manager fills.' },
+    { hl: ['vps.traefik', 'vps.web', 'vps.traefik->vps.web'], caption: 'Traefik matches the Host header against your Ingress and passes the request to a web pod. With several web pods, Traefik spreads the requests over them: this is the load balancing on a one-node cluster.' },
+    { hl: ['vps.web', 'vps.api', 'vps.web->vps.api'], caption: 'The nginx in the web pod serves the page and passes every /api request to the api Service, as it has done since Week 10.' },
+  ]}
+/>
+
+### A Certificate from Let's Encrypt
+
+Week 4 showed that a browser trusts a certificate signed by a certificate authority it knows. **Let's Encrypt** is a free, automated certificate authority. Clients talk to it through **ACME**, the Automatic Certificate Management Environment protocol: they ask for a certificate, prove control of each name in it, and receive the signed certificate. **cert-manager** is the ACME client that runs inside your cluster. It watches Ingress objects, asks for the certificates they name, and renews them.
+
+With the **HTTP-01 challenge**, you prove control of a name by serving a token over plain HTTP on port `80` of that name:
+
+<Diagram
+  id="http01"
+  title="HTTP-01: cert-manager proves that it controls status.example.com"
+  code={`shape: sequence_diagram
+cm: cert-manager
+le: "Let's Encrypt"
+tr: Traefik
+sol: solver pod
+
+cm -> le: "order: status.example.com"
+le -> cm: "challenge: serve token T"
+cm -> sol: "start, route the token path here"
+le -> tr: "GET /.well-known/acme-challenge/T"
+tr -> sol: forward
+sol -> le: "T plus account key thumbprint"
+cm -> le: "CSR for status.example.com"
+le -> cm: signed certificate
+`}
+  steps={[
+    { hl: ['cm', 'le', 'cm->le', 'le->cm'], caption: 'cert-manager places an order for the names under tls in your Ingress. Let\'s Encrypt answers with a challenge: a token that must appear at a fixed path on port 80 of each name.' },
+    { hl: ['cm', 'sol', 'cm->sol'], caption: 'cert-manager starts a small solver pod, a ClusterIP Service and a temporary Ingress for the path /.well-known/acme-challenge/T. It fetches the URL once itself, the self-check, then tells Let\'s Encrypt to go ahead.' },
+    { hl: ['le', 'tr', 'sol', 'le->tr', 'tr->sol', 'sol->le'], caption: 'Let\'s Encrypt fetches the URL from several places on the internet. The request reaches Traefik through DNS and port 80, and the solver pod answers with the token and the thumbprint of the account key.' },
+    { hl: ['cm', 'le', 'cm->le#1', 'le->cm#1'], caption: 'The name is proven. cert-manager sends a certificate signing request, CSR, for its own key, gets the signed certificate back and stores both in the Secret that the Ingress names. Traefik picks it up.' },
+  ]}
+/>
+
+Two consequences follow from the diagram. Port `80` stays open for good, because every renewal repeats the challenge. And the DNS record has to point at the box before you ask for a certificate. Let's Encrypt certificates last 90 days. cert-manager renews a certificate two thirds of the way through its life, at about 60 days, which leaves a month to notice a failure. Let's Encrypt stopped sending expiry emails in 2025: the [Observe It](#observe-it) box shows how you notice instead.
+
+**Rate limits** protect Let's Encrypt from broken clients. These three bite first when you experiment:
+
+- 5 certificates for the exact same set of names every 7 days, with no override.
+- 5 failed validations for one name per account every hour.
+- 50 certificates per registered domain, such as `example.com`, every 7 days.
+
+A typo in the Ingress, a closed port `80` or a missing DNS record each burn one failed validation per attempt, and cert-manager retries on its own. For that reason, Let's Encrypt runs a second, **staging** environment with much higher limits. Its certificates come from a test certificate authority that no browser trusts, and every name in that hierarchy starts with `(STAGING)`. You get everything working against staging, then switch one annotation to production and spend one real certificate. Every certificate Let's Encrypt issues lands in public **Certificate Transparency** logs, which anyone can search at `crt.sh`. Treat every name you put in a certificate as public. The <a href={trackHref('tls-pki')}>TLS and PKI track</a> covers the chain of trust in depth.
+
+### Who Can Reach What
+
+The box has three kinds of door. Ports `80` and `443` serve the status page to everyone. Port `22` serves SSH, and only a key opens it. Port `6443`, where the Kubernetes API server listens, stays closed to the internet: anyone who reaches it can try stolen tokens and exploits against the program that controls the whole cluster. `deploy.yml` still needs the API server. It reaches it through SSH: the job opens an **SSH tunnel**, a forwarded port that carries TCP traffic inside the encrypted SSH connection. Port `6443` on the runner then leads to `127.0.0.1:6443` on the VPS.
+
+Behind the door, Kubernetes RBAC, role-based access control, decides what the caller can do. A **ServiceAccount** is an identity for a program, here CI. A **Role** lists allowed verbs, such as `get` and `patch`, on resources, such as `deployments`, in one namespace. A **RoleBinding** grants a Role to an identity. A ClusterRole and a ClusterRoleBinding do the same across every namespace. CI gets neither. The <a href={trackHref('iam')}>IAM track</a> compares this model with the roles of cloud providers.
+
+<Diagram
+  id="deploy-path"
+  title="A deploy: from the GitHub runner, through port 22, to the API server and RBAC"
+  code={`direction: right
+gh: GitHub runner {
+  job: deploy job
+}
+internet: anyone on the internet
+vps: VPS {
+  sshd: "sshd\\nport 22"
+  api: "API server\\n127.0.0.1:6443"
+  rbac: "RBAC\\nRole deployer"
+  ns: "namespace\\nyour-monitor"
+  sshd -> api: "forward"
+  api -> rbac: "allowed?"
+  rbac -> ns: "apply"
+}
+gh.job -> vps.sshd: "SSH as tunnel"
+internet -> vps.api: "port 6443: dropped"
+`}
+  steps={[
+    { hl: ['internet', 'vps.api', 'internet->vps.api'], caption: 'ufw drops every packet to port 6443 that comes from the internet. A scan sees no answer at all.' },
+    { hl: ['gh.job', 'vps.sshd', 'gh.job->vps.sshd'], caption: 'The deploy job connects to port 22 as the user tunnel, with a key that lives only in a GitHub secret. It checks the VPS host key against the known_hosts secret first.' },
+    { hl: ['vps.sshd', 'vps.api', 'vps.sshd->vps.api'], caption: 'sshd allows the tunnel user to forward exactly one port, to 127.0.0.1:6443, and gives it no shell. kubectl on the runner talks to the API server through that forward.' },
+    { hl: ['vps.api', 'vps.rbac', 'vps.api->vps.rbac'], caption: 'The API server reads the ServiceAccount token from the kubeconfig and asks RBAC whether the deployer can use this verb on this resource in this namespace.' },
+    { hl: ['vps.rbac', 'vps.ns', 'vps.rbac->vps.ns'], caption: 'The Role allows the deployer to read, create and patch the objects of the prod overlay in your-monitor. It cannot read Secrets, delete anything or change its own rights.' },
+  ]}
+/>
 
 ## Build
 
-This section is not written yet.
+Steps 1 to 5 build the box. Steps 6 to 9 make the name and the certificate. Steps 10 to 12 wire up `deploy.yml`. Each block that runs on the VPS starts with a comment such as `# ada@monitor:`. Use your own user name where the page says `ada`, your domain for `example.com`, and your VPS address for `203.0.113.10`. Every output from the VPS on this page is an example. The manifests come from the example code that this site tests, at `examples/go/week16/your-monitor/`, laid out as your repository. Three folders are new: `deploy/vps/` holds the configuration files for the VPS itself, `deploy/k8s/cluster/` the setup you apply once as administrator, and `deploy/k8s/overlays/prod/` what `deploy.yml` applies. `.github/workflows/deploy.yml` gains one step.
+
+### Step 1: Rent the VPS
+
+Create an SSH key on your laptop if you have none yet, and print its public half:
+
+```sh
+ssh-keygen -t ed25519
+cat ~/.ssh/id_ed25519.pub
+```
+
+In the provider console, create a server with the newest Ubuntu LTS image, a plan with 2 GB of RAM or more, and the region closest to you. Paste the public key into the SSH key field, and note the IPv4 address the server gets. When the provider offers a cloud firewall, create one that allows inbound TCP `22`, `80` and `443`, and attach it: it filters traffic before it reaches the VPS, which matters in the [Side Lab](#side-lab).
+
+### Step 2: Make a User and Turn Off Passwords
+
+Log in as `root`, or as `ubuntu` on providers that create that user, and make your own user with `sudo` rights. `adduser` asks for a password: `sudo` asks for it later, SSH never does.
+
+```sh
+ssh root@203.0.113.10
+# root@monitor:
+adduser ada
+usermod -aG sudo ada
+install -d -m 700 -o ada -g ada /home/ada/.ssh
+install -m 600 -o ada -g ada /root/.ssh/authorized_keys /home/ada/.ssh/authorized_keys
+apt update && apt full-upgrade -y
+```
+
+The SSH server, `sshd`, reads every file in `/etc/ssh/sshd_config.d/` in name order, and for each setting the first value it reads wins. Cloud images can ship a `50-cloud-init.conf` with `PasswordAuthentication yes`. A file whose name starts with `00` comes first and overrides it:
+
+<CodeFrom file="go/week16/your-monitor/deploy/vps/sshd/00-hardening.conf" region="hardening" lang="txt" title="deploy/vps/sshd/00-hardening.conf" />
+
+From a second terminal on your laptop, copy it over, check the syntax, restart the SSH service, and print the settings sshd now applies. Keep the root session open until a new login works: a mistake here locks you out, and the provider web console is the only way back in.
+
+```sh
+scp deploy/vps/sshd/00-hardening.conf root@203.0.113.10:/etc/ssh/sshd_config.d/
+ssh root@203.0.113.10 'sshd -t && systemctl restart ssh && sshd -T' \
+  | grep -E '^(passwordauthentication|kbdinteractiveauthentication|permitrootlogin) '
+```
+
+```txt
+permitrootlogin no
+passwordauthentication no
+kbdinteractiveauthentication no
+```
+
+Now `ssh ada@203.0.113.10` logs you in, and `ssh root@203.0.113.10` answers `Permission denied (publickey)`. Work as `ada` from now on. Ubuntu installs security updates every day through the `unattended-upgrades` package, which the image enables.
+
+### Step 3: Close Every Port but Three
+
+`ufw`, the uncomplicated firewall, writes the packet filter rules of the Linux kernel for you. The script denies everything that comes in, then allows the three public ports. The K3s documentation adds two rules for Ubuntu: pods, in `10.42.0.0/16`, and Services, in `10.43.0.0/16`, reach programs on the node, such as the API server, and ufw sees that traffic as incoming.
+
+<CodeFrom file="go/week16/your-monitor/deploy/vps/firewall.sh" region="firewall" lang="sh" title="deploy/vps/firewall.sh" />
+
+`ufw enable` on its own asks whether to go ahead, because it can cut SSH connections. The rule for `22` comes first, and `--force` answers yes. No rule names `6443`. Copy the script and run it: the status at the end lists the five rules, plus IPv6 copies of the first three.
+
+```sh
+scp deploy/vps/firewall.sh ada@203.0.113.10:
+ssh -t ada@203.0.113.10 sudo sh firewall.sh
+```
+
+### Step 4: Install K3s
+
+K3s reads `/etc/rancher/k3s/config.yaml` at start. Its one setting keeps your database password out of a plain-text copy of the SQLite file. It takes effect only on the first start, which is why it goes in before the install.
+
+<CodeFrom file="go/week16/your-monitor/deploy/vps/k3s/config.yaml" region="k3s-config" lang="yaml" title="deploy/vps/k3s/config.yaml" />
+
+Copy it to your home folder on the VPS with `scp deploy/vps/k3s/config.yaml ada@203.0.113.10:`, then log in. Read the install script before you run it: it installs a system service as root, and calls `sudo` itself where it needs to. `INSTALL_K3S_CHANNEL=v1.33` picks the newest K3s release for Kubernetes 1.33, the version your kind cluster runs.
+
+```sh
+# ada@monitor:
+sudo install -D -m 600 config.yaml /etc/rancher/k3s/config.yaml
+curl -sfL https://get.k3s.io -o k3s-install.sh
+less k3s-install.sh
+INSTALL_K3S_CHANNEL=v1.33 sh k3s-install.sh
+sudo k3s kubectl get nodes
+sudo k3s secrets-encrypt status
+sudo k3s kubectl -n kube-system get pods,svc
+```
+
+The node shows `Ready`, with a VERSION that starts with `v1.33`. `secrets-encrypt status` reports encryption as enabled. In `kube-system`, the `traefik` Service has type `LoadBalancer` with ports `80` and `443`, and a pod whose name starts with `svclb-traefik` is the ServiceLB pod that holds those ports.
+
+### Step 5: Reach the Cluster from Your Laptop
+
+K3s writes an administrator kubeconfig to `/etc/rancher/k3s/k3s.yaml`, readable by root only. Its server is `https://127.0.0.1:6443`, which works on the VPS itself. From your laptop, copy it out through your home folder on the VPS. `-t` gives `sudo` a terminal to ask for your password. The file holds a client certificate with full control of the cluster: keep it on your laptop only.
+
+```sh
+ssh -t ada@203.0.113.10 'sudo install -m 600 -o ada -g ada /etc/rancher/k3s/k3s.yaml ~/k3s.yaml'
+scp ada@203.0.113.10:k3s.yaml ~/.kube/vps.yaml && ssh ada@203.0.113.10 rm k3s.yaml
+chmod 600 ~/.kube/vps.yaml
+```
+
+Open the tunnel in its own terminal and leave it running. `-N` runs no remote command, and `-L` forwards local port `6443` to `127.0.0.1:6443` as the VPS sees it. The API server certificate names `127.0.0.1`, which keeps TLS verification working through the tunnel.
+
+```sh
+ssh -N -L 6443:127.0.0.1:6443 ada@203.0.113.10
+```
+
+In another terminal, point `kubectl` at the new file. A separate file keeps the VPS apart from your kind contexts in `~/.kube/config`:
+
+```sh
+export KUBECONFIG=~/.kube/vps.yaml
+kubectl get nodes
+curl -sS -k -m 5 https://203.0.113.10:6443/version
+```
+
+`kubectl` lists the node. `curl` straight at the public address waits the full five seconds and fails with error `(28)`, a timeout: ufw drops the packets without a reply. Every `kubectl` command from here on assumes the tunnel and this `KUBECONFIG`.
+
+### Step 6: Point the Name at the Box
+
+At your DNS provider, the company that serves the records for your domain, create an **A record**: name `status`, value `203.0.113.10`, TTL `300` seconds. With a short TTL, a move to a new box reaches every resolver within five minutes. Do not create an AAAA record: when a name has one, Let's Encrypt connects over IPv6 first, and this cluster serves IPv4 only. The <a href={trackHref('dns')}>DNS track</a> explains TTLs and record types. Check the answer from a public resolver, as in the Week 4 side lab. It prints `203.0.113.10` once the record is live:
+
+```sh
+dig +short status.example.com @1.1.1.1
+```
+
+### Step 7: Add Automatic Certificates
+
+cert-manager installs from one manifest per release. Read the newest release name from GitHub, and check that the cert-manager [supported releases page](https://cert-manager.io/docs/releases/) lists Kubernetes 1.33 for it:
+
+```sh
+CM_VERSION=$(curl -fsSL https://api.github.com/repos/cert-manager/cert-manager/releases/latest | grep -m1 '"tag_name"' | cut -d '"' -f 4)
+echo "$CM_VERSION"
+kubectl apply -f "https://github.com/cert-manager/cert-manager/releases/download/$CM_VERSION/cert-manager.yaml"
+kubectl -n cert-manager wait --for=condition=Available deployment --all --timeout=3m
+```
+
+The manifest creates the `cert-manager` namespace, the resource types `Certificate`, `ClusterIssuer` and four more, and three Deployments: `cert-manager`, `cert-manager-cainjector` and `cert-manager-webhook`.
+
+### Step 8: Apply the Cluster Setup
+
+Three things in this cluster are yours to change, not CI's: the namespace, the issuers and the rights of CI itself. They live in `deploy/k8s/cluster/`, and you apply them by hand. The namespace carries one label. **Pod Security admission**, built into Kubernetes, checks every pod in a namespace against a level. At `baseline`, it refuses privileged containers and pods that mount a path of the node, use its network or bind its ports.
+
+<CodeFrom file="go/week16/your-monitor/deploy/k8s/cluster/namespace.yaml" region="namespace" lang="yaml" title="deploy/k8s/cluster/namespace.yaml" />
+
+A **ClusterIssuer** tells cert-manager how to get certificates for any namespace. You create two, one per Let's Encrypt environment, each with its own ACME account key. `serviceType: ClusterIP` keeps the solver Service inside the cluster: the default type, `NodePort`, opens a port on the node.
+
+<CodeFrom file="go/week16/your-monitor/deploy/k8s/cluster/cluster-issuers.yaml" region="issuers" lang="yaml" title="deploy/k8s/cluster/cluster-issuers.yaml" />
+
+The Role of CI comes from what `deploy.yml` runs. `kubectl apply` reads each object and then creates or patches it, which needs `get`, `create` and `patch`. `kubectl rollout status` lists and watches Deployments. The same file holds the `deployer` ServiceAccount, with `automountServiceAccountToken: false`, and a RoleBinding that grants this Role to it. Apply the three files: both issuers show `READY` as `True` once cert-manager registers their ACME accounts.
+
+<CodeFrom file="go/week16/your-monitor/deploy/k8s/cluster/ci-deployer.yaml" region="role" lang="yaml" title="deploy/k8s/cluster/ci-deployer.yaml" />
+
+```sh
+kubectl apply -k deploy/k8s/cluster
+kubectl get clusterissuers
+```
+
+### Step 9: Create the Two Secrets by Hand
+
+Two Secrets stay out of Git and out of reach of CI. The first holds the database password. In the examples, the base manifests read a Secret named `your-monitor` with the key `POSTGRES_PASSWORD`. Use the name and keys your Week 15 base reads, and a password of letters and digits only, because it goes into `DATABASE_URL`:
+
+```sh
+kubectl -n your-monitor create secret generic your-monitor \
+  --from-literal=POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+```
+
+The second gives the node access to your images. CI pushed them to GHCR in Week 14, and GHCR packages start out private. GHCR accepts only a classic personal access token: create one in your GitHub settings under **Developer settings**, **Personal access tokens**, **Tokens (classic)**, with the single scope `read:packages` and an expiry date. `read -rs` reads the token without showing it and without writing it to your shell history:
+
+```sh
+read -rs GHCR_TOKEN
+kubectl -n your-monitor create secret docker-registry ghcr-pull \
+  --docker-server=ghcr.io --docker-username=<your GitHub user name> --docker-password="$GHCR_TOKEN"
+unset GHCR_TOKEN
+```
+
+### Step 10: Write the Prod Overlay
+
+The prod overlay is the Week 15 base plus three things: the namespace, a patch that makes every Deployment pull with `ghcr-pull`, and the way in from the internet.
+
+<CodeFrom file="go/week16/your-monitor/deploy/k8s/overlays/prod/kustomization.yaml" region="prod-kustomization" lang="yaml" title="deploy/k8s/overlays/prod/kustomization.yaml" />
+
+The Ingress sends every path of your host to the `web` Service. The `tls` list names the host and the Secret for its certificate, and the `cert-manager.io/cluster-issuer` annotation tells cert-manager which ClusterIssuer to ask. Write it with `letsencrypt-staging` first. The file below shows its final state, after the switch in Step 12.
+
+<CodeFrom file="go/week16/your-monitor/deploy/k8s/overlays/prod/ingress.yaml" region="ingress" lang="yaml" title="deploy/k8s/overlays/prod/ingress.yaml" />
+
+The second annotation attaches a Traefik **Middleware**, a step that Traefik runs on a request before it forwards it. Traefik names it `<namespace>-<name>@kubernetescrd`. This one redirects plain HTTP to HTTPS and leaves HTTPS requests alone. The temporary Ingress that cert-manager creates for a challenge has a longer path and no middleware, and Traefik tries longer rules first: the challenge request gets the token, not a redirect.
+
+<CodeFrom file="go/week16/your-monitor/deploy/k8s/overlays/prod/redirect-https.yaml" region="redirect" lang="yaml" title="deploy/k8s/overlays/prod/redirect-https.yaml" />
+
+Validate the render before you commit it, with `kubeconform` from Week 15:
+
+```sh
+kubectl kustomize deploy/k8s/overlays/prod | kubeconform -strict -summary -kubernetes-version 1.33.0 \
+  -schema-location default \
+  -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+```
+
+The second schema location holds the schemas of the Traefik and cert-manager types. The example overlay gives `Valid: 12, Invalid: 0`.
+
+The example tests check that the pieces fit: the overlay holds no Secret and nothing cluster-wide, the Ingress names an issuer and a Service port that exist, and the Role covers every object the overlay renders. That last test fails the day you add a new kind, such as the HorizontalPodAutoscaler of Week 17, until the Role grants it:
+
+<CodeFrom file="go/week16/manifests_test.go" region="rbac-test" lang="go" title="manifests_test.go" />
+
+### Step 11: Give CI a Way In
+
+CI needs three things: a user that can only forward one port, a token for the `deployer` ServiceAccount, and the VPS host key. The second sshd drop-in confines the user `tunnel`:
+
+<CodeFrom file="go/week16/your-monitor/deploy/vps/sshd/10-tunnel.conf" region="tunnel" lang="txt" title="deploy/vps/sshd/10-tunnel.conf" />
+
+Copy the file to your home folder on the VPS with `scp`, as in Step 4. On the VPS, create that user with no password and no login shell, then install the drop-in:
+
+```sh
+# ada@monitor:
+sudo adduser --system --group --home /home/tunnel --shell /usr/sbin/nologin tunnel
+sudo install -d -m 700 -o tunnel -g tunnel /home/tunnel/.ssh
+sudo install -m 644 10-tunnel.conf /etc/ssh/sshd_config.d/ && sudo sshd -t && sudo systemctl restart ssh
+```
+
+The example tests load both drop-ins next to a `50-cloud-init.conf` that turns passwords on, and check with `sshd -T` what each user gets. On your laptop, in an empty folder, make a key for CI, install its public half for `tunnel`, and save the VPS host key line from your own `known_hosts`. First compare the fingerprint `ssh` showed on your first login with the one `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` prints on the VPS: a match proves that the line came from your box.
+
+```sh
+umask 077
+ssh-keygen -t ed25519 -N '' -C deploy.yml -f deploy_key
+scp deploy_key.pub ada@203.0.113.10:
+ssh -t ada@203.0.113.10 'sudo install -m 600 -o tunnel -g tunnel deploy_key.pub /home/tunnel/.ssh/authorized_keys && rm deploy_key.pub'
+ssh-keygen -F 203.0.113.10 > known_hosts
+ssh -i deploy_key tunnel@203.0.113.10
+```
+
+The last command prints `This account is currently not available.` and exits: the key works, and the user gets no shell. Now the token. `kubectl create token` asks the API server for a signed token for the ServiceAccount, valid for 90 days here. Four `kubectl config` commands then write a kubeconfig around it, with the cluster certificate authority from your own kubeconfig and the namespace in its context, because `deploy.yml` runs `kubectl` without `-n`:
+
+```sh
+read -r EXPIRY TOKEN < <(kubectl -n your-monitor create token deployer --duration=2160h \
+  -o jsonpath='{.status.expirationTimestamp} {.status.token}')
+echo "$EXPIRY"
+kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d > ca.crt
+kubectl --kubeconfig=ci.kubeconfig config set-cluster vps --server=https://127.0.0.1:6443 --certificate-authority=ca.crt --embed-certs=true
+kubectl --kubeconfig=ci.kubeconfig config set-credentials deployer --token="$TOKEN"
+kubectl --kubeconfig=ci.kubeconfig config set-context deploy --cluster=vps --user=deployer --namespace=your-monitor
+kubectl --kubeconfig=ci.kubeconfig config use-context deploy
+```
+
+Write the expiry date in your calendar. Store the four values in the `production` environment of your repository, then delete the local copies: GitHub holds the only copy of the CI key.
+
+```sh
+gh secret set KUBECONFIG --env production < ci.kubeconfig
+gh secret set DEPLOY_SSH_KEY --env production < deploy_key
+gh secret set DEPLOY_KNOWN_HOSTS --env production < known_hosts
+gh variable set DEPLOY_HOST --env production --body 203.0.113.10
+rm ci.kubeconfig deploy_key deploy_key.pub known_hosts ca.crt
+unset TOKEN
+```
+
+In a private repository without environments, leave out `--env production`, as Week 14 explains. The last piece goes into `deploy.yml`, between writing the kubeconfig and picking the images:
+
+<CodeFrom file="go/week16/your-monitor/.github/workflows/deploy.yml" region="deploy-tunnel" lang="yaml" title=".github/workflows/deploy.yml" />
+
+`-f` sends `ssh` to the background once the tunnel is up, and `ExitOnForwardFailure` fails the step when the local port does not open. `kubectl auth can-i` then proves three things before anything changes: the tunnel works, the token is valid, and the Role allows a patch.
+
+### Step 12: Deploy to Staging and Then to Production
+
+Commit the cluster setup, the prod overlay with `letsencrypt-staging` and `deploy.yml`, and push to `main`. Wait for CI to push the images of that commit, then start the deploy and watch it:
+
+```sh
+gh workflow run deploy.yml
+gh run watch
+kubectl -n your-monitor get certificate -o wide
+```
+
+```txt
+NAME              READY   SECRET            ISSUER                STATUS                                          AGE
+status-page-tls   True    status-page-tls   letsencrypt-staging   Certificate is up to date and has not expired   2m
+```
+
+`curl -v https://status.example.com` now fails, because no system trusts the staging authority. `curl -vk` skips that check and shows an issuer line with `(STAGING)` in it: the whole path works. Change the annotation to `letsencrypt-prod`, commit, push, wait for CI and run the deploy again. cert-manager sees the new issuer and orders a new certificate. Then check both doors:
+
+```sh
+curl -sv -o /dev/null https://status.example.com 2>&1 | grep -E 'issuer|expire date|verify ok'
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://status.example.com/
+```
+
+The first prints the issuer, now without `(STAGING)`, an expiry date 90 days out and `SSL certificate verify ok`. The second prints `301 https://status.example.com/`. Your status page is live, and empty. Create your first user inside the api pod, which reads the password from standard input as in Week 11, then log in on the page and add monitors:
+
+```sh
+read -rs PASSWORD
+printf '%s\n' "$PASSWORD" | kubectl -n your-monitor exec -i deploy/api -- /api -create-user ada@example.com
+unset PASSWORD
+```
 
 ## Observe It
 
 <ObserveIt>
-This section is not written yet.
+
+**The certificate.** `kubectl -n your-monitor describe certificate status-page-tls` shows `Not After` and `Renewal Time`, about 30 days before expiry. Add `https://status.example.com` to your own monitor: every check times the TLS handshake, and an expired certificate turns the check red with the `x509` error from Week 4. A monitor on the same box cannot report that the box is down, though. Week 18 adds a view from outside.
+
+**The internet knocking.** Bots try passwords on port `22` of every public address. Each attempt ends in `Permission denied (publickey)`, because no password works. Count today's:
+
+```sh
+# ada@monitor:
+sudo journalctl -u ssh --since today | grep -c 'Invalid user'
+```
+
+**Traefik.** `kubectl -n kube-system logs deploy/traefik --since 1h` shows its errors, such as an Ingress that names a Service that does not exist. The Week 13 metrics stay on your laptop for now: this box runs no Prometheus.
+
+**Certificate Transparency.** Search your domain on `crt.sh`. Your production certificate appears with its issue date and its issuer.
+
 </ObserveIt>
 
 ## Operate It
 
 <OperateIt>
-This section is not written yet.
+
+**The certificate stays not ready.** cert-manager records each attempt as an Order and a Challenge. Start at the Challenge:
+
+```sh
+kubectl get challenges -A
+kubectl -n your-monitor describe challenge
+```
+
+The `Reason` line names the failure. A self-check that times out means port `80` does not reach Traefik: the DNS record points elsewhere or does not exist yet, or a provider firewall blocks `80`. A response with the wrong body means another server answers for the name, at an old AAAA record for example. A message with `rateLimited` means the account hit a limit: wait out the time it names, and fix the cause on staging first.
+
+**Pods stay in ImagePullBackOff.** `kubectl -n your-monitor describe pod -l app=api` shows the pull error. `401 Unauthorized` or `403 Forbidden` from `ghcr.io` means the `ghcr-pull` Secret is missing, or its token expired or lacks `read:packages`. `not found` means CI never pushed that SHA: deploy a commit whose CI run finished.
+
+**The deploy fails at the tunnel step.** Each message points at one secret or one service:
+
+| What the step prints | What it points to |
+| --- | --- |
+| `Host key verification failed.` | The VPS host key changed: you rebuilt the box, or someone sits in between. Check the fingerprint on the VPS before you update `DEPLOY_KNOWN_HOSTS` |
+| `Permission denied (publickey)` | `DEPLOY_SSH_KEY` does not match `/home/tunnel/.ssh/authorized_keys`, or `10-tunnel.conf` names another user |
+| A timeout on port `22` | `DEPLOY_HOST` holds an old address, or a firewall blocks `22` |
+| `connection refused` on `127.0.0.1:6443` | The tunnel is up but K3s is down: run `sudo systemctl status k3s` on the VPS |
+| `You must be logged in to the server (Unauthorized)` | The token expired: run the token commands of Step 11 again and replace `KUBECONFIG` |
+| `no` from `kubectl auth can-i` | The Role lost the `patch` verb on Deployments |
+
+**The apply step says forbidden.** CI tried to write a kind its Role does not grant. The message names the verb and the resource, as in this one for Secrets:
+
+```txt
+Error from server (Forbidden): secrets is forbidden: User "system:serviceaccount:your-monitor:deployer" cannot list resource "secrets" in API group "" in the namespace "your-monitor"
+```
+
+Grant the new resource in `ci-deployer.yaml`, and apply the cluster setup yourself, from your laptop. CI cannot see pods or their logs either: debug a failed rollout with your administrator kubeconfig.
+
+**Someone steals the CI credentials.** The Role and Pod Security keep the damage inside the `your-monitor` namespace. A pod that mounts the node disk gets refused, with a message such as:
+
+```txt
+Error from server (Forbidden): error when creating "rootfs.yaml": pods "rootfs" is forbidden: violates PodSecurity "baseline:latest": hostPath volumes (volume "host")
+```
+
+Revoke the token by deleting the `deployer` ServiceAccount, which invalidates every token issued for it, then apply the cluster setup again and issue a new one. Replace the `tunnel` key in `authorized_keys` as well.
+
+**You locked yourself out of SSH.** Open the web console of your provider, log in there, fix the file in `/etc/ssh/sshd_config.d/`, and run `sudo sshd -t` before the restart.
+
 </OperateIt>
 
 ## AI This Week
 
 <AiThisWeek>
-This section is not written yet.
+
+Stage 3, pair partner: use the assistant for scaffolding, configuration and review, and keep the decisions.
+
+**Do:** paste `ci-deployer.yaml` and your two sshd drop-in files, and ask it to list every right they grant beyond what `deploy.yml` needs. Check each point yourself before you change a line: `kubectl auth can-i --list --as=system:serviceaccount:your-monitor:deployer -n your-monitor` prints what the Role allows, and `sudo sshd -T -C user=tunnel,host=x,addr=203.0.113.5` prints what sshd applies to the tunnel user.
+
+**Do not:** paste a kubeconfig, a token, the GHCR token or a private key into the chat, not even to debug. Anything you paste leaves your control: replace each with `REDACTED` first. Do not let it pick your firewall rules either. Open a port only when you can name the program that listens on it and who needs to reach it.
+
 </AiThisWeek>
 
 ## Side Lab
 
-<SideLab title="Optional lab: not written yet">
-This section is not written yet.
+<SideLab title="Scan your own box from outside with nmap and explain every open port">
+
+`nmap` is a port scanner: it sends packets to a range of ports and reports how each one answers. Install it with `brew install nmap` on macOS or `sudo apt install nmap` on Ubuntu. Scan only machines you own.
+
+**1. Scan the doors you know.** From your laptop, not from the VPS:
+
+```sh
+nmap -Pn -p 22,80,443,6443,10250 203.0.113.10
+```
+
+`-Pn` skips the host discovery that `nmap` runs first and scans the ports straight away. Expect `open` for `22`, `80` and `443`, and `filtered` for `6443` and for `10250`, the API of the node agent. **Filtered** means no answer at all: ufw drops the packets. **Closed** means the machine answers with a reset because nothing listens, as in the Week 4 connection-refused example.
+
+**2. Scan the NodePort range.** A Service of type `LoadBalancer` also gets a **NodePort**: a port between `30000` and `32767` on every node that leads to the Service. Print the ones Traefik got, then scan the range:
+
+```sh
+kubectl -n kube-system get svc traefik
+nmap -Pn -p 30000-32767 203.0.113.10
+```
+
+The `PORT(S)` column reads `80:` and `443:`, each followed by a NodePort. Without a provider firewall, `nmap` lists those two NodePorts as open, although ufw has no rule for them.
+
+**3. Explain the gap.** ufw filters packets addressed to programs on the host, such as `sshd` and the API server. For a NodePort, and for the ports ServiceLB holds, Kubernetes rewrites the destination of each packet to a pod address before that filter runs, and forwards it through rules of its own: ufw never sees it. Here the leak does no harm, because both ports lead to the same Traefik as `80` and `443`. Write down the rule it teaches: on this box, never expose something private with a Service of type `NodePort`, and keep a provider firewall in front that allows `22`, `80` and `443`. Attach one if you skipped that in Step 1, and scan again: the two NodePorts turn `filtered`.
+
 </SideLab>
 
 ## Done When

@@ -1,0 +1,14 @@
+# region: dependabot
+# Dependabot opens a pull request when an action you pin has a new
+# release. The pull request changes the SHA and the version comment.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Wait a week after a release, which gives a hijacked release time to
+    # be found and pulled before it reaches you.
+    cooldown:
+      default-days: 7
+# endregion: dependabot
