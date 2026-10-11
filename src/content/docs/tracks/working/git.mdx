@@ -82,15 +82,21 @@ The diagram shows the first two commits of the `week-00` branch from Week 0, wit
 <Diagram
   id="git-objects"
   title="Commits, trees and blobs, with a branch pointer"
-  code={`direction: right
-head: HEAD
+  code={`grid-rows: 3
+grid-columns: 4
+horizontal-gap: 70
+vertical-gap: 50
 branch: week-00
 c2: "commit 9ffd6a3"
-c1: "commit e39097c"
 t2: tree
-t1: tree
 r2: "blob\\nREADME.md, second version"
+head: HEAD
+gap1: "" {style.opacity: 0}
+gap2: "" {style.opacity: 0}
 gm: "blob\\ngo.mod"
+gap3: "" {style.opacity: 0}
+c1: "commit e39097c"
+t1: tree
 r1: "blob\\nREADME.md, first version"
 head -> branch
 branch -> c2

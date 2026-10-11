@@ -129,28 +129,30 @@ In stage 2 and stage 3, every piece of generated code goes through the same loop
   title="The review loop for generated code"
   code={`grid-rows: 3
 grid-columns: 3
-horizontal-gap: 150
+horizontal-gap: 130
 vertical-gap: 90
-spec: "you write the spec\\nand the test cases"
 gen: "the assistant\\ndrafts the code"
 run: "go test -race"
-explain: "explain it back\\nin the pull request"
-mutate: "break it on purpose"
+gap1: "" {style.opacity: 0}
+spec: "you write the spec\\nand the test cases"
 read: "you read every line\\nand run go doc"
+mutate: "break it on purpose"
+gap2: "" {style.opacity: 0}
 merge: merge
+explain: "explain it back\\nin the pull request"
 spec -> gen
 gen -> run
-run -> gen: "red: paste\\nthe failure"
+run -> spec: "red: paste\\nthe failure"
 run -> read: green
 read -> spec: "a line you\\ncannot explain"
 read -> mutate
-mutate -> explain: "the right test fails"
+mutate -> explain: "the right\\ntest fails"
 explain -> merge
 `}
   steps={[
     { hl: ['spec'], caption: 'You write down what the code must do and the test cases that prove it, before any code exists. The cases come from the problem, not from an implementation.' },
     { hl: ['spec', 'gen', 'spec->gen'], caption: 'You give the assistant the spec and the tests. It drafts the code.' },
-    { hl: ['gen', 'run', 'gen->run', 'run->gen'], caption: 'You run the tests. A red test goes back to the assistant with the failure output, and you read the fix it proposes before you accept it.' },
+    { hl: ['gen', 'run', 'spec', 'gen->run', 'run->spec'], caption: 'You run the tests. A red test comes back to you: paste the failure output into your next prompt, and read the fix the assistant proposes before you accept it.' },
     { hl: ['run', 'read', 'run->read', 'read->spec'], caption: 'Green is where review starts. Read every line, run go doc on every name you do not know, and look for what is missing. A line you cannot explain sends you back to the spec.' },
     { hl: ['read', 'mutate', 'read->mutate', 'mutate->explain'], caption: 'Break the code on purpose, one change at a time: return the wrong value, drop a check. The test that covers that line must fail. When none fails, write the test.' },
     { hl: ['explain', 'merge', 'explain->merge'], caption: 'Explain the code in your own words in the pull request, then merge. Anyone who reads the pull request later sees that a person understood the change.' },
