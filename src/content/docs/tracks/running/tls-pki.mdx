@@ -27,7 +27,7 @@ In TLS 1.3, the certificate key only signs. During the handshake, both sides cre
 A certificate is a small file in the **X.509** format, spelled `x509` in the name of the Go package and in its error messages. Its fields:
 
 - **Subject**: who the certificate is for. For a CA, its name.
-- **Subject alternative names** (SANs): the DNS names the certificate covers, such as `status.example.com`, or IP addresses for a certificate issued to an address. Clients compare the host name against this list only. Go has ignored the older common name field for host names since Go 1.15.
+- **Subject alternative names** (SANs): the Domain Name System (DNS) names the certificate covers, such as `status.example.com`, or Internet Protocol (IP) addresses for a certificate issued to an address. Clients compare the host name against this list only. Go has ignored the older common name field for host names since Go 1.15.
 - **Public key**: the key the server proves it holds.
 - **Issuer**: the name of the CA that signed it.
 - **Validity**: `NotBefore` and `NotAfter`. Outside those dates, clients reject it.
@@ -55,21 +55,21 @@ For every connection, a TLS client checks:
 3. **The chain.** Each signature verifies with the public key of the next certificate up, and the path ends at a trusted root.
 4. **The usage.** Each CA certificate in the path has the right to sign certificates, and the leaf has the right to authenticate a server.
 
-In Go, each failure has its own type: `x509.HostnameError`, `x509.CertificateInvalidError` with the reason `x509.Expired`, and `x509.UnknownAuthorityError`. Your monitor turns each into a message a person can act on.
+In Go, each failure has its own type: `x509.HostnameError`, `x509.CertificateInvalidError` with the reason `x509.Expired`, and `x509.UnknownAuthorityError`.
 
 ### Revocation and Short Lifetimes
 
 A CA **revokes** a certificate when its key leaks or when the CA finds that it issued the certificate by mistake. Clients learn about revocations from **certificate revocation lists** (CRLs), which the CA publishes, or from **OCSP**, the Online Certificate Status Protocol, which answers for one certificate at a time. Neither works well in practice: browsers fetch CRLs in compressed batches, and an OCSP check leaks which sites you visit. Let's Encrypt stopped running OCSP in 2025 and publishes CRLs only.
 
-The industry answer is short lifetimes. A stolen key is useful only until the certificate expires. The CA/Browser Forum, where CAs and browser makers set the rules, cut the maximum lifetime of a public certificate from 398 days to 200 days in March 2026, and lowers it to 100 days in March 2027 and to 47 days in March 2029. Let's Encrypt issues 90-day certificates today, and moves to 64 days in February 2027 and 45 days in 2028. At 45 days, a person renewing by hand renews eight times a year per site, and misses one. Automation is the only option.
+The industry answer is short lifetimes. A stolen key is useful only until the certificate expires. The CA/Browser Forum, where CAs and browser makers set the rules, cut the maximum lifetime of a public certificate from 398 days to 200 days in March 2026, and lowers it to 100 days in March 2027 and to 47 days in March 2029. Let's Encrypt issues 90-day certificates today, and moves to 64 days in February 2027 and 45 days in 2028. At 45 days, a person renewing by hand renews about nine times a year per site, and misses one. Automation is the only option.
 
 ### ACME and Certificate Transparency
 
-**ACME**, the Automatic Certificate Management Environment protocol, automates issuance. Request for Comments (RFC) 8555, the Internet standard for ACME, defines it. An ACME client creates an **account** with a key pair of its own and signs every request with that account key. It places an **order** for a list of names. For each name, the CA returns an **authorization** with one or more **challenges**, ways to prove control:
+**ACME**, the Automatic Certificate Management Environment protocol, automates issuance. Request for Comments (RFC) 8555, the specification of the Internet Engineering Task Force (IETF) for ACME, defines it. An ACME client creates an **account** with a key pair of its own and signs every request with that account key. It places an **order** for a list of names. For each name, the CA returns an **authorization** with one or more **challenges**, ways to prove control:
 
 - **HTTP-01**: serve a token at `http://<name>/.well-known/acme-challenge/<token>`, on port `80`. It cannot issue a wildcard certificate.
-- **DNS-01**: publish a token in a TXT record at `_acme-challenge.<name>`. It works for wildcards and for servers that the internet cannot reach, and it needs an API key for your DNS provider.
-- **TLS-ALPN-01**: answer a special TLS handshake on port `443`.
+- **DNS-01**: publish a token in a TXT record, a DNS record that holds free text, at `_acme-challenge.<name>`. It works for wildcards and for servers that the internet cannot reach, and it needs an API key for your DNS provider.
+- **TLS-ALPN-01**: answer a special TLS handshake on port `443`. ALPN, Application-Layer Protocol Negotiation, is the TLS extension that names the protocol inside the connection, and this challenge asks for a protocol name of its own.
 
 Once every authorization is valid, the client sends a **certificate signing request** (CSR): its new public key and the names, signed with the matching private key. The CA signs the certificate, and the client downloads it with the chain.
 
@@ -77,7 +77,7 @@ Every certificate a public CA issues goes into public, append-only **Certificate
 
 ### Private PKI and Mutual TLS
 
-Not every certificate needs a public CA. A company runs its own **private CA** for internal services, and installs its root on its own machines only. With **mutual TLS** (mTLS), the client also presents a certificate, and the server checks it against the private CA: each service proves its identity to the other. Service meshes such as Linkerd issue short-lived certificates to every pod this way. For local development, `mkcert` creates a private CA, adds it to the trust store of your laptop and issues certificates for `localhost`.
+Not every certificate needs a public CA. A company runs its own **private CA** for internal services, and installs its root on its own machines only. With **mutual TLS** (mTLS), the client also presents a certificate, and the server checks it against the private CA: each service proves its identity to the other. For local development, `mkcert` creates a private CA, adds it to the trust store of your laptop and issues certificates for `localhost`.
 
 ## Diagrams
 
@@ -128,8 +128,8 @@ ca -> client: "certificate and chain"
     { hl: ['client', 'ca', 'client->ca'], caption: 'The client generates an account key pair and registers the public half. From now on, it signs every request with the account key, and the CA knows which account asks.' },
     { hl: ['client', 'ca', 'client->ca#1', 'ca->client'], caption: 'The client orders a certificate for status.example.com. The CA answers with an authorization for that name and a set of challenges, among them http-01 with a random token T.' },
     { hl: ['client', 'web', 'client->web'], caption: 'The client publishes the key authorization, the token plus a thumbprint of the account public key, at the challenge path on port 80. The thumbprint ties the proof to this account and no other.' },
-    { hl: ['client', 'ca', 'web', 'client->ca#2', 'ca->web', 'web->ca'], caption: 'The client tells the CA the challenge is ready. Let\'s Encrypt fetches the URL from several vantage points on the internet, which defeats an attacker who controls one network path. All of them must get the right answer.' },
-    { hl: ['client', 'ca', 'client->ca#3', 'ca->client#1'], caption: 'The authorization is valid. The client generates the certificate key pair and sends a CSR. The CA signs a 90-day certificate, logs it in Certificate Transparency, and the client downloads it with the intermediate.' },
+    { hl: ['client', 'ca', 'web', 'client->ca#2', 'ca->web', 'web->ca'], caption: 'The client tells the CA the challenge is ready. Let\'s Encrypt fetches the URL from several vantage points on the internet, which defeats an attacker who controls one network path. Nearly all of them must get the right answer: one failed vantage point is tolerated, a hijacked path to most of them is not.' },
+    { hl: ['client', 'ca', 'client->ca#3', 'ca->client#1'], caption: 'The authorization is valid. The client generates the certificate key pair and sends a CSR. The CA logs a precertificate in Certificate Transparency, signs the 90-day certificate with the proof of logging inside, and returns it with the intermediate.' },
   ]}
 />
 
@@ -151,7 +151,7 @@ The leaf names `status.example.com` in `DNSNames`, the SAN list that clients che
 
 <CodeFrom file="go/tracks/tlspki/tlspki_test.go" region="test" lang="go" title="tlspki_test.go" />
 
-`errors.As` finds the typed error inside whatever wraps it, the way your monitor tells an expired certificate from a wrong name. The clock is fixed at October 11, 2026, at 12:00 UTC: no test depends on the day it runs. Two more tests check that a leaf from another CA fails with `x509.UnknownAuthorityError`, and that the root can sign certificates while the leaf cannot.
+`errors.As` finds the typed error inside whatever wraps it, the way your monitor tells an expired certificate from a wrong name. The tests fix the clock at October 11, 2026, at 12:00 UTC: no test depends on the day it runs. The region calls helpers from the top of the test file: `issue` makes a CA and a 90-day leaf for `status.example.com`, `now` is the fixed clock, and `day` is 24 hours. Two more tests check that a leaf from another CA fails with `x509.UnknownAuthorityError`, and that the root can sign certificates while the leaf cannot.
 
 ## In the Uptime Monitor
 
@@ -173,9 +173,7 @@ The leaf names `status.example.com` in `DNSNames`, the SAN list that clients che
 ## Going Deeper
 
 - **The TLS 1.3 handshake in detail.** RFC 8446 explains the key schedule, session resumption and early data, which saves a round trip at the price of a replay risk.
-- **DNS-01 and wildcard certificates.** Needed for names that the internet cannot reach and for `*.example.com`, at the price of a DNS API key on your server.
-- **Certificate Transparency monitoring.** Services watch the CT logs and alert you when any CA issues a certificate for your domain.
-- **Post-quantum key exchange.** Go 1.24 enables the hybrid X25519MLKEM768 key exchange by default, which protects recorded traffic from future quantum computers.
+- **Post-quantum key exchange.** Go 1.24 enables the hybrid X25519MLKEM768 key exchange by default. It pairs the classic X25519 exchange with ML-KEM, the Module-Lattice-Based Key-Encapsulation Mechanism, a United States federal standard since 2024, which protects recorded traffic from future quantum computers.
 
 ## Further Reading
 
