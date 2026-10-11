@@ -71,9 +71,12 @@ one of its two paths for 2 minutes, or Prometheus has no probe result.
 1. `kubectl -n your-monitor get pods -l app.kubernetes.io/name=web` and the
    same for `api`.
 2. Compare the two `instance` labels of the alert. Only the public URL
-   failing points at DNS, the certificate or Traefik:
-   `curl -sSv https://status.example.com/api/monitors`. Both failing points
-   at the web or api pods.
+   failing points at DNS, the certificate, Traefik, or the path from the
+   cluster to its own public address:
+   `curl -sSv https://status.example.com/api/monitors`. A curl from your
+   laptop takes a different path from the probe: a pass there clears DNS
+   and the certificate, not that path. Both failing points at the web or
+   api pods.
 3. `kubectl -n monitoring get pods`: when blackbox exporter is down, the
    status page is fine and the probe is the problem.
 4. Read the failed probe: `probe_http_status_code` in Prometheus, or
@@ -85,7 +88,7 @@ one of its two paths for 2 minutes, or Prometheus has no probe result.
 
 **Means:** the certificate that the public probe sees expires within
 14 days. cert-manager renews 30 days before expiry, so every renewal for
-two weeks has failed.
+more than two weeks has failed.
 
 **Do:** within one working day, read why:
 `kubectl -n your-monitor describe certificate` and

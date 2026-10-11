@@ -1,9 +1,9 @@
 # region: service-policy
-# Services in your-monitor and monitoring stay inside the cluster. A NodePort or a
-# LoadBalancer Service, or any Service with externalIPs, opens a port on
-# the VPS that ufw never sees, because Kubernetes forwards that traffic
-# before ufw's rules run. The way in from the internet is the Traefik
-# Ingress, on 80 and 443.
+# Services in your-monitor and monitoring stay inside the cluster. A
+# NodePort or a LoadBalancer Service, or any Service with externalIPs,
+# opens a port on the VPS that ufw never sees, because Kubernetes forwards
+# that traffic before ufw's rules run. The way in from the internet is the
+# Traefik Ingress, on 80 and 443.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:

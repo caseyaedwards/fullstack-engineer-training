@@ -17,7 +17,9 @@
   time and accept the budget it costs.
 - **Channel:** pages ring in the Telegram chat of your bot. Tickets arrive in
   the same chat without a sound. A dead VPS, a failed backup and an overdue
-  drill arrive from healthchecks.io, in your chat with `@HealthchecksBot`.
+  drill arrive from healthchecks.io, in your chat with `@HealthchecksBot`:
+  its Telegram integration is on for `vps`, `pg-backup` and
+  `restore-drill`, and off for `laptop`.
 
 ## When a Page Rings
 
@@ -35,5 +37,6 @@
 - Check healthchecks.io. `vps` and `laptop` list the last ping from
   each Alertmanager. `pg-backup` shows a ping from 03:17 UTC of each day,
   and `restore-drill` one from the last 7 days: run the drill of Week 17
-  if it is due.
+  if it is due. A check that has never been pinged stays new and never
+  alerts: each one needs a first green ping.
 <!-- endregion: oncall -->

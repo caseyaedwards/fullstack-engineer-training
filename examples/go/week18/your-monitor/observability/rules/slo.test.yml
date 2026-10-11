@@ -475,7 +475,7 @@ tests:
               instance: https://status.example.com/api/monitors
             exp_annotations:
               summary: "The certificate of https://status.example.com/api/monitors expires in 12d 23h 59m 0s."
-              description: "cert-manager renews a Let's Encrypt certificate 30 days before expiry. A certificate this close to expiry means every renewal has failed for two weeks."
+              description: "cert-manager renews a Let's Encrypt certificate 30 days before expiry. A certificate this close to expiry means every renewal has failed for more than two weeks."
               runbook_url: https://github.com/your-user/your-monitor/blob/main/docs/runbook.md#certificateexpiressoon
   # endregion: certificate
 

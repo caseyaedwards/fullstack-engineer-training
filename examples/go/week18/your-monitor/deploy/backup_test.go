@@ -134,12 +134,20 @@ func backupEnv(t *testing.T, env []string, identity, remote string) []string {
 // and a function that lists the paths the server has received so far.
 func pinger(t *testing.T) (string, func() []string) {
 	t.Helper()
+	return pingerAnswering(t, http.StatusOK)
+}
+
+// pingerAnswering is pinger with a server that answers every ping with
+// the status code.
+func pingerAnswering(t *testing.T, code int) (string, func() []string) {
+	t.Helper()
 	var mu sync.Mutex
 	var paths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
 		paths = append(paths, r.URL.Path)
+		w.WriteHeader(code)
 	}))
 	t.Cleanup(srv.Close)
 	return srv.URL + "/ping/pg-backup", func() []string {
@@ -227,6 +235,28 @@ func TestBackupPingsFailure(t *testing.T) {
 	}
 	if got := pings(); !slices.Equal(got, []string{"/ping/pg-backup/fail"}) {
 		t.Errorf("healthchecks.io got pings %q, want one failure ping, /ping/pg-backup/fail", got)
+	}
+}
+
+// TestBackupSurvivesAFailedSuccessPing runs backup.sh against a
+// healthchecks.io that answers 500: curl tries the success ping four
+// times, and the backup still exits 0, because the dump is uploaded and a
+// retry of the Job would only take a second one.
+func TestBackupSurvivesAFailedSuccessPing(t *testing.T) {
+	env := live(t, pgBin(t))
+	remote := t.TempDir()
+	ping, pings := pingerAnswering(t, http.StatusInternalServerError)
+	out, err := script(backupEnv(t, append(env, "BACKUP_PING_URL="+ping), key(t), remote),
+		"sh", filepath.Join(scripts, "backup.sh"))
+	if err != nil || !strings.Contains(out, "backup: the success ping failed") {
+		t.Errorf("err %v, output:\n%s\nwant exit 0 and the line backup: the success ping failed", err, out)
+	}
+	want := []string{"/ping/pg-backup", "/ping/pg-backup", "/ping/pg-backup", "/ping/pg-backup"}
+	if got := pings(); !slices.Equal(got, want) {
+		t.Errorf("healthchecks.io got pings %q, want four tries of the success ping", got)
+	}
+	if files, _ := filepath.Glob(filepath.Join(remote, "*")); len(files) != 2 {
+		t.Errorf("remote holds %v, want the dump and its counts", files)
 	}
 }
 

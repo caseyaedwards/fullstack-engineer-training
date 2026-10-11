@@ -239,7 +239,7 @@ The page fires at minute 65, the 4.3 minutes from Concepts. `16.7` is 500 failed
 
 <CodeFrom file="go/week18/your-monitor/observability/rules/slo.test.yml" region="blip-does-not-page" lang="yaml" title="observability/rules/slo.test.yml" />
 
-`promql_expr_test` checks any expression: here, that the short window crosses 14.4 and the long one does not, which is the reason for the silence. The file holds thirteen more tests: the page resolves minutes after a fix, 5% errors page through the slow burn, a slow leak opens a ticket and pages nobody, two cases where only one ticket window burns, stopped workers, slow workers, a missing scheduler, a frozen queue gauge, the first start of Prometheus, a failing and a missing probe, an expiring certificate, and the Watchdog. Run them with the `promtool` of the Prometheus image that Compose runs:
+`promql_expr_test` checks any expression: here, that the short window crosses 14.4 and the long one does not, which is the reason for the silence. The file holds thirteen more tests: the page resolves minutes after a fix, 5% errors page through the slow burn, a slow leak opens a ticket and pages nobody, two cases where only one ticket window burns, slow workers, a missing scheduler, a frozen queue gauge, the first start of Prometheus, a failing and a missing probe, an expiring certificate, and the Watchdog. Run them with the `promtool` of the Prometheus image that Compose runs:
 
 ```sh
 docker compose run --rm --no-deps --entrypoint promtool prometheus check rules /etc/prometheus/rules/slo.rules.yml
@@ -276,7 +276,7 @@ Alertmanager receives the alerts that Prometheus fires, groups them, silences th
 1. In Telegram, open a chat with `@BotFather`, send `/newbot`, and answer its two questions. BotFather replies with a **token**, the password of your bot.
 2. Send any message to your new bot, then read the ID of your chat with it: `curl -s "https://api.telegram.org/bot<token>/getUpdates"`. The number after `"chat":{"id":` is your chat ID.
 3. On healthchecks.io, create two checks, `laptop` and `vps`, each with a period of 5 minutes and a grace time of 10 minutes, and copy both ping URLs. Each stack pings its own: a laptop that runs `make up` must not keep a dead VPS green.
-4. In the integrations of your healthchecks.io project, add Telegram: it sends you to `@HealthchecksBot`, where you send `/start`. Turn the integration on for the `vps` check: a dead VPS then rings your phone, not only your inbox.
+4. In the integrations of your healthchecks.io project, add Telegram: it sends you to `@HealthchecksBot`, where you send `/start`. healthchecks.io turns a new integration on for every check. Keep Telegram on for `vps`, and later for `pg-backup` and `restore-drill`: a dead VPS then rings your phone, not only your inbox. In the `laptop` check, turn off every integration: it exists only to keep the laptop from pinging `vps`.
 5. Write the four values into `observability/secrets/`, one per file, and add `observability/secrets/` to `.gitignore`:
 
 ```sh
@@ -331,7 +331,7 @@ The same file gains a `status-page-probe` job, which Step 7 explains, and an `al
 
 <CodeFrom file="go/week18/your-monitor/compose.yaml" region="alertmanager" lang="yaml" title="compose.yaml" />
 
-Run `make up`, open `localhost:9090/rules` to see every rule with its last value, and `localhost:9090/alerts` to see the Watchdog firing. `localhost:9093` is Alertmanager. Within 5 minutes, the `laptop` check on healthchecks.io shows its first ping. The laptop stack sends real pages too, during your on-call hours: run `make down` when you stop working on it.
+Run `make up`, open `localhost:9090/rules` to see every rule with its last value, and `localhost:9090/alerts` to see the Watchdog firing. `localhost:9093` is Alertmanager. Within 5 minutes, the `laptop` check on healthchecks.io shows its first ping. The laptop stack sends real pages too, during your on-call hours: run `make down` when you stop working on it. Your laptop database needs its own self-check: run the two curl commands of Step 1 against `http://localhost:8080` with the URL `http://web:8080/healthz`, logged in as a local user. Without it, the freshness SLI reads late, and the laptop pages you about 11 minutes after `make up`.
 
 ### Step 7: Deploy to the VPS
 
@@ -343,7 +343,9 @@ In the cluster, Prometheus finds its targets through the Kubernetes API with **s
 
 <CodeFrom file="go/week18/your-monitor/observability/k8s/prometheus.yml" region="prometheus-k8s" lang="yaml" title="observability/k8s/prometheus.yml" />
 
-Put your domain in the first target of the probe job. Each target URL goes to blackbox exporter as the `target` parameter, which is what the three `relabel_configs` do, and stays as the `instance` label: `StatusPageDown` fires for either path. To list pods, Prometheus needs one right in the `your-monitor` namespace, and only that one:
+Put your domain in the first target of the probe job. `kubectl -n kube-system get svc traefik -o jsonpath='{.status.loadBalancer.ingress[*].ip}'` must print your public address: kube-proxy then sends the probe straight to Traefik, inside the VPS. The probe tests DNS, the certificate, Traefik and the web pod, not ufw or the provider firewall. If it prints a private address, add `node-external-ip: <public address>` to `/etc/rancher/k3s/config.yaml` and restart k3s with `sudo systemctl restart k3s`.
+
+Each target URL goes to blackbox exporter as the `target` parameter, which is what the three `relabel_configs` do, and stays as the `instance` label: `StatusPageDown` fires for either path. To list pods, Prometheus needs one right in the `your-monitor` namespace, and only that one:
 
 <CodeFrom file="go/week18/your-monitor/observability/k8s/prometheus.yaml" region="rbac" lang="yaml" title="observability/k8s/prometheus.yaml" />
 
@@ -376,7 +378,7 @@ A test page from amtool.
 Runbook:
 ```
 
-On `localhost:9090/targets`, every pod of your monitor is `UP` under the jobs `api`, `scheduler`, `worker` and `alerter`, next to `status-page-probe`, `prometheus` and `alertmanager`.
+On `localhost:9090/targets`, every pod of your monitor is `UP` under the jobs `api`, `scheduler`, `worker` and `alerter`, next to `status-page-probe`, `prometheus` and `alertmanager`. In the query box, `probe_success` reads 1 for both instances, the public URL and the Service URL.
 
 ### Step 8: On Call and the Runbook
 
@@ -392,11 +394,18 @@ A **runbook** tells the person holding the pager what to do first, written while
 
 The runbook says **mitigate** first: restore the service by rollback, restart or scale, before you understand the cause. A rollback that fixes the symptom in two minutes beats a root cause found in forty.
 
-Prometheus cannot see the backups of <a href={weekHref(17)}>Week 17</a>: the CronJob runs once a day, and the drill runs on your laptop. Two more healthchecks.io checks watch them, and the runbook section `Backups` says what to do when one alerts. Create `pg-backup` with the cron schedule `17 3 * * *`, time zone UTC and a grace time of 2 hours: the 1-hour start deadline, the 30-minute run limit and the retries of the CronJob. `backup.sh` reads its ping URL from the `offsite` Secret, pings `/fail` first thing in `fail()`, which alerts you at once on a failed run, and pings the URL itself as its last line. The backup image gains `curl` for it: push, and CI builds the image. Create `restore-drill` with a period of 7 days and a grace time of 1 day, and append `&& curl -fsS -m 10 --retry 3 https://hc-ping.com/<uuid>` to the drill command of Week 17: the ping goes out only when the drill passes.
+Prometheus cannot see the backups of <a href={weekHref(17)}>Week 17</a>: the CronJob runs once a day, and the drill runs on your laptop. Two more healthchecks.io checks watch them, and the runbook section `Backups` says what to do when one alerts. `backup.sh` reads its ping URL from the `offsite` Secret and refuses to run without it. It pings `/fail` first thing in `fail()`, which alerts you at once on a failed run, and pings the URL itself as its last line. A check that has never been pinged stays new and never alerts: give each check its first ping now, in this order:
 
-```sh
-kubectl -n your-monitor patch secret offsite --type=merge -p '{"stringData":{"BACKUP_PING_URL":"https://hc-ping.com/<uuid>"}}'
-```
+1. On healthchecks.io, create `pg-backup` with the cron schedule `17 3 * * *`, time zone UTC and a grace time of 2 hours: the 1-hour start deadline and the 30-minute run limit, which holds the retries.
+2. Put its ping URL into the `offsite` Secret, before the new image runs:
+
+   ```sh
+   kubectl -n your-monitor patch secret offsite --type=merge -p '{"stringData":{"BACKUP_PING_URL":"https://hc-ping.com/<uuid>"}}'
+   ```
+
+3. Push, and let CI build the backup image, which gains `curl`, and deploy it.
+4. Run a backup now with `kubectl -n your-monitor create job --from=cronjob/pg-backup pg-backup-first`, and check that `pg-backup` turns green on healthchecks.io.
+5. Create `restore-drill` with a period of 7 days and a grace time of 1 day. Append `&& curl -fsS -m 10 --retry 3 https://hc-ping.com/<uuid>` to the drill command of Week 17, run the drill once now, and check that `restore-drill` turns green. The ping goes out only when the drill passes.
 
 ### Step 9: Run the Incident Drill
 
@@ -436,7 +445,7 @@ kubectl -n your-monitor scale statefulset postgres --replicas=1
 kubectl -n your-monitor rollout status statefulset postgres
 ```
 
-The api, the scheduler and the workers reconnect on their next query, with no restart. Watch the alerts resolve on `localhost:9093` and on your phone. A resolve message arrives at the next `group_interval` of its group, up to 5 minutes after the alert ends. Then read what the drill cost in `slo:error_budget:remaining`. With 30 days of history, 11 minutes of total outage cost 11 ÷ 216 = 5% of the availability budget. With less history, the 30-day window holds only what Prometheus has, and the number drops far lower: the test run read −19.9 for availability: about 21 budgets spent.
+The api, the scheduler and the workers reconnect on their next query, with no restart. Watch the alerts resolve on `localhost:9093` and on your phone. A resolve message arrives at the next `group_interval` of its group, up to 5 minutes after the alert ends. Then read what the drill cost in `slo:error_budget:remaining`. With 30 days of history, 11 minutes of total outage cost 11 ÷ 216 = 5% of the availability budget. With less history, the 30-day window holds only what Prometheus has: the test run read −19.9 for availability, 20.9 budgets spent.
 
 ### Step 10: Write the Postmortem
 

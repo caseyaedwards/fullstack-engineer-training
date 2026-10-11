@@ -202,7 +202,8 @@ groups:
 
       # The certificate that the public probe sees expires within 14 days.
       # cert-manager renews a 90-day certificate 30 days before expiry by
-      # default, so this means every renewal has failed for two weeks.
+      # default, so this means every renewal has failed for more than two
+      # weeks.
       - alert: CertificateExpiresSoon
         expr: probe_ssl_earliest_cert_expiry{job="status-page-probe"} - time() < 14 * 86400
         labels:
@@ -210,7 +211,7 @@ groups:
           slo: availability
         annotations:
           summary: "The certificate of {{ $labels.instance }} expires in {{ $value | humanizeDuration }}."
-          description: "cert-manager renews a Let's Encrypt certificate 30 days before expiry. A certificate this close to expiry means every renewal has failed for two weeks."
+          description: "cert-manager renews a Let's Encrypt certificate 30 days before expiry. A certificate this close to expiry means every renewal has failed for more than two weeks."
           runbook_url: https://github.com/your-user/your-monitor/blob/main/docs/runbook.md#certificateexpiressoon
 
       # Always firing. Alertmanager sends it to an outside heartbeat check
