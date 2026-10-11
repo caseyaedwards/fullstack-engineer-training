@@ -133,8 +133,26 @@ func TestLookupHonorsTheContext(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Errorf("Lookup took %v, want well under 2s for a 100ms timeout", elapsed)
 	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want context.DeadlineExceeded, the error callers count timeouts with", err)
+	}
 	if !errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Errorf("err = %v, want os.ErrDeadlineExceeded", err)
+		t.Errorf("err = %v, want the socket error os.ErrDeadlineExceeded wrapped too", err)
+	}
+}
+
+// A cancel with no deadline ends the wait too, with context.Canceled.
+func TestLookupHonorsACancel(t *testing.T) {
+	server := fakeServer(t, func([]byte, uint16) [][]byte { return nil })
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	start := time.Now()
+	_, _, err := Lookup(ctx, server, "example.com")
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("Lookup took %v, want well under 2s after a cancel at 100ms", elapsed)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
 	}
 }
 

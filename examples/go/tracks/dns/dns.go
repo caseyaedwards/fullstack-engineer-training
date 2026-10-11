@@ -99,6 +99,7 @@ func ParseA(msg []byte) ([]netip.Addr, uint32, error) {
 // Lookup asks server, a host:port such as 1.1.1.1:53, for the A records
 // of name over UDP. It waits until ctx ends, or five seconds when ctx has
 // no deadline, and drops any reply whose ID does not match the question.
+// When ctx ends first, the error wraps ctx.Err().
 func Lookup(ctx context.Context, server, name string) ([]netip.Addr, uint32, error) {
 	id := uint16(rand.Uint32())
 	query, err := BuildQuery(id, name)
@@ -128,6 +129,9 @@ func Lookup(ctx context.Context, server, name string) ([]netip.Addr, uint32, err
 	for {
 		n, err := conn.Read(buf)
 		if err != nil {
+			if ctxErr := contextErr(ctx); ctxErr != nil {
+				return nil, 0, fmt.Errorf("dns: %w: %w", ctxErr, err)
+			}
 			return nil, 0, fmt.Errorf("dns: %w", err)
 		}
 		var p dnsmessage.Parser
@@ -140,6 +144,19 @@ func Lookup(ctx context.Context, server, name string) ([]netip.Addr, uint32, err
 		}
 		return ParseA(buf[:n])
 	}
+}
+
+// contextErr returns ctx.Err(), or context.DeadlineExceeded once the ctx
+// deadline has passed: the socket deadline and the context timer fire at
+// the same instant, and the socket can report first.
+func contextErr(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if d, ok := ctx.Deadline(); ok && !time.Now().Before(d) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 // endregion: lookup
