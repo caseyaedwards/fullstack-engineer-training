@@ -7,7 +7,7 @@ import (
 	"context"
 	"sync"
 
-	"fsp/examples/week10/your-monitor/internal/check"
+	"fsp/examples/week08/your-monitor/internal/check"
 )
 
 // CheckFunc checks one URL. It must return soon after ctx is cancelled.

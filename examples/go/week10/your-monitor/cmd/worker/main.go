@@ -1,13 +1,12 @@
-// Command worker is the Week 5 monitor, moved to cmd/worker in Week 6.
-// It checks every URL in a file on a pool of worker goroutines, waits for
-// the next interval, and checks them all again, until SIGINT or SIGTERM
-// arrives. Only its import paths change in the move: check, pool and
-// probe now live under internal/. Run it from the examples/go directory:
+// Command worker takes check jobs from the queue in Postgres, checks each
+// URL with probe.Check, and stores one check_results row per check. It
+// runs -workers goroutines that each claim one job at a time, until SIGINT
+// or SIGTERM arrives. Week 8 checked every monitor each round; Week 9
+// leaves the rounds to cmd/scheduler, which fills the queue. Run it from
+// the examples/go directory:
 //
-//	go run ./week10/your-monitor/cmd/worker -file week10/your-monitor/urls.txt
-//
-// Every line from the package clause down matches the Week 5 main.go,
-// apart from the import paths; layout_test.go in week06 checks that.
+//	DATABASE_URL=postgres://monitor:changeme@127.0.0.1:5432/monitor?sslmode=disable \
+//	    go run ./week10/your-monitor/cmd/worker
 
 // region: imports
 package main
@@ -21,13 +20,17 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
-	"runtime"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"fsp/examples/week10/your-monitor/internal/check"
-	"fsp/examples/week10/your-monitor/internal/pool"
+	"fsp/examples/week10/your-monitor/internal/db"
+	"fsp/examples/week10/your-monitor/internal/monitor"
 	"fsp/examples/week10/your-monitor/internal/probe"
+	"fsp/examples/week10/your-monitor/internal/queue"
 )
 
 // endregion: imports
@@ -35,25 +38,19 @@ import (
 // region: main
 
 func main() {
-	file := flag.String("file", "", "file with one URL per line, for example urls.txt")
+	databaseURL := flag.String("database-url", os.Getenv("DATABASE_URL"), "Postgres connection string; defaults to $DATABASE_URL")
 	timeout := flag.Duration("timeout", 5*time.Second, "how long to wait for each check")
-	interval := flag.Duration("interval", 30*time.Second, "how long from the start of one round of checks to the next")
 	workers := flag.Int("workers", 10, "how many checks run at the same time")
+	poll := flag.Duration("poll", time.Second, "how long a worker waits before it looks again when the queue is empty")
 	debugAddr := flag.String("debug-addr", "", "address for the pprof debug server, for example 127.0.0.1:6060; empty turns it off")
 	flag.Parse()
-	if *file == "" {
-		fmt.Fprintln(os.Stderr, "missing -file")
+	if *databaseURL == "" {
+		fmt.Fprintln(os.Stderr, "missing -database-url or DATABASE_URL")
 		flag.Usage()
 		os.Exit(2)
 	}
-	if *interval <= 0 || *timeout <= 0 || *workers < 1 {
-		fmt.Fprintln(os.Stderr, "-interval and -timeout must be more than 0, and -workers at least 1")
-		os.Exit(2)
-	}
-
-	targets, err := readList(*file)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	if *timeout <= 0 || *poll <= 0 || *workers < 1 {
+		fmt.Fprintln(os.Stderr, "-timeout and -poll must be more than 0, and -workers at least 1")
 		os.Exit(2)
 	}
 
@@ -61,86 +58,140 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	conns, err := connect(ctx, *databaseURL, *workers)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conns.Close()
+	if err := db.Migrate(ctx, conns); err != nil {
+		log.Fatal(err)
+	}
+
 	if *debugAddr != "" {
 		go func() {
 			log.Printf("debug server stopped: %v", http.ListenAndServe(*debugAddr, nil))
 		}()
 	}
 
-	checkOne := func(ctx context.Context, target string) check.Result {
-		ctx, cancel := context.WithTimeout(ctx, *timeout)
-		defer cancel()
-		timings, status, err := probe.Check(ctx, target)
-		return check.Result{URL: target, Status: status, Latency: timings.FirstByte, Err: err, Timings: timings}
-	}
-
-	log.Printf("started pid=%d urls=%d interval=%s workers=%d", os.Getpid(), len(targets), *interval, *workers)
-	run(ctx, targets, *interval, *workers, checkOne)
+	checkJob := newCheckFunc(*timeout)
+	log.Printf("started pid=%d workers=%d poll=%s", os.Getpid(), *workers, *poll)
+	run(ctx, *workers, *poll, func(ctx context.Context) (bool, error) {
+		return queue.Work(ctx, conns, checkJob)
+	})
 	log.Print("stopped")
 }
 
 // endregion: main
 
+// region: connect
+
+// connect opens a connection pool with one connection for each worker
+// goroutine, plus one spare, and checks that the database answers, as
+// db.Connect does. A worker holds its connection, and the lock on its
+// job, for the whole check. With fewer connections, workers wait for a
+// free connection instead of checking sites.
+func connect(ctx context.Context, url string, workers int) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		return nil, fmt.Errorf("parse database URL: %w", err)
+	}
+	cfg.MaxConns = int32(workers) + 1
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("connect to database: %w", err)
+	}
+	return pool, nil
+}
+
+// endregion: connect
+
+// region: check
+
+// newCheckFunc returns the function that checks the URL of one job, with
+// its own deadline, logs the check, and turns it into a check_results row.
+func newCheckFunc(timeout time.Duration) queue.CheckFunc {
+	return func(ctx context.Context, job queue.Job) monitor.Result {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		checkedAt := time.Now()
+		timings, status, err := probe.Check(ctx, job.URL)
+		r := check.Result{URL: job.URL, CheckedAt: checkedAt, Status: status,
+			Latency: timings.FirstByte, Err: err, Timings: timings}
+		logCheck(r)
+		return toResult(job.MonitorID, r)
+	}
+}
+
+// endregion: check
+
 // region: run
 
-// run checks every target through a pool of workers, logs the results and
-// a summary, waits for the next tick of the interval, and does it again.
-// It returns once ctx is cancelled. The checks in flight are cancelled
-// with it, and the rest of that round is skipped.
-func run(ctx context.Context, targets []string, interval time.Duration, workers int, checkOne pool.CheckFunc) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for ctx.Err() == nil {
-		start := time.Now()
-		results := pool.Run(ctx, targets, workers, checkOne)
-		for _, r := range results {
-			logCheck(r)
-		}
-		log.Printf("round %v duration_ms=%d goroutines=%d",
-			summarize(len(targets), results), time.Since(start).Milliseconds(), runtime.NumGoroutine())
-
-		select {
-		case <-ctx.Done():
-		case <-ticker.C:
-		}
+// run starts n goroutines. Each calls work over and over: at once after a
+// job, and after a pause of poll when the queue is empty or work fails.
+// run returns once ctx is cancelled and every goroutine has stopped.
+func run(ctx context.Context, n int, poll time.Duration, work func(context.Context) (bool, error)) {
+	var wg sync.WaitGroup
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for ctx.Err() == nil {
+				worked, err := work(ctx)
+				if err != nil && ctx.Err() == nil {
+					log.Printf("job failed: %v", err)
+				}
+				if worked && err == nil {
+					continue // more jobs can be waiting: look again at once
+				}
+				select {
+				case <-ctx.Done():
+				case <-time.After(poll):
+				}
+			}
+		}()
 	}
+	wg.Wait()
 }
 
 // endregion: run
 
-// region: summary
+// region: toresult
 
-// summary counts the outcomes of one round.
-type summary struct {
-	checks, up, down, timeouts, cancelled, skipped int
-}
-
-// summarize counts results for a round of total targets. A cancelled
-// check is neither up nor down, and a target with no result is skipped.
-func summarize(total int, results []check.Result) summary {
-	s := summary{checks: len(results), skipped: total - len(results)}
-	for _, r := range results {
-		switch {
-		case r.Cancelled():
-			s.cancelled++
-		case r.Up():
-			s.up++
-		default:
-			s.down++
-			if r.TimedOut() {
-				s.timeouts++
-			}
+// toResult turns the outcome of one check into a check_results row.
+// A step that did not happen has a zero duration and becomes NULL.
+func toResult(monitorID int64, r check.Result) monitor.Result {
+	ms := func(d time.Duration) *int {
+		if d == 0 {
+			return nil
 		}
+		n := int(d.Milliseconds())
+		return &n
 	}
-	return s
+	out := monitor.Result{
+		MonitorID:   monitorID,
+		CheckedAt:   r.CheckedAt,
+		Up:          r.Up(),
+		DNSMs:       ms(r.Timings.DNS),
+		ConnectMs:   ms(r.Timings.Connect),
+		TLSMs:       ms(r.Timings.TLS),
+		FirstByteMs: ms(r.Timings.FirstByte),
+		TotalMs:     ms(r.Timings.Total),
+	}
+	if r.Status != 0 {
+		out.StatusCode = &r.Status
+	}
+	if r.Err != nil {
+		msg := r.Err.Error()
+		out.Error = &msg
+	}
+	return out
 }
 
-func (s summary) String() string {
-	return fmt.Sprintf("checks=%d up=%d down=%d timeouts=%d cancelled=%d skipped=%d",
-		s.checks, s.up, s.down, s.timeouts, s.cancelled, s.skipped)
-}
-
-// endregion: summary
+// endregion: toresult
 
 // region: logcheck
 
@@ -157,25 +208,3 @@ func logCheck(r check.Result) {
 }
 
 // endregion: logcheck
-
-// region: read
-
-// readList opens the file at path and parses it with check.ParseList.
-func readList(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	targets, err := check.ParseList(f)
-	if err != nil {
-		return nil, fmt.Errorf("%s:\n%w", path, err)
-	}
-	if len(targets) == 0 {
-		return nil, fmt.Errorf("%s: no URLs to check", path)
-	}
-	return targets, nil
-}
-
-// endregion: read

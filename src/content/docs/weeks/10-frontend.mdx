@@ -336,7 +336,7 @@ for url in https://example.com http://127.0.0.1:1/; do
 done
 ```
 
-Open `http://localhost:5173`. Both rows show **No checks yet** until the worker stores their first results. Within 30 seconds of those, `https://example.com` shows **Up** with its total time, and `http://127.0.0.1:1/` shows **Down** with a `connection refused` error. After the third failure, the alerter opens an incident, and **Open incidents** lists it at the next refresh. Each new check adds a dot on the right of the chart.
+Open `http://localhost:5173`. Both rows show **No checks yet** until the worker stores their first results. Within 30 seconds of those, `https://example.com` shows **Up** with its total time, and `http://127.0.0.1:1/` shows **Down** with a `connection refused` error. After the third failure in a row, the alerter opens an incident with the error of the check as its cause, and **Open incidents** lists it at the next refresh. Each new check adds a dot on the right of the chart.
 
 ### Step 9: Add an End-to-End Test with Playwright
 
@@ -376,9 +376,9 @@ Create `web/nginx.conf`:
 
 <CodeFrom file="go/week10/your-monitor/Dockerfile" region="web" lang="dockerfile" title="Dockerfile" />
 
-`node:22-alpine` builds the page, and only `dist/` reaches the final image. The build stage from Week 6 still runs `COPY . .`, which now copies `web/` too: a change to the page reruns `go build` when you next build the api and worker images. To avoid that, replace `COPY . .` in that stage with one `COPY` per folder the Go build needs, such as `cmd` and `internal`. `npm run build` runs `tsc -b`, which type-checks your tests too, then `vite build`. The final image comes from `nginxinc/nginx-unprivileged`, the variant of the official nginx image that runs as user `101` and listens on port `8080`, the way your Go images run as `65532`. The plain `nginx` image starts as `root`.
+`node:22-alpine` builds the page, and only `dist/` reaches the final image. The build stage from Week 6 still runs `COPY . .`, which now copies `web/` too: a change to the page reruns `go build` when you next build the api and worker images. To avoid that, replace `COPY . .` in that stage with one `COPY` per folder the Go build needs: `cmd`, `internal` and `migrations`. `npm run build` runs `tsc -b`, which type-checks your tests too, then `vite build`. The final image comes from `nginxinc/nginx-unprivileged`, the variant of the official nginx image that runs as user `101` and listens on port `8080`, the way your Go images run as `65532`. The plain `nginx` image starts as `root`.
 
-The build context must now hold `web/`, which Week 6 kept out. In `.dockerignore`, replace the line `web` with the folders that `npm` and Playwright create:
+The build context must now hold `web/`, which Week 6 kept out. In `.dockerignore`, replace the line `web` with the folders that `npm` and Playwright create. The `backups` line comes from Week 8:
 
 ```txt title=".dockerignore"
 # Never sent to docker build: keeps the context small and secrets out.
@@ -388,9 +388,10 @@ bin
 web/node_modules
 web/dist
 web/test-results
+backups
 ```
 
-Add the service to `compose.yaml`, after the other services and before `volumes:`, and add `WEB_PORT=3000` to `.env.example` and `.env`:
+Add the service to `compose.yaml`, after `alerter` and before `volumes:`, and add `WEB_PORT=3000` to `.env.example` and `.env`:
 
 <CodeFrom file="go/week10/your-monitor/compose.yaml" region="web" lang="yaml" title="compose.yaml" />
 
@@ -428,8 +429,8 @@ Three places show what the page does: the browser, the logs and the page itself.
 
 ```txt
 $ docker compose logs --no-log-prefix api | grep 'path=/api/monitors '
-2026/10/11 07:08:04 request method=GET path=/api/monitors status=200 bytes=104 duration_ms=0.2
-2026/10/11 07:08:04 request method=GET path=/api/monitors status=200 bytes=104 duration_ms=0.1
+2026/10/11 08:42:34 request method=GET path=/api/monitors status=200 bytes=312 duration_ms=3.4
+2026/10/11 08:42:34 request method=GET path=/api/monitors status=200 bytes=312 duration_ms=1.2
 ```
 
 The incidents route and each results route show up twice in the same way. In the `web` container, nginx writes one access line per request: `docker compose logs web` shows the path, the status and the size of each answer, assets and api calls alike.

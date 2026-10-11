@@ -14,11 +14,12 @@ import (
 
 // Result is the outcome of checking one URL.
 type Result struct {
-	URL     string
-	Status  int           // 0 when no response arrived
-	Latency time.Duration // from sending the request to the headers arriving: Timings.FirstByte
-	Err     error         // nil when a response arrived
-	Timings probe.Timings
+	URL       string
+	CheckedAt time.Time     // when the check started
+	Status    int           // 0 when no response arrived
+	Latency   time.Duration // from sending the request to the headers arriving: Timings.FirstByte
+	Err       error         // nil when a response arrived
+	Timings   probe.Timings
 }
 
 // Up reports whether a response arrived with a status code below 400.

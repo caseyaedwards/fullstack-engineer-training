@@ -10,9 +10,9 @@ WORKDIR /src
 COPY go.* ./
 RUN go mod download
 
-# Copy the rest of the source and build two static binaries into /out.
+# Copy the rest of the source and build four static binaries into /out.
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/ ./cmd/api ./cmd/worker
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/ ./cmd/api ./cmd/worker ./cmd/scheduler ./cmd/alerter
 # endregion: build
 
 # region: runtime
@@ -33,6 +33,14 @@ ENTRYPOINT ["/api"]
 FROM runtime AS worker
 COPY --from=build /out/worker /worker
 ENTRYPOINT ["/worker"]
+
+FROM runtime AS scheduler
+COPY --from=build /out/scheduler /scheduler
+ENTRYPOINT ["/scheduler"]
+
+FROM runtime AS alerter
+COPY --from=build /out/alerter /alerter
+ENTRYPOINT ["/alerter"]
 # endregion: targets
 
 # region: web

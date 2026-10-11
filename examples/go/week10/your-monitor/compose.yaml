@@ -1,11 +1,14 @@
 # region: compose
-# The uptime monitor on your laptop: docker compose up starts every service.
+# The uptime monitor on your laptop: docker compose up starts all six.
+# The scheduler fills a job queue in Postgres; the worker empties it.
 # Compose reads variables such as ${POSTGRES_PASSWORD} from .env.
 name: your-monitor
 
 services:
   postgres:
     image: postgres:17
+    # Log every statement that runs for 200 ms or longer: the slow-query log.
+    command: ["postgres", "-c", "log_min_duration_statement=200ms"]
     environment:
       POSTGRES_USER: monitor
       POSTGRES_DB: monitor
@@ -42,15 +45,39 @@ services:
     build:
       context: .
       target: worker
-    command: ["-file", "/etc/your-monitor/urls.txt", "-interval", "30s", "-workers", "${WORKERS:-10}"]
+    command: ["-workers", "${WORKERS:-10}"]
     environment:
       DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD}@postgres:5432/monitor?sslmode=disable
-    volumes:
-      - ./urls.txt:/etc/your-monitor/urls.txt:ro
     depends_on:
       postgres:
         condition: service_healthy
     restart: on-failure
+
+  # region: new-services
+  scheduler:
+    build:
+      context: .
+      target: scheduler
+    environment:
+      DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD}@postgres:5432/monitor?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+  alerter:
+    build:
+      context: .
+      target: alerter
+    environment:
+      DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD}@postgres:5432/monitor?sslmode=disable
+      # Empty: the alerter writes alerts to its log. Set it in .env.
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+  # endregion: new-services
 
   # region: web
   web:

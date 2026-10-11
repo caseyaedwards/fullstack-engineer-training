@@ -1,17 +1,22 @@
 ---
 title: "Week 8: Backend Postgres"
+description: Give the uptime monitor a memory. Learn tables, constraints, transactions, migrations and indexes, store monitors and every check in Postgres, serve the check history from the api, and prove your backup restores.
 week: 8
 phase: build
-hours: [5, 8]
+hours: [6, 8]
 aiStage: 2
 tracks: [databases, storage, backups]
 done:
-  - id: item-1
-    text: "Placeholder item 1: this week is not written yet"
-  - id: item-2
-    text: "Placeholder item 2: this week is not written yet"
-  - id: item-3
-    text: "Placeholder item 3: this week is not written yet"
+  - id: explain-schema
+    text: Without notes, you can explain each table and constraint in 001_init.sql, and why a step that did not happen is NULL and not 0.
+  - id: db-tests-pass
+    text: With Postgres running, make test passes, including the migration, store and index tests, and the same tests fail when DATABASE_URL is unset and CI=true.
+  - id: history-served
+    text: The worker reads its monitors from Postgres and writes one check_results row per check, and curl on /api/monitors/1/results shows them newest first.
+  - id: read-a-plan
+    text: You can read an EXPLAIN ANALYZE plan and say why the results query reads 50 rows through check_results_monitor_time instead of scanning the table.
+  - id: restore-checked
+    text: You have taken a backup with make backup, restored it with make restore-check into a new database, and compared its row counts with the live database.
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -21,43 +26,528 @@ import AiThisWeek from '../../../components/AiThisWeek.astro';
 import SideLab from '../../../components/SideLab.astro';
 import ReadWith from '../../../components/ReadWith.astro';
 import DoneWhen from '../../../components/DoneWhen.astro';
+import Diagram from '../../../components/Diagram.astro';
+import CodeFrom from '../../../components/CodeFrom.astro';
+import { weekHref, trackHref } from '../../../lib/links';
 
 <WeekHeader />
 
+At the end of <a href={weekHref(7)}>Week 7</a>, the api serves monitors from a `MemStore`, and every restart forgets them. The worker still reads `urls.txt` and forgets each result as soon as it logs it. This week, you give the monitor a memory: Postgres. You design two tables, create them with a migration, store every monitor and every check, and serve the history of each monitor from a new route. You finish by proving that a backup of all that data restores.
+
 ## Goals
 
-This section is not written yet.
+- Explain tables, rows, types, NULL and the four constraints the schema uses: primary key, unique, check and foreign key.
+- Explain what a transaction promises, and how the write-ahead log keeps that promise through a crash.
+- Change the schema with numbered migration files that run once, in order, inside a transaction.
+- Read a query plan, and choose an index that matches the query the api runs.
+- Store monitors and check results from Go with pgx, and test that code against a real Postgres.
+- Back up the database with `pg_dump` and check that the backup restores.
 
 ## Concepts
 
-This section is not written yet.
+### Tables, Rows and Constraints
+
+Postgres is a **relational database**: it keeps data in **tables**. A table has named **columns**, each with a type, and holds **rows**, one value per column. You ask for data in SQL, and Postgres works out how to find it.
+
+Your schema uses a few types. `bigint` is a 64-bit integer, the size of a Go `int64`. `bigserial` is a `bigint` that Postgres fills from a counter: 1, 2, 3. `text` is a string of any length. `timestamptz` is a point in time, stored as UTC. `boolean` is true or false.
+
+A column with no value holds **NULL**. NULL means unknown or absent, which differs from zero. Your monitor needs that difference: a TLS time of `0` ms says the handshake happened and took under a millisecond, and NULL says a plain `http://` check has no handshake at all. In Go, a nullable column becomes a pointer, such as `*int`, and `nil` stands for NULL.
+
+**Constraints** are rules that Postgres enforces on every write, from every program, including a `psql` session where someone types an `insert` by hand:
+
+- **Primary key**: names each row, unique and never NULL. Every table here has one.
+- **Unique**: no two rows share the value. `monitors.url` is unique, and the api turns a violation into `409 Conflict`.
+- **Check**: an expression every row must pass, such as `interval_seconds between 30 and 3600`. `monitor.Validate` checks the same rule first, to give a friendly error. The constraint catches any code that skips it.
+- **Foreign key**: a value that must exist in another table. Each `check_results.monitor_id` names a row in `monitors`. `on delete cascade` deletes the results of a monitor when you delete the monitor.
+
+<Diagram
+  id="schema"
+  title="The tables that 001_init.sql creates, and the table that records it"
+  code={`direction: right
+monitors: {
+  shape: sql_table
+  id: bigserial {constraint: primary_key}
+  url: text {constraint: unique}
+  interval_seconds: int
+  created_at: timestamptz
+}
+check_results: {
+  shape: sql_table
+  id: bigserial {constraint: primary_key}
+  monitor_id: bigint {constraint: foreign_key}
+  checked_at: timestamptz
+  up: boolean
+  status_code: int
+  dns_ms: int
+  connect_ms: int
+  tls_ms: int
+  first_byte_ms: int
+  total_ms: int
+  error: text
+}
+schema_migrations: {
+  shape: sql_table
+  version: int {constraint: primary_key}
+  applied_at: timestamptz
+}
+check_results.monitor_id -> monitors.id: on delete cascade
+`}
+  steps={[
+    { hl: ['monitors'], caption: 'monitors: one row per URL. The api writes it, and the worker reads all of it at the start of each round. url is unique: a second monitor for the same URL fails.' },
+    { hl: ['check_results'], caption: 'check_results: one row per check, written by the worker. Every column after up is nullable, because a check that fails at DNS has no connect time, no status code and no body.' },
+    { hl: ['check_results', 'monitors', 'check_results->monitors'], caption: 'The foreign key: every result belongs to a monitor that exists. Deleting a monitor deletes its results in the same statement.' },
+    { hl: ['schema_migrations'], caption: 'schema_migrations: one row per migration file that has run. Migrate reads it at every start to decide which files are new.' },
+  ]}
+/>
+
+### Connections and the Pool
+
+Your programs talk to Postgres over a TCP connection, port `5432`, with a username and password. For each connection, Postgres starts a separate operating-system process, called a **backend**, that serves it until the connection closes. Opening a connection costs a process, memory and several round trips. A server accepts `max_connections` connections, `100` by default, and refuses the next one with `sorry, too many clients already`.
+
+A **connection pool** opens a few connections and lends them out. Your code asks the pool for a connection, runs a query and gives it back, and the pool reuses it for the next query. You use `pgxpool` from `github.com/jackc/pgx/v5`, a widely used Postgres driver for Go. Its pool holds at most 4 connections or one per CPU, whichever is more. Add `pool_max_conns=10` to the connection string to change it.
+
+Every query in your code sends its values separately from the SQL, as **parameters**: `where id = $1`, with the ID as an argument. Postgres never reads a parameter as SQL. Code that glues strings into SQL, such as `"where url = '" + url + "'"`, hands control to the data: a URL that contains a quote rewrites the query. That attack is called **SQL injection**, and parameters rule it out.
+
+### Transactions and the Write-Ahead Log
+
+A **transaction** groups statements: `BEGIN`, the statements, then `COMMIT`. Postgres applies all of them or none of them, and other connections never see half of it. `ROLLBACK`, or any error, throws the whole group away. A statement you send outside `BEGIN` runs as a transaction of its own.
+
+`COMMIT` returns once the change is safe on disk. Postgres does not rewrite the table files at every commit, because those writes land all over the disk. It appends a record of each change to the **write-ahead log**, or WAL, in the `pg_wal` folder, and asks the disk to flush it with `fsync`. The changed table pages stay in memory, in **shared buffers**, and a **checkpoint** writes them to the table files later, by default at least every 5 minutes. After a crash, Postgres replays the WAL from the last checkpoint and ends up with every committed transaction and none of the others.
+
+<Diagram
+  id="write-path"
+  title="From a Go query to the disk"
+  code={`direction: right
+api: "api\\n(pgxpool)"
+worker: "worker\\n(pgxpool)"
+pg: Postgres {
+  b1: backend
+  b2: backend
+  buf: shared buffers
+  wal: "WAL\\n(pg_wal)"
+  files: table files
+}
+api -> pg.b1: SQL over TCP
+worker -> pg.b2: SQL over TCP
+pg.b1 -> pg.buf: change pages
+pg.b2 -> pg.buf: change pages
+pg.b2 -> pg.wal: "COMMIT: append, fsync"
+pg.buf -> pg.files: checkpoint
+`}
+  steps={[
+    { hl: ['api', 'worker', 'pg.b1', 'pg.b2', 'api->pg.b1', 'worker->pg.b2'], caption: 'Each program keeps a pool of open connections. Each connection has its own backend process in Postgres.' },
+    { hl: ['pg.b2', 'pg.buf', 'pg.b2->pg.buf'], caption: 'The worker inserts a check result. Its backend changes the table and index pages in shared buffers, in memory.' },
+    { hl: ['pg.b2', 'pg.wal', 'pg.b2->pg.wal'], caption: 'At COMMIT, the backend appends the change to the WAL and waits for fsync. Only then does Insert return nil to your Go code.' },
+    { hl: ['pg.buf', 'pg.files', 'pg.buf->pg.files'], caption: 'Later, a checkpoint writes the changed pages to the table files. A crash before that point loses nothing: Postgres replays the WAL at the next start.' },
+  ]}
+/>
+
+Both the WAL and the table files live on the disk of the database. When that disk is full, Postgres cannot append to the WAL and stops. [Operate It](#operate-it) shows that moment.
+
+### Migrations
+
+The schema changes over the life of the app: Week 9 adds a job queue, Week 11 adds users. Each change is a **migration**: a SQL file with a number, such as `001_init.sql` or `002_jobs_alerts.sql`. Your programs carry the files inside their binary and apply the new ones at start, in order of number. The `schema_migrations` table records each version that has run, which means each file runs once on each database: your laptop, CI and, in Week 16, the live server.
+
+Two rules keep this safe:
+
+- Each file runs in a transaction, together with its `schema_migrations` row. In Postgres, `create table` and the other schema statements are transactional too: a file that fails halfway leaves no trace, and the next start tries it again. A few statements refuse to run inside a transaction, such as `create index concurrently`, which builds an index without blocking writes: a migration that needs one needs a runner that can skip the transaction for that file.
+- A file that has run anywhere never changes. Postgres never sees the edit, because version 1 is already recorded. To change the schema, add the next file.
+
+The api and the worker both migrate at start, and Compose starts them at the same moment. An **advisory lock** keeps them in line: a lock on a number of your choosing, which `pg_advisory_lock` takes, waiting while another connection holds it. The second program waits for the first to finish.
+
+<Diagram
+  id="migrate"
+  title="Two programs migrate one database at the same time"
+  code={`shape: sequence_diagram
+api: api
+worker: worker
+pg: Postgres
+api -> pg: pg_advisory_lock(8080001)
+pg -> api: locked
+worker -> pg: pg_advisory_lock(8080001)
+api -> pg: "BEGIN, 001_init.sql, insert version 1, COMMIT"
+api -> pg: pg_advisory_unlock(8080001)
+pg -> worker: locked
+worker -> pg: version 1 applied? yes
+worker -> pg: pg_advisory_unlock(8080001)
+`}
+  steps={[
+    { hl: ['api', 'pg', 'api->pg', 'pg->api'], caption: 'The api asks first and gets the lock.' },
+    { hl: ['worker', 'pg', 'worker->pg'], caption: 'The worker asks for the same lock number. Postgres makes it wait: its query does not return yet.' },
+    { hl: ['api', 'pg', 'api->pg#1', 'api->pg#2'], caption: 'The api finds no version 1 in schema_migrations. It runs the file and records the version in one transaction, then releases the lock.' },
+    { hl: ['worker', 'pg', 'pg->worker', 'worker->pg#1', 'worker->pg#2'], caption: 'The worker gets the lock, finds version 1 recorded, skips the file and releases the lock. Without the lock, both run the file, and one fails.' },
+  ]}
+/>
+
+### Indexes
+
+The api asks for the newest 50 results of one monitor. Without help, Postgres reads every row of `check_results`, keeps those of that monitor, sorts them by time and returns the first 50. That is a **sequential scan**, and its cost grows with the table: 100 monitors checked every 30 seconds add 288,000 rows a day.
+
+An **index** is a second structure, sorted by the columns you name, that points at the rows. Postgres uses a **B-tree** by default, a balanced tree that finds one key in a few page reads and then walks forward in order. The index `(monitor_id, checked_at desc)` matches the query exactly: Postgres jumps to the entries of that monitor, which already sit newest first, reads 50 and stops. The order of the columns matters: an index on `(checked_at, monitor_id)` sorts by time first and spreads one monitor across the whole tree.
+
+An index has a price. Every insert updates each index of the table, and indexes take disk space. Add the index that a real query needs, and check with `EXPLAIN` that Postgres uses it. `EXPLAIN` prints the **plan**, the steps Postgres chooses for a query, and `EXPLAIN ANALYZE` runs the query and adds the real times. These plans come from a table that holds a week of checks for 100 monitors, 2,016,000 rows. Both are trimmed, and the second has its cost estimates removed:
+
+```txt
+ Limit  (cost=0.43..141.60 rows=50 width=81) (actual time=0.042..0.205 rows=50 loops=1)
+   ->  Index Scan using check_results_monitor_time on check_results  (cost=0.43..56544.54 rows=20026 width=81) (actual time=0.041..0.198 rows=50 loops=1)
+         Index Cond: (monitor_id = 42)
+ Execution Time: 0.244 ms
+```
+
+Read a plan from the innermost line out. The index scan finds the entries for monitor 42 and returns rows in order. `Limit` stops it after 50. The `cost` numbers are estimates in arbitrary units; `actual time` is in milliseconds. Without the index, the same query reads the whole table on three processes and sorts what it keeps:
+
+```txt
+ Limit  (actual time=69.670..74.069 rows=50 loops=1)
+   ->  Gather Merge  (actual time=69.668..74.061 rows=50 loops=1)
+         Workers Planned: 2
+         ->  Sort  (actual time=66.216..66.220 rows=50 loops=3)
+               Sort Key: checked_at DESC
+               ->  Parallel Seq Scan on check_results  (actual time=0.032..65.187 rows=6720 loops=3)
+                     Filter: (monitor_id = 42)
+                     Rows Removed by Filter: 665280
+ Execution Time: 74.127 ms
+```
+
+That is 300 times slower, and it grows with the table. On a table of a few rows, Postgres picks the sequential scan even when the index exists, because reading one page costs less than walking a tree. A plan on an empty development database tells you little: test with realistic data, as [Observe It](#observe-it) does.
+
+### Backups
+
+A **backup** is a copy of the data that you can restore after a mistake, a broken disk or a lost server. `pg_dump` writes a **logical backup**: the schema and the rows of one database, as of one consistent moment, while the programs keep writing. Its custom format, `--format=custom`, is compressed, and `pg_restore` reads it back into an empty database. It holds no index data, only the `create index` statements: the restore rebuilds each index.
+
+Two rules decide whether a backup is worth anything. First, keep it on another disk and another machine, because the failure that destroys the database takes a backup on the same disk with it. Second, a backup you have never restored is a hope, not a backup. Restore it on a schedule, into a new database, and compare what comes back. The <a href={trackHref('backups')}>Backups track</a> covers the other kind, physical backups with WAL archiving, which restore to any moment.
 
 ## Build
 
-This section is not written yet.
+By the end of this section, the api and the worker keep everything in Postgres, and `make restore-check` proves your backup. The code comes from `examples/go/week08/your-monitor`, which mirrors your repository. Its imports start with `fsp/examples/week08/your-monitor`, and yours with `github.com/<user>/your-monitor`. You add a `migrations/` folder with the schema and the Go file that embeds it, `internal/db/` with `Connect`, `Migrate`, the two stores and their tests, `internal/db/dbtest/`, which gives each test an empty schema, the `Result` type in `internal/monitor/result.go`, and the new route in `internal/api/results.go`.
+
+### Step 1: Start Postgres and Add the Driver
+
+Start a branch, then start only the database from `compose.yaml`. `--wait` returns once the Postgres healthcheck passes:
+
+```sh
+git switch main && git pull && git switch -c week-08
+docker compose up --detach --wait postgres
+docker compose exec postgres psql -U monitor -d monitor -c 'select version()'
+```
+
+`psql` is the Postgres command-line client. Inside the container, it connects through a local socket, without a password. Then add the driver:
+
+```sh
+go get github.com/jackc/pgx/v5@latest
+```
+
+Since <a href={weekHref(0)}>Week 0</a>, your `go.mod` says a Go such as `go 1.27.2`, and pgx from `v5.9.0` needs Go 1.25 or newer: take the newest release. The examples on this page stay on `v5.8.0`, the last release that builds with Go 1.24, which this site still uses. A module whose `go` line is older than 1.25 runs `go get github.com/jackc/pgx/v5@v5.8.0` instead: the newest release raises its `go` line to 1.25. That costs two later fixes: `v5.9.2` closes an SQL injection through dollar-quoted strings in the non-default simple protocol (GHSA-j88v-2chj-qfwx), which this code never uses, and `v5.10.0` hardens pgx against a malicious server. Until your code imports pgx, `go.mod` marks it `// indirect`; run `go mod tidy` after Step 4. `go get` also writes `go.sum`, the checksums of every module you depend on. Commit it: the go command refuses a download that does not match. The Dockerfile from <a href={weekHref(6)}>Week 6</a> already copies `go.*`, which includes it.
+
+### Step 2: Write the First Migration
+
+<CodeFrom file="go/week08/your-monitor/migrations/001_init.sql" region="init" lang="sql" title="migrations/001_init.sql" />
+
+`--` starts a comment in SQL. Postgres names the constraints: the check on `interval_seconds` is `monitors_interval_seconds_check`, and the foreign key is `check_results_monitor_id_fkey`. They appear in error messages. Run `\d check_results` in `psql` once the table exists to see them all.
+
+### Step 3: Embed and Apply the Migrations
+
+The `embed` package copies files into the binary at compile time. A `//go:embed` line names the files, and the variable under it holds them. Go embeds only files in the folder of the package or below it, which is why the migrations get a package of their own:
+
+<CodeFrom file="go/week08/your-monitor/migrations/migrations.go" region="embed" lang="go" title="migrations/migrations.go" />
+
+`Migrate` takes one connection out of the pool for its whole run, because an advisory lock belongs to the connection that took it. The `defer` releases the lock with `context.WithoutCancel(ctx)`: a context that never ends, and the unlock still runs after SIGTERM has cancelled `ctx`.
+
+<CodeFrom file="go/week08/your-monitor/internal/db/migrate.go" region="migrate" lang="go" title="internal/db/migrate.go" />
+
+The loop sorts the file names, reads the version from the number before `_`, and skips each version already recorded. `pgx.BeginFunc` runs the function inside a transaction: it commits when the function returns `nil` and rolls back when it returns an error.
+
+<CodeFrom file="go/week08/your-monitor/internal/db/migrate.go" region="apply" lang="go" title="internal/db/migrate.go" />
+
+### Step 4: Connect
+
+<CodeFrom file="go/week08/your-monitor/internal/db/db.go" region="connect" lang="go" title="internal/db/db.go" />
+
+The connection string is a URL: user, password, host, port, database, then options. `sslmode=disable` turns TLS off, which is acceptable inside the Docker network on your laptop and wrong across the internet. The pool is safe for concurrent use: every goroutine of the worker shares one.
+
+### Step 5: Store Monitors
+
+`db.MonitorStore` implements the `monitor.Store` interface from Week 7, and the handlers do not change. `QueryRow` runs a query that returns one row, and `Scan` copies its columns into Go variables, in order. `returning` hands back the values Postgres filled in.
+
+<CodeFrom file="go/week08/your-monitor/internal/db/monitors.go" region="monitorstore" lang="go" title="internal/db/monitors.go" />
+
+A Postgres error carries a five-character code, the **SQLSTATE**. `errors.As` finds the `*pgconn.PgError` inside the error, and code `23505` means a unique constraint refused the row. Translating it into `monitor.ErrDuplicate` keeps Postgres details out of the api.
+
+<CodeFrom file="go/week08/your-monitor/internal/db/monitors.go" region="get" lang="go" title="internal/db/monitors.go" />
+
+`pgx.ErrNoRows` means the query found nothing, which becomes `monitor.ErrNotFound`. `Query` returns many rows: loop with `rows.Next`, `Scan` each one, and check `rows.Err()` at the end, because an error halfway through ends the loop silently. `List` starts from an empty slice, not `nil`, for the reason your Week 7 handler gives: `nil` encodes as `null`. `Exec` runs a statement that returns no rows, and `RowsAffected` tells `Delete` whether the monitor existed.
+
+### Step 6: Store Check Results
+
+Add the `Result` type next to `Monitor`:
+
+<CodeFrom file="go/week08/your-monitor/internal/monitor/result.go" region="result" lang="go" title="internal/monitor/result.go" />
+
+<CodeFrom file="go/week08/your-monitor/internal/db/results.go" region="resultstore" lang="go" title="internal/db/results.go" />
+
+`Recent` asks for exactly what the index holds: one monitor, newest first, a limit. Postgres takes the limit as a parameter too.
+
+### Step 7: Test Against a Real Database
+
+A fake store tests the api. Only a real Postgres tests the SQL: a typo in a column name, a constraint, the index. Each test gets its own empty **schema**, a namespace for tables inside one database. Tests in different packages run in parallel, and separate schemas keep them apart:
+
+<CodeFrom file="go/week08/your-monitor/internal/db/dbtest/dbtest.go" region="url" lang="go" title="internal/db/dbtest/dbtest.go" />
+
+`search_path` is the list of schemas where Postgres looks for a table name without a schema. Each test sets it to its own schema and migrates into it. The migration tests start five `Migrate` calls at once, then break a migration on purpose:
+
+<CodeFrom file="go/week08/your-monitor/internal/db/db_test.go" region="migratetest" lang="go" title="internal/db/db_test.go" />
+
+Delete the `pg_advisory_lock` line and run the test: two of the five calls create the same table at the same moment, and one fails with `ERROR: duplicate key value violates unique constraint "pg_type_typname_nsp_index" (SQLSTATE 23505)`, a clash in the Postgres catalog of type names.
+
+The store tests cover every error the api depends on, plus the database rules on their own: the check constraint refuses a 5-second interval, and the foreign key refuses a result for a monitor that does not exist. The index test fills the table with a day of checks for 20 monitors, then asserts on the plan:
+
+<CodeFrom file="go/week08/your-monitor/internal/db/db_test.go" region="indextest" lang="go" title="internal/db/db_test.go" />
+
+The Makefile gives every target the `DATABASE_URL` of the Compose Postgres, built from your `.env`. A new `db` target runs `docker compose up --detach --wait postgres`, and `make test`, `make run` and `make run-api` depend on it. Step 11 shows `db` with the other database targets.
+
+<CodeFrom file="go/week08/your-monitor/Makefile" region="database" lang="makefile" title="Makefile" />
+
+Run `make test`. To run one package by hand, export the variable first, with your password: `export DATABASE_URL='postgres://monitor:<password>@127.0.0.1:5432/monitor?sslmode=disable'`, then `go test -v ./internal/db/` lists each test. Without `DATABASE_URL`, the database tests skip on your laptop. In CI, where `CI=true`, they fail: a database test that skips in CI tests nothing. This site runs the same tests in its own CI, against a Postgres 17 service container.
+
+### Step 8: Serve the History from the API
+
+The handler checks that the monitor exists, reads `limit`, and returns the results. It uses `pathID`, `writeJSON`, `writeError` and `internalError` from your Week 7 handlers:
+
+<CodeFrom file="go/week08/your-monitor/internal/api/results.go" region="results" lang="go" title="internal/api/results.go" />
+
+`NewHandler` takes the result store as a second argument and serves the new route. Every test that calls `NewHandler` passes a second argument too: a small fake `ResultStore` for the tests that never read results.
+
+<CodeFrom file="go/week08/your-monitor/internal/api/api.go" region="routes" lang="go" title="internal/api/api.go" />
+
+Your Week 7 test compares the routes with the paths in `api/openapi.yaml` and fails until you document the new path. It never reads the schemas: add the `Result` schema with its ten fields yourself.
+
+<CodeFrom file="go/week08/your-monitor/api/openapi.yaml" region="results" lang="yaml" title="api/openapi.yaml" />
+
+<CodeFrom file="go/week08/your-monitor/api/openapi.yaml" region="result-schema" lang="yaml" title="api/openapi.yaml" />
+
+In `cmd/api/main.go`, a `-database-url` command-line flag defaults to `DATABASE_URL`, and `main` exits with status 2 when both are empty. `main` calls `openDB` before it listens, with `defer pool.Close()`, and serves `newHandler(pool)`:
+
+<CodeFrom file="go/week08/your-monitor/cmd/api/main.go" region="handler" lang="go" title="cmd/api/main.go" />
+
+Your Week 7 `cmd/api` tests call `newHandler()`, which now takes a pool, and they stop compiling. Give the tests that need no database a handler over a `MemStore` and a result store that holds nothing, and replace each `newHandler()` call with `memHandler()`:
+
+<CodeFrom file="go/week08/your-monitor/cmd/api/main_test.go" region="memhandler" lang="go" title="cmd/api/main_test.go" />
+
+`TestAPIOnPostgres` creates a monitor through the api, inserts three results, reads them back newest first, and checks the ten JSON keys by name.
+
+### Step 9: Check the Monitors from the Database
+
+The worker replaces `-file` with `-database-url`, connects and migrates the same way, and passes `run` the two stores. In `checkOne`, note the time before `probe.Check` and set it as `CheckedAt`, a new `time.Time` field on `check.Result`. Each round, `run` reads the monitors table, which means a monitor that you add through the api joins the next round:
+
+<CodeFrom file="go/week08/your-monitor/cmd/worker/main.go" region="run" lang="go" title="cmd/worker/main.go" />
+
+`save` writes one row per check. A step that did not happen has a zero duration in `probe.Timings` and becomes NULL. A step under a millisecond becomes `0`.
+
+<CodeFrom file="go/week08/your-monitor/cmd/worker/main.go" region="save" lang="go" title="cmd/worker/main.go" />
+
+Your Week 7 worker tests stop compiling too: they call `run(ctx, []string{…}, …)` and start the binary with `-file`. In the `run` tests, replace the list of URLs with a fake lister, and pass a fake inserter that keeps the rows:
+
+<CodeFrom file="go/week08/your-monitor/cmd/worker/run_test.go" region="fakes" lang="go" title="cmd/worker/run_test.go" />
+
+`TestProgramSignals` swaps `-file` for `-database-url` with a `dbtest.URL` schema, and its `addMonitors` helper creates the monitor through `db.MonitorStore`. A new test pins the NULL rules of `toResult` above:
+
+<CodeFrom file="go/week08/your-monitor/cmd/worker/run_test.go" region="toresult" lang="go" title="cmd/worker/run_test.go" />
+
+`TestWorkerStoresResults` runs the real binary against Postgres. It adds three monitors that never answer while the worker runs, sends SIGTERM or SIGINT, and checks that the database holds one row per finished check and none for the three cancelled ones.
+
+In `compose.yaml`, the worker loses its `-file` argument and the `urls.txt` volume, and Postgres gains the slow-query log that [Observe It](#observe-it) reads:
+
+<CodeFrom file="go/week08/your-monitor/compose.yaml" region="compose" lang="yaml" title="compose.yaml" />
+
+### Step 10: Run It
+
+Rebuild and start the stack, then move the URLs from `urls.txt` into the database through the api. `grep -Ev` drops comments and blank lines. `make up` returns before the api listens: `--retry-connrefused` makes `curl` try again until it does, and `-f` turns an error answer, such as `409`, into a failure you see:
+
+```sh
+make up
+grep -Ev '^(#|$)' urls.txt | while read -r url; do
+  curl -fsS --retry 10 --retry-connrefused -X POST 127.0.0.1:8080/api/monitors \
+    -H 'Content-Type: application/json' -d "{\"url\": \"$url\", \"interval_seconds\": 60}"; echo
+done
+curl -s 127.0.0.1:8080/api/monitors
+```
+
+Check that the list holds every URL of the file. Only then delete the file, the last copy of that list outside the database: `git rm urls.txt`.
+
+Your database has no `schema_migrations` table yet: Week 6 created the volume, but nothing has created a table in it. On this first start, the api or the worker, whichever takes the lock first, logs `migrated version=1 file=001_init.sql`: find it with `make logs`, and press Ctrl-C to stop following. Within 30 seconds, the worker checks both sites. Ask for the newest result of monitor 1. The output is an example:
+
+```txt
+$ curl -s '127.0.0.1:8080/api/monitors/1/results?limit=1'
+[{"monitor_id":1,"checked_at":"2026-10-11T07:05:08.916631Z","up":true,"status_code":200,"dns_ms":4,"connect_ms":11,"tls_ms":13,"first_byte_ms":52,"total_ms":53,"error":null}]
+$ curl -s '127.0.0.1:8080/api/monitors/1/results?limit=1000'
+{"error":"limit must be an integer from 1 to 500, got \"1000\""}
+```
+
+Look at the same rows in SQL. `make psql` opens a shell: `\d` lists the tables, `\d check_results` describes one, `select * from check_results order by checked_at desc limit 2;` shows the newest two rows, with an empty cell for each NULL, and `\q` quits.
+
+Run `make down` and `make up` again: the monitors and their history are still there, in the `pgdata` volume.
+
+### Step 11: Back Up and Check the Restore
+
+Add the backup targets to the Makefile, and add `backups/` to `.gitignore` and `.dockerignore`:
+
+<CodeFrom file="go/week08/your-monitor/Makefile" region="dbtargets" lang="makefile" title="Makefile" />
+
+`-T` turns off the terminal that `docker compose exec` opens by default. Without a terminal, the dump flows through the `>` redirect byte for byte. `make backup` writes a file such as `backups/monitor-20261011-070012.dump`. `make restore-check` restores the newest dump into `monitor_restore`, counts what came back and drops that database. It prints each command before it runs it. Below are the last lines, and the counts are an example:
+
+```txt
+$ make restore-check
+ monitors | results | version
+----------+---------+---------
+        2 |      42 |       1
+(1 row)
+```
+
+Compare the counts with `select count(*) from check_results` on the live database. The live number is a little higher, because the worker kept writing after the dump. A restore that fails stops at the first error, because of `--exit-on-error`. Copy the `backups/` folder to another machine. Week 17 runs `pg_dump` on a schedule on the live server and times a restore drill into a fresh database.
+
+### Step 12: Commit
+
+```sh
+git add go.mod go.sum Makefile compose.yaml .gitignore .dockerignore migrations internal cmd api
+git status
+git commit -m "Store monitors and check results in Postgres, with migrations and backups"
+git push -u origin week-08
+```
+
+Open a pull request, read the diff, and merge it.
 
 ## Observe It
 
 <ObserveIt>
-This section is not written yet.
+
+A database with a few hundred rows hides every performance problem. Load a lab database with a week of checks for 100 monitors, 2,016,000 rows, next to your real one. On a laptop, the inserts take about half a minute:
+
+```sh
+docker compose exec postgres createdb -U monitor monitor_lab
+docker compose exec -T postgres psql -U monitor -d monitor_lab < migrations/001_init.sql
+docker compose exec -T postgres psql -U monitor -d monitor_lab <<'SQL'
+insert into monitors (url, interval_seconds)
+  select 'https://site' || n || '.example', 30 from generate_series(1, 100) n;
+insert into check_results (monitor_id, checked_at, up, status_code, dns_ms, connect_ms, tls_ms, first_byte_ms, total_ms)
+  select m.id, now() - n * interval '30 seconds', true, 200, 12, 11, 14, 52, 53
+    from monitors m, generate_series(1, 20160) n;
+vacuum analyze check_results;
+SQL
+```
+
+`generate_series(1, 20160)` returns the numbers 1 to 20,160, one row each: two checks a minute for seven days. `vacuum analyze` updates the statistics that the planner uses to pick a plan.
+
+**The slow-query log.** `compose.yaml` starts Postgres with `log_min_duration_statement=200ms`: every statement that runs for 200 ms or longer goes to the Postgres log with its time. Run `make psql`, connect to the lab with `\c monitor_lab`, turn on `\timing on` to print the time of each query, and run an uptime report:
+
+```sql
+select monitor_id, round(100 * avg(up::int), 2) as uptime_pct
+  from check_results where checked_at > now() - interval '7 days'
+ group by monitor_id order by uptime_pct limit 3;
+```
+
+It reads every row of the week, and `docker compose logs postgres` shows it. A fast laptop runs it in under 200 ms and logs nothing: then run `set log_min_duration_statement = 50;` first, which lowers the threshold for your session only. Only a superuser can change it, and the `monitor` user of the Compose Postgres is one.
+
+```txt
+2026-10-11 06:58:46.524 UTC [10999] LOG:  duration: 234.842 ms  statement: select monitor_id, round(100 * avg(up::int), 2) as uptime_pct from check_results where checked_at > now() - interval '7 days' group by monitor_id order by uptime_pct limit 3
+```
+
+The number in brackets is the process ID of the backend. Run `explain analyze` on the results query for monitor 42 and compare with the plans in [Indexes](#indexes). In a real database, each line in this log is a question to answer: which program sends the query, how many times an hour, and whether an index or a smaller time window fixes it.
+
+**Size and growth.** Measure the table and its indexes:
+
+```txt
+monitor_lab=# select pg_size_pretty(pg_relation_size('check_results')) as table,
+monitor_lab-#        pg_size_pretty(pg_indexes_size('check_results')) as indexes,
+monitor_lab-#        pg_total_relation_size('check_results') / count(*) as bytes_per_row
+monitor_lab-#   from check_results;
+ table  | indexes | bytes_per_row
+--------+---------+---------------
+ 179 MB | 132 MB  |           161
+```
+
+At 161 bytes a row, 100 monitors every 30 seconds add 46 MB a day and 1.4 GB a month, and the two indexes are more than 40% of it. That number decides when the disk is full, which [Operate It](#operate-it) covers. Drop the lab with `docker compose exec postgres dropdb -U monitor monitor_lab` when you finish.
+
+**Connections.** `select pid, state, left(query, 40) from pg_stat_activity where datname = 'monitor';` lists one row per connection: the pools of the api and the worker, `idle` between queries, and your own `psql`. A count that climbs toward `max_connections` points to a program that opens pools and never closes them.
+
 </ObserveIt>
 
 ## Operate It
 
 <OperateIt>
-This section is not written yet.
+
+**The disk fills up.** Postgres needs space for the WAL before it changes anything. For this page, a test server ran Postgres on a 96 MB disk and inserted rows until the disk ran out of space. Its log, trimmed:
+
+```txt
+PANIC:  could not write to file "pg_wal/xlogtemp.11898": No space left on device
+LOG:  WAL writer process (PID 11898) was terminated by signal 6: Aborted
+LOG:  all server processes terminated; reinitializing
+LOG:  database system was not properly shut down; automatic recovery in progress
+FATAL:  could not write to file "pg_wal/xlogtemp.12010": No space left on device
+LOG:  startup process (PID 12010) exited with exit code 1
+LOG:  shutting down due to startup process failure
+```
+
+A PANIC stops every backend. Postgres restarts, tries to recover, needs disk space for that too, and shuts down, and its container stays down, because `compose.yaml` sets no `restart:` for it. From then on, every `/api` route answers 500 while `/healthz` still says ok, and the worker logs `round error=` each round. Inside Compose, the programs fail to look up the name `postgres`, because no container answers to it. After you free space, `make db` starts Postgres again. After the test gave the disk more room, recovery replayed the WAL, and all 100,000 rows of the last committed insert came back. The insert that hit the full disk never committed, and nothing of it remained. Do not delete files from `pg_wal` to make space: they hold committed data that is not in the table files yet. Free space elsewhere or grow the disk.
+
+To see it coming, watch free space: `docker system df -v` shows the size of the `pgdata` volume, and `df -h` the free space on a server. Nothing alerts you yet: check it by hand every week, and act at 80% full.
+
+**Old rows never leave by themselves.** Keep 30 days with `delete from check_results where checked_at < now() - interval '30 days'`. A DELETE does not return space to the disk: Postgres marks the rows dead, and **VACUUM** later makes their space reusable for new rows. The lab holds only 7 days: try it there with `interval '3 days'`. That deleted 1,152,200 of 2,016,000 rows and left the table and its indexes at 311 MB. `vacuum check_results` brought them to 209 MB, because it gives back only empty pages at the end of the table file. `vacuum full check_results` rewrote everything at 121 MB, but it locks the table against every read and write while it runs, and it needs room for a full copy. Postgres runs VACUUM on its own, as **autovacuum**. Nothing deletes old rows for you: run the delete yourself in `make psql` once a week, and the freed space gets reused before the file grows.
+
+| What you see | What it points to |
+| --- | --- |
+| `failed SASL auth: FATAL: password authentication failed for user "monitor" (SQLSTATE 28P01)` | `POSTGRES_PASSWORD` in `.env` changed after Docker created the volume. Postgres reads it only on an empty volume, as Week 6 says |
+| `dial tcp 127.0.0.1:5432: connect: connection refused` | Postgres is not running, or it listens on another port: check `docker compose ps` and `POSTGRES_PORT` in `.env` |
+| `ERROR: relation "monitors" does not exist (SQLSTATE 42P01)` | The program queries before `Migrate` runs, or it connects to another database or schema than the one it migrated |
+| `duplicate key value violates unique constraint "pg_type_typname_nsp_index"` at start | Two programs ran the same migration at once: the advisory lock is missing |
+| `violates foreign key constraint "check_results_monitor_id_fkey"` in the worker log | Someone deleted a monitor during the round. The worker logs it and moves on, and the next round no longer lists that monitor |
+| `FATAL: sorry, too many clients already (SQLSTATE 53300)` | The programs together hold more connections than `max_connections` |
+
 </OperateIt>
 
 ## AI This Week
 
 <AiThisWeek>
-This section is not written yet.
+
+Stage 2, review everything: generate code, then read every line, extend the tests, and explain it back.
+
+**Do:** give the assistant `001_init.sql`, the `monitor.Store` interface and the pgx documentation of `QueryRow`, `Query` and `pgconn.PgError`, and ask it for `db.MonitorStore` and its tests. Then review the result against this list before you run anything: every value goes in as a `$n` parameter, every `Query` has `defer rows.Close()` and a `rows.Err()` check, `pgx.ErrNoRows` and code `23505` map to your two errors, and `List` returns `[]` for an empty table. Run the tests against Postgres, break one mapping on purpose, and watch the right test fail.
+
+**Do not:** apply a generated migration to a database you care about before you have read it, run it against an empty database, and run it a second time against the result. Generated SQL that looks right still fails on a wrong constraint name, a column type that does not match the Go code, or an index with its columns in the wrong order. Never let it edit `001_init.sql` once the file has run anywhere: ask for a `002_` file instead.
+
 </AiThisWeek>
 
 ## Side Lab
 
-<SideLab title="Optional lab: not written yet">
-This section is not written yet.
+<SideLab title="Two sessions, one row: watch a lock wait and a deadlock">
+
+Transactions that change the same row take turns. Open two terminals, and in each run `make psql`. Call them A and B. The outputs are examples.
+
+**1. A lock wait.** In A, run `begin;` and `update monitors set interval_seconds = 60 where id = 1;`. In B, run `begin;` and `update monitors set interval_seconds = 90 where id = 1;`. B hangs: A holds a lock on that row until its transaction ends. Open a third terminal with `make psql` and look:
+
+```txt
+monitor=# select pid, state, wait_event_type, wait_event, pg_blocking_pids(pid) as blocked_by
+monitor-#   from pg_stat_activity where datname = 'monitor' and query like 'update%';
+  pid  |        state        | wait_event_type |  wait_event   | blocked_by
+-------+---------------------+-----------------+---------------+------------
+ 13883 | idle in transaction | Client          | ClientRead    | {}
+ 13884 | active              | Lock            | transactionid | {13883}
+```
+
+A is `idle in transaction`: it holds the lock and waits for you. Run `commit;` in A, and B finishes at once. Run `commit;` in B. The row holds `90`, because B wrote last.
+
+**2. A deadlock.** In A, run `begin;` and update monitor 1. In B, run `begin;` and update monitor 2. Now in A, update monitor 2: A waits for B. In B, update monitor 1: B waits for A, and neither can ever finish. After one second, the `deadlock_timeout`, Postgres looks for a cycle of waits and cancels one of the two transactions:
+
+```txt
+ERROR:  deadlock detected
+DETAIL:  Process 14119 waits for ShareLock on transaction 1711; blocked by process 14118.
+Process 14118 waits for ShareLock on transaction 1710; blocked by process 14119.
+HINT:  See server log for query details.
+CONTEXT:  while updating tuple (0,2) in relation "monitors"
+```
+
+The cancelled transaction is over: its `commit;` prints `ROLLBACK`. The other one goes on and commits. Code that updates several rows in one transaction avoids deadlocks by touching them in the same order every time, such as by `id`.
+
+Week 9 builds the job queue on exactly these row locks, with `FOR UPDATE SKIP LOCKED`: a worker skips a row that another worker has locked instead of waiting for it. The <a href={trackHref('databases')}>Databases track</a> covers isolation levels, which decide what one transaction sees of the others.
+
 </SideLab>
 
 ## Done When

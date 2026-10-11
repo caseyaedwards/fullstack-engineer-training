@@ -1,8 +1,11 @@
-// Command api is the HTTP API of the uptime monitor. In Week 6 it is a
-// stub that serves GET /healthz and nothing else; Week 7 adds the REST API
-// for monitors. Run it from the examples/go directory:
+// Command api is the HTTP API of the uptime monitor. Week 6 made it a stub
+// with GET /healthz; Week 7 serves the REST API for monitors from
+// internal/api; Week 8 keeps the monitors and their check results in
+// Postgres; Week 9 adds the incidents that cmd/alerter opens. Run it from
+// the examples/go directory:
 //
-//	go run ./week10/your-monitor/cmd/api -addr 127.0.0.1:8080
+//	DATABASE_URL=postgres://monitor:changeme@127.0.0.1:5432/monitor?sslmode=disable \
+//	    go run ./week10/your-monitor/cmd/api -addr 127.0.0.1:8080
 //
 // With -healthcheck, it checks a running api instead of starting one.
 // The Compose healthcheck uses that mode, because the container image
@@ -13,7 +16,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -23,39 +25,46 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"fsp/examples/week10/your-monitor/internal/alert"
+	"fsp/examples/week10/your-monitor/internal/api"
+	"fsp/examples/week10/your-monitor/internal/db"
 )
 
 // endregion: imports
 
-// region: routes
+// region: handler
 
-// health is the JSON body of GET /healthz. The struct tag names the JSON
-// field: Status becomes "status".
-type health struct {
-	Status string `json:"status"`
+// newHandler builds the api the program serves: the routes of internal/api
+// over the Postgres stores, with one log line per request.
+func newHandler(pool *pgxpool.Pool) http.Handler {
+	return api.LogRequests(log.Default(),
+		api.NewHandler(db.NewMonitorStore(pool), db.NewResultStore(pool), alert.Store{DB: pool}))
 }
 
-// newMux returns the handler for every route the API serves.
-func newMux() *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthz)
-	return mux
+// openDB connects to Postgres and brings the schema up to date.
+func openDB(ctx context.Context, url string) (*pgxpool.Pool, error) {
+	pool, err := db.Connect(ctx, url)
+	if err != nil {
+		return nil, err
+	}
+	if err := db.Migrate(ctx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
 }
 
-// healthz answers 200 with {"status":"ok"} for as long as the process
-// can serve requests.
-func healthz(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(health{Status: "ok"})
-}
-
-// endregion: routes
+// endregion: handler
 
 // region: main
 
 func main() {
 	addr := flag.String("addr", ":8080", "address to listen on; :8080 means port 8080 on every network interface")
 	healthcheck := flag.String("healthcheck", "", "URL of a running api's /healthz: exit with 0 if it answers 200, 1 otherwise")
+	databaseURL := flag.String("database-url", os.Getenv("DATABASE_URL"), "Postgres connection string; defaults to $DATABASE_URL")
 	flag.Parse()
 
 	if *healthcheck != "" {
@@ -65,17 +74,27 @@ func main() {
 		}
 		return
 	}
+	if *databaseURL == "" {
+		fmt.Fprintln(os.Stderr, "missing -database-url or DATABASE_URL")
+		os.Exit(2)
+	}
 
 	log.SetOutput(os.Stdout)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	pool, err := openDB(ctx, *databaseURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer pool.Close()
 
 	ln, err := net.Listen("tcp", *addr)
 	if err != nil {
 		log.Fatal(err)
 	}
 	log.Printf("listening addr=%s", ln.Addr())
-	if err := serve(ctx, ln, newMux()); err != nil {
+	if err := serve(ctx, ln, newHandler(pool)); err != nil {
 		log.Fatal(err)
 	}
 	log.Print("stopped")

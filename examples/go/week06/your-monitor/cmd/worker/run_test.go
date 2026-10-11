@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"fsp/examples/week10/your-monitor/internal/check"
+	"fsp/examples/week06/your-monitor/internal/check"
 )
 
 // region: helpers
