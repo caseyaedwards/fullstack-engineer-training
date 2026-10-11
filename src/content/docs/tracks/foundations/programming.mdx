@@ -195,7 +195,8 @@ A classifier like `Classify` fits the monitor wherever one failure becomes one w
 
 ## Further Reading
 
-- [The errors package](https://pkg.go.dev/errors): the official reference for `Is`, `As`, `AsType`, `Join` and `Unwrap`, with runnable examples of each.
-- [The fmt package](https://pkg.go.dev/fmt): the reference for `Errorf` and the `%w` verb, including several `%w` verbs in one call.
-- [The compile command](https://pkg.go.dev/cmd/compile): the reference for the compiler options, including the `-m` option that prints escape analysis decisions.
-- [The sync package](https://pkg.go.dev/sync): `Mutex`, `WaitGroup` and `Once`, the tools for sharing a value through a pointer between goroutines.
+- [Working with Errors in Go 1.13](https://go.dev/blog/go1.13-errors): the Go blog post that introduced `%w`, `errors.Is` and `errors.As`, with the reasoning behind wrapping.
+- [The Go Programming Language Specification](https://go.dev/ref/spec): the definitive rules for types, method sets, interfaces and assignment, including why a value and a pointer satisfy different interfaces.
+- [The Go FAQ on the stack and the heap](https://go.dev/doc/faq#stack_or_heap): how the compiler decides where a variable lives, in the words of the Go team.
+- [The errors package](https://pkg.go.dev/errors): the reference for `Is`, `As`, `AsType`, `Join` and `Unwrap`, with runnable examples of each.
+- [Error: cause on MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error/cause): the JavaScript side of the twin, with browser and Node.js support for the `cause` option.
