@@ -18,7 +18,7 @@ A program in production gives you no debugger and no breakpoints. You get only w
 
 ### Monitoring and Observability
 
-**Monitoring** answers questions you asked in advance: is the api up, is the error rate above 1%. You write a check or an alert for each one. Observability covers the questions you did not think of before the incident: why only requests for one monitor are slow, why the queue grows only after 02:00. Monitoring needs a few numbers. Observability needs output rich enough to slice by a field you choose during the incident, such as a route, a monitor ID or a status code.
+**Monitoring** answers questions you asked in advance: is the api up, is the error rate above 1%. You write a check or an alert for each one. Observability covers the questions you did not think of before the incident: why only requests for one monitor are slow, why the queue grows only after 02:00. Monitoring needs a few numbers. Observability needs output rich enough to slice by a field you choose during the incident, such as a route, a monitor identifier (ID) or a status code.
 
 Two views complement each other. A **black-box** check sees the service from outside, the way a user does: your uptime monitor itself is a black-box check of other sites. A **white-box** check reads numbers from inside the program: request counts, queue depth, time spent in SQL. A black-box check tells you that users suffer. A white-box metric tells you why.
 
@@ -28,8 +28,8 @@ Each type of output, called a **signal**, answers a different question:
 
 - A **log** line records one event, such as one request answered or one login refused. Logs answer what happened to this one thing.
 - A **metric** is a number measured over time, such as requests per second or jobs in the queue. Metrics answer how much and how fast for the whole system, and their cost stays flat whatever the traffic.
-- A **trace** follows one unit of work, such as a request or a job, through every program it touches. Each timed step is a **span**. Traces answer where the time goes.
-- A **profile** records where a process spends its CPU time or its memory, down to the function. Profiles answer which code is responsible for the cost.
+- A **trace** follows one unit of work, such as a request or a job, through every program it touches. Each timed step is a **span**. Traces answer where the time goes. **OpenTelemetry**, the vendor-neutral standard for traces, metrics and logs, defines how a program records spans and sends them on.
+- A **profile** records where a process spends its central processing unit (CPU) time or its memory, down to the function. Profiles answer which code is responsible for the cost.
 
 <Diagram
   id="signals"
@@ -73,7 +73,7 @@ Three metric types cover most needs:
 
 **Labels** are key-value pairs that split a metric into series: `http_requests_total{handler="status",code="200"}` and `{handler="status",code="500"}` are two series of one metric. Every distinct combination of label values is one more series that Prometheus keeps in memory. The number of series of a metric is its **cardinality**. Label only with values from a short, fixed list: handler names, status codes, results. Never label with a user ID, a URL path or an error message.
 
-A histogram costs more series than it looks. With the default buckets of `client_golang`, eleven bounds from 5 ms to 10 seconds, one histogram series exposes twelve `_bucket` series, the extra one for `+Inf`, plus `_sum` and `_count`: fourteen series per label set.
+A histogram costs more series than it looks. With the default buckets of `client_golang`, 11 bounds from 5 ms to 10 seconds, one histogram series exposes 12 `_bucket` series, the extra one for `+Inf`, plus `_sum` and `_count`: 14 series per label set.
 
 ### What to Measure
 
@@ -101,7 +101,7 @@ graf -> prom: "PromQL: rate over 5m"
 prom -> graf: "one value per step"
 `}
   steps={[
-    { hl: ['client', 'api', 'client->api', 'api->api'], caption: 'A request arrives. The handler answers, then the middleware adds one to the series for its handler and status code. The count lives in the memory of the api process and nowhere else.' },
+    { hl: ['client', 'api', 'client->api', 'api->api'], caption: 'A request arrives, and the handler answers. Then the middleware adds one to the series for its handler and status code. The count lives in the memory of the api process and nowhere else.' },
     { hl: ['prom', 'api', 'prom->api'], caption: 'Every 15 seconds, Prometheus sends GET /metrics to the api. Between two scrapes, the api can answer thousands of requests: Prometheus sees only the total at each scrape.' },
     { hl: ['api', 'prom', 'api->prom'], caption: 'The api answers in the Prometheus text format: one line per series, with its labels and its current value. A failed or timed-out scrape sets up to 0 for this target.' },
     { hl: ['prom', 'prom->prom'], caption: 'Prometheus stores each value with the time of the scrape in its time series database on disk. When the api restarts, the counter drops to zero, and rate treats the drop as a reset, not as negative traffic.' },
@@ -146,13 +146,13 @@ Each bucket carries an `le` label, short for less than or equal, that holds its 
 
 <CodeFrom file="go/tracks/observability/observability.go" region="recorder" lang="go" title="observability.go" />
 
-An `http.ResponseWriter` does not report which status it sent. `statusRecorder` embeds the original writer and overrides `WriteHeader` to keep the code. Go sends `200` when a handler writes a body without calling `WriteHeader`, which is why `status` starts at `200`. `wrote` ignores a second `WriteHeader`, which `net/http` ignores too. `Unwrap` keeps `http.ResponseController` working through the wrapper.
+An `http.ResponseWriter` does not report which status it sent. `statusRecorder` embeds the original writer and overrides `WriteHeader` to keep the code. Go sends `200` when a handler writes a body without calling `WriteHeader`, which is why `status` starts at `200`. `wrote` ignores a second final status, which `net/http` ignores too. Codes below `200`, such as `103 Early Hints`, are informational: `net/http` sends them before the final status, and `WriteHeader` skips them. `Unwrap` keeps `http.ResponseController` working through the wrapper.
 
 The tests use a fresh registry each, which starts every count at zero, and compare the exact text that Prometheus scrapes:
 
 <CodeFrom file="go/tracks/observability/observability_test.go" region="test" lang="go" title="observability_test.go" />
 
-`testutil.GatherAndCompare` gathers the named metric from the registry, renders it in the text format and diffs it against the expected lines, `HELP` and `TYPE` included. `testutil.GatherAndCount` counts series: it counts a histogram as one series per label set, even though Prometheus stores fourteen. A third test, `TestInstrumentSharesOneRegistry`, wraps two handlers with one registry and checks that each gets its own series without a panic.
+`testutil.GatherAndCompare` gathers the named metric from the registry, renders it in the text format and diffs it against the expected lines, `HELP` and `TYPE` included. `testutil.GatherAndCount` counts series: it counts a histogram as one series per label set, even though Prometheus stores 14. The region calls three helpers from the top of the test file: `serve` sends one `GET` through a handler into an `httptest.NewRecorder`, and `ok` and `broken` are handlers that answer `200` and `500`. Two more tests check that `103 Early Hints` before a `202` counts as `202`, and that two handlers on one registry each get their own series without a panic.
 
 ## In the Uptime Monitor
 
@@ -162,12 +162,12 @@ The monitor gains its signals in three steps.
 
 <WeekLink n={13} anchor="three-signals">Week 13, Three Signals</WeekLink>: every program writes JSON logs with `log/slog`, the api counts and times each request with the same metric names as the example above, the worker counts checks by result, and the scheduler keeps the queue depth in gauges. OpenTelemetry traces follow each request and each job through Postgres to Jaeger, and Grafana draws a dashboard of seven panels from Prometheus. <WeekLink n={13} anchor="step-3-count-and-time-every-api-request">Step 3</WeekLink> holds the api middleware.
 
-<WeekLink n={18} anchor="step-2-record-the-slis">Week 18, Step 2</WeekLink>: recording rules turn `http_requests_total` and the queue gauges into service level indicators, the ratios of good requests and on-time checks, and burn-rate alerts page you through Alertmanager. The <TrackLink slug="sre">SRE and Incident Response track</TrackLink> covers service level objectives and error budgets in depth.
+<WeekLink n={18} anchor="step-2-record-the-slis">Week 18, Step 2</WeekLink>: recording rules turn `http_requests_total` and the queue gauges into service level indicators, the ratios of good requests and on-time checks, and burn-rate alerts page you through Alertmanager. Site reliability engineering (SRE) turns those numbers into targets: the <TrackLink slug="sre">SRE and Incident Response track</TrackLink> covers service level objectives and error budgets in depth.
 
 ## Common Mistakes
 
 - **Labeling with user input.** A `path` label makes one series per monitor ID and one per path a scanner tries, and Prometheus keeps each in memory for hours. Prometheus memory grows until the kernel ends the process for running out of memory. Label with the route pattern or a fixed handler name, and collapse unknown values into one, such as `unmatched`.
-- **Alerting on an average.** Nineteen requests of 10 ms and one of 3 seconds average 160 ms, which looks healthy while one user in twenty waits 3 seconds. Alert on a percentile from a histogram, or on the share of requests over a threshold.
+- **Alerting on an average.** Take 20 requests: 19 take 10 ms and one takes 3 seconds. They average 160 ms, which looks healthy while one user in 20 waits 3 seconds. Alert on a percentile from a histogram, or on the share of requests over a threshold.
 - **Averaging percentiles.** The average of the p95 of three api replicas is not the p95 of the service. Sum the bucket rates across replicas first, then call `histogram_quantile` once.
 - **Buckets that miss the interesting range.** With bounds at 5 and 10 seconds, a check that times out at 5 seconds lands anywhere in between. Put bucket bounds next to the durations you need to tell apart, such as your timeout and your latency target.
 - **Series that appear only on the first error.** A `code="500"` series that does not exist yet has no earlier value, and `rate` over it shows nothing for the first failure. Create the series you alert on at zero at start, as the Week 13 worker does with `up`, `down` and `error`.
@@ -179,7 +179,6 @@ The monitor gains its signals in three steps.
 - **OpenTelemetry metrics and the collector.** OpenTelemetry carries metrics too, and its collector converts between the OpenTelemetry Protocol and the Prometheus format, which matters once a vendor or a second team receives your data.
 - **Exemplars.** Attaching the trace ID to histogram observations links a spike on a graph straight to one slow trace.
 - **Native histograms.** Prometheus can choose high-resolution buckets itself, which removes the guesswork of fixed bounds and the cost of one series per bucket.
-- **Log aggregation with Grafana Loki.** Loki indexes only the labels of each log stream, not the text, which keeps it cheap next to Prometheus.
 - **Tail-based sampling.** The collector can wait until a trace ends and keep every slow or failed trace plus a share of the rest, instead of deciding at the first span.
 - **Long-term storage.** One Prometheus keeps its data on one disk for a limited time. Thanos and Grafana Mimir store metrics in object storage for months and query across many Prometheus servers.
 

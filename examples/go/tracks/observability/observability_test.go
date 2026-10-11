@@ -69,6 +69,27 @@ http_requests_total{code="500",handler="monitors"} 1
 
 // endregion: test
 
+// TestInstrumentSkipsEarlyHints sends 103 Early Hints before the final
+// status. The counter must hold the final code, not the informational one.
+func TestInstrumentSkipsEarlyHints(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	hints := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Link", "</app.css>; rel=preload; as=style")
+		w.WriteHeader(http.StatusEarlyHints)
+		w.WriteHeader(http.StatusAccepted)
+	})
+	serve(Instrument(reg, "hints", hints))
+
+	want := `
+# HELP http_requests_total HTTP requests answered, by handler and status code.
+# TYPE http_requests_total counter
+http_requests_total{code="202",handler="hints"} 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(want), "http_requests_total"); err != nil {
+		t.Error(err)
+	}
+}
+
 // TestInstrumentSharesOneRegistry wraps two handlers with one registry, as an
 // api with several routes does. Registering the same metric twice must not
 // panic, and each handler gets its own series.
