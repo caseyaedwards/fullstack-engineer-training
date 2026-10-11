@@ -17,7 +17,8 @@ import (
 // A non-zero exit is a result: Run returns the code and a nil error.
 // When timeout passes or ctx ends first, Run sends the child SIGTERM,
 // waits up to one second more, then sends SIGKILL, and returns an error
-// that wraps the context error.
+// that wraps the context error. A child that some other signal ends, such
+// as a SIGKILL from the out-of-memory killer, gives -1 and an error.
 func Run(ctx context.Context, timeout time.Duration, name string, args ...string) (exitCode int, err error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -34,6 +35,9 @@ func Run(ctx context.Context, timeout time.Duration, name string, args ...string
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
+		if !exitErr.Exited() {
+			return -1, fmt.Errorf("run %s: %w", name, err) // a signal ended it
+		}
 		return exitErr.ExitCode(), nil
 	}
 	if err != nil {

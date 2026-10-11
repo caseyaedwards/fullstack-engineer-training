@@ -49,11 +49,11 @@ mon -> term: "fd 2 stderr"
 `}
 />
 
-In the diagram, bash starts the monitor with `> monitor.log`, which points file descriptor `1` at the file and leaves `0` and `2` on the terminal. The monitor starts a child of its own through `os/exec`, as the Example below does. That child inherits nothing it does not ask for: `exec.Cmd` connects its stdin, stdout and stderr to `/dev/null` unless the code sets `Stdin`, `Stdout` and `Stderr`.
+In the diagram, bash starts the monitor with `> monitor.log`, which points file descriptor `1` at the file and leaves `0` and `2` on the terminal. The monitor starts a child of its own through `os/exec`, as the Example below does. That child inherits the environment and the current folder of the monitor, but gets no open file descriptor it does not ask for: `exec.Cmd` connects its stdin, stdout and stderr to `/dev/null` unless the code sets `Stdin`, `Stdout` and `Stderr`.
 
 ### Threads and Scheduling
 
-A **thread** is one line of execution inside a process. All threads of a process share its memory and its file descriptors. The kernel **scheduler** picks which thread runs on each CPU core and for how long. Since Linux 6.6, that scheduler is EEVDF, short for Earliest Eligible Virtual Deadline First, which replaced the older Completely Fair Scheduler. Switching a core from one thread to another is a **context switch**: the kernel saves the registers of one thread and loads those of the next, at a cost of a few microseconds.
+A **thread** is one line of execution inside a process. All threads of a process share its memory and its file descriptors. The kernel **scheduler** picks which thread runs on each core of the CPU, short for central processing unit, and for how long. Since Linux 6.6, that scheduler is EEVDF, short for Earliest Eligible Virtual Deadline First, which replaced the older Completely Fair Scheduler. Switching a core from one thread to another is a **context switch**: the kernel saves the registers of one thread and loads those of the next, at a cost of a few microseconds.
 
 A Go program runs several kernel threads from the start: `ps` marks it with `l` in the `STAT` column. The Go runtime runs its goroutines on those threads with a scheduler of its own, and `GOMAXPROCS` sets how many threads run Go code at the same instant. Week 5 covers the Go side of that split.
 
@@ -61,7 +61,7 @@ A Go program runs several kernel threads from the start: `ps` marks it with `l` 
 
 Each process sees its own **virtual address space**: addresses that the kernel maps to real memory in **pages** of 4 KiB on x86-64 Linux. Two processes can use the same address and see different data. The kernel hands out pages only when the program first touches them, which is why a Go program can reserve far more address space than it uses. The number that matters is the **resident set size**, or RSS: the memory a process holds right now, in the `RSS` column of `ps`.
 
-When the machine, or the cgroup of a container, runs out of memory, the kernel **out-of-memory killer** picks a process and ends it with `SIGKILL`. No handler runs and no log line appears from the process. The only traces are a kernel message in `dmesg`, exit code `137`, and `OOMKilled` in Docker or Kubernetes.
+When the machine runs out of memory, or a container reaches the memory limit of its **cgroup**, short for control group, the kernel feature that caps the memory and CPU time of a group of processes, the kernel **out-of-memory killer** picks a process and ends it with `SIGKILL`. No handler runs and no log line appears from the process. The only traces are a kernel message in `dmesg`, exit code `137`, and `OOMKilled` in Docker or Kubernetes.
 
 ### Signals
 
@@ -116,7 +116,7 @@ mgr -> proc: "SIGKILL after the grace period"
   steps={[
     { hl: ['mgr', 'proc', 'mgr->proc'], caption: 'The service manager sends SIGTERM: systemctl stop, docker stop and a Kubernetes pod deletion all start this way.' },
     { hl: ['proc', 'proc->proc'], caption: 'A program with a handler finishes the work in flight and exits on its own. The manager records a clean stop.' },
-    { hl: ['mgr', 'proc', 'mgr->proc#1'], caption: 'A program that ignores SIGTERM, or blocks for longer than the grace period, gets SIGKILL. It ends mid-step, and the shell reports exit status 137.' },
+    { hl: ['mgr', 'proc', 'mgr->proc#1'], caption: 'A program that ignores SIGTERM, or blocks for longer than the grace period, gets SIGKILL. It ends mid-step. systemd logs that SIGKILL ended the service, and Docker and Kubernetes report exit code 137.' },
   ]}
 />
 
@@ -128,13 +128,13 @@ mgr -> proc: "SIGKILL after the grace period"
 
 `exec.CommandContext` ties the child to a context. When the context ends, the command calls its `Cancel` function. The default `Cancel` sends `SIGKILL`, which gives the child no chance to clean up, and `Run` replaces it with a `SIGTERM`. `WaitDelay` bounds what happens next: one second after the context ends, `Wait` sends `SIGKILL` to a child that still runs, and closes any pipes the child holds open.
 
-A child that exits with a non-zero status returns an `*exec.ExitError`, and `Run` turns it into a plain exit code with a `nil` error: for a caller that runs a health script, exit code `3` is an answer, not a failure of `Run`. A timeout is a failure, and `Run` returns an error that wraps the context error, which callers test with `errors.Is`. `ExitCode` returns `-1` when a signal ends the process, and `Run` does the same.
+A child that exits with a non-zero status returns an `*exec.ExitError`, and `Run` turns it into a plain exit code with a `nil` error: for a caller that runs a health script, exit code `3` is an answer, not a failure of `Run`. A timeout is a failure, and `Run` returns an error that wraps the context error, which callers test with `errors.Is`. A child that a signal ends has no exit code. When the signal does not come from `Run`, as with a `SIGKILL` from the out-of-memory killer or a `SIGSEGV`, the signal for an invalid memory access, `Run` returns `-1` and an error that wraps the `*exec.ExitError`, with a message such as `signal: killed`.
 
 The tests start real processes with `sh` and `sleep`, which every Linux and macOS machine has:
 
 <CodeFrom file="go/tracks/operatingsystems/run_test.go" region="test" lang="go" title="run_test.go" />
 
-The second test checks three things: `Run` returns well within two seconds of a 100 ms timeout, the error wraps `context.DeadlineExceeded`, and the message holds `signal: terminated`, which proves the child got `SIGTERM` and not the default `SIGKILL`. The other tests in the file cover a child that ignores `SIGTERM` and dies from `SIGKILL` once the second of grace runs out, a parent context cancelled from outside, and a program that does not exist, which returns `exec.ErrNotFound`.
+The second test checks three things: `Run` returns well within two seconds of a 100 ms timeout, the error wraps `context.DeadlineExceeded`, and the message holds `signal: terminated`, which proves the child got `SIGTERM` and not the default `SIGKILL`. The other tests in the file cover a child that ignores `SIGTERM` and dies from `SIGKILL` once the second of grace runs out, a child that ends itself with `SIGKILL`, a parent context cancelled from outside, and a program that does not exist, which returns `exec.ErrNotFound`.
 
 ## In the Uptime Monitor
 
@@ -165,7 +165,8 @@ The <TrackLink slug="storage">Storage track</TrackLink> continues with files, th
 
 ## Further Reading
 
+- [The Linux fork man page](https://man7.org/linux/man-pages/man2/fork.2.html): exactly what a child inherits from its parent on Linux, and what it does not.
+- [The Linux wait man page](https://man7.org/linux/man-pages/man2/wait.2.html): how a parent collects a child, what a zombie is, and the status macros behind an exit code.
+- [The Linux signal overview man page](https://man7.org/linux/man-pages/man7/signal.7.html): every signal with its number and default action, and how dispositions survive fork and exec.
+- [Operating Systems: Three Easy Pieces](https://pages.cs.wisc.edu/~remzi/OSTEP/): a free textbook by Remzi and Andrea Arpaci-Dusseau on processes, scheduling, memory and persistence.
 - [The os/exec package](https://pkg.go.dev/os/exec): the reference for `Cmd`, including the full rules for `Cancel`, `WaitDelay` and the errors `Wait` returns.
-- [The os/signal package](https://pkg.go.dev/os/signal): how a Go program catches `SIGTERM` and `SIGINT`, and how `NotifyContext` turns a signal into a cancelled context.
-- [The syscall package](https://pkg.go.dev/syscall): the raw system call interface, with the signal constants and the `WaitStatus` type behind `ExitCode`.
-- [The runtime package](https://pkg.go.dev/runtime): `GOMAXPROCS`, `GOMEMLIMIT` and the other settings that connect the Go runtime to the threads and memory the kernel gives it.

@@ -62,6 +62,22 @@ func TestRunKillsAChildThatIgnoresSIGTERM(t *testing.T) {
 	}
 }
 
+// A child that a signal ends, here a SIGKILL it sends itself, as the
+// out-of-memory killer does, has no exit code: Run reports an error.
+func TestRunReportsAChildEndedByASignal(t *testing.T) {
+	code, err := Run(context.Background(), 5*time.Second, "sh", "-c", "kill -KILL $$")
+	if code != -1 {
+		t.Errorf("exit code = %d, want -1", code)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("err = %v, want an *exec.ExitError", err)
+	}
+	if !strings.Contains(err.Error(), "signal: killed") {
+		t.Errorf("err = %v, want signal: killed", err)
+	}
+}
+
 func TestRunMissingProgram(t *testing.T) {
 	_, err := Run(context.Background(), time.Second, "no-such-program-fsp")
 	if !errors.Is(err, exec.ErrNotFound) {
