@@ -1,0 +1,3 @@
+# Sites your monitor checks, one URL per line.
+https://example.com
+https://example.org

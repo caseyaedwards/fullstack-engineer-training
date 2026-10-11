@@ -1,17 +1,22 @@
 ---
 title: "Week 7: Backend HTTP API"
+description: Design a REST API for monitors, serve it with Go ServeMux method patterns, decode and validate JSON, answer every mistake with the right status code, describe the API in OpenAPI 3.1, and test it with httptest.
 week: 7
 phase: build
-hours: [5, 8]
+hours: [6, 8]
 aiStage: 2
 tracks: [system-design, testing]
 done:
-  - id: item-1
-    text: "Placeholder item 1: this week is not written yet"
-  - id: item-2
-    text: "Placeholder item 2: this week is not written yet"
-  - id: item-3
-    text: "Placeholder item 3: this week is not written yet"
+  - id: crud-with-curl
+    text: With make run-api running, you create, list, get and delete a monitor with curl, and each answer carries the status code and body that api/openapi.yaml documents.
+  - id: api-tests-pass
+    text: go test -race ./... passes, including the table of bad requests, the create-to-delete test over httptest.NewServer, the store-failure test with a fake store, and the OpenAPI route test.
+  - id: explain-status-codes
+    text: Without notes, you can say which status code your api answers for a typo in a field name, a duplicate URL, a form body, a missing monitor and a failing store, and why each one differs.
+  - id: contract-checked
+    text: npx @redocly/cli lint api/openapi.yaml reports no errors, and you have watched the route test fail for a route that the handler serves and the file does not document.
+  - id: read-request-log
+    text: Every request writes one request line, and from those lines alone you can tell a mistake by the client from a fault in your api.
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -21,43 +26,504 @@ import AiThisWeek from '../../../components/AiThisWeek.astro';
 import SideLab from '../../../components/SideLab.astro';
 import ReadWith from '../../../components/ReadWith.astro';
 import DoneWhen from '../../../components/DoneWhen.astro';
+import Diagram from '../../../components/Diagram.astro';
+import CodeFrom from '../../../components/CodeFrom.astro';
+import { weekHref, trackHref } from '../../../lib/links';
 
 <WeekHeader />
 
+At the end of <a href={weekHref(6)}>Week 6</a>, the api answers one route, `GET /healthz`, and the worker still reads its URLs from `urls.txt`. This week, the api learns to manage **monitors**: a monitor is one URL plus the interval between its checks. You design the routes, decode and check JSON, answer every mistake with a status code that tells the client what went wrong, write the contract down in OpenAPI, and test it all with the Go `httptest` package. The monitors live in memory for now. <a href={weekHref(8)}>Week 8</a> moves them into Postgres without touching the handlers.
+
 ## Goals
 
-This section is not written yet.
+- Design REST routes for monitors, and pick the status code for each success and each mistake.
+- Serve them with `http.ServeMux` method patterns, and read the `{id}` path segment with `r.PathValue`.
+- Decode JSON safely: a size cap, no unknown fields, one object per body, and errors written for the client.
+- Put storage behind a `Store` interface, with an in-memory version that is safe for concurrent requests.
+- Describe the API in OpenAPI 3.1, lint the file, and test that it lists exactly the routes the code serves.
+- Test the handlers with `httptest`: a table of bad requests, one full flow over a real port, and a fake store that fails.
 
 ## Concepts
 
-This section is not written yet.
+### Resources, Methods and Status Codes
+
+**REST**, short for Representational State Transfer, is a style for HTTP APIs: every thing the API manages is a **resource** with its own URL, and the HTTP method says what to do with it. Your api manages one type of resource. `/api/monitors` is the **collection**, the list of every monitor, and `/api/monitors/7` is one **item** in it:
+
+| Method and path | Does | Success |
+| --- | --- | --- |
+| `GET /api/monitors` | lists every monitor | `200` and a JSON array |
+| `POST /api/monitors` | creates a monitor from the JSON body | `201` and the new monitor |
+| `GET /api/monitors/{id}` | returns one monitor | `200` and the monitor |
+| `DELETE /api/monitors/{id}` | deletes one monitor | `204` and no body |
+
+The URL names a noun and the method carries the verb: `POST /api/monitors`, not `POST /api/createMonitor`. Two method properties matter when a client retries after a timeout:
+
+- **Safe**: the request changes nothing on the server. `GET` is safe, and a client or a proxy can repeat it any number of times.
+- **Idempotent**: sending the request twice leaves the server in the same state as sending it once. `DELETE` is idempotent: the second `DELETE` of monitor 7 answers `404`, but monitor 7 is gone either way. `POST` is neither safe nor idempotent. A client that retries a `POST` after a lost answer creates the monitor twice, unless the server refuses the second one. Your api refuses it with `409`, because two monitors never share a URL.
+
+The **status code** in the first line of every response tells the client the outcome before it reads the body. The first digit gives the class: `2xx` means success, `4xx` means the client sent something wrong and must change the request before it tries again, and `5xx` means the server failed and the same request can work later. Your api uses these codes:
+
+| Code | Name | Your api answers it when |
+| --- | --- | --- |
+| `200` | OK | a read succeeds |
+| `201` | Created | a `POST` creates a monitor; the `Location` header holds its path |
+| `204` | No Content | a `DELETE` succeeds; the response has no body |
+| `400` | Bad Request | the body is not valid JSON, has an unknown field, or breaks a rule; the id is not a number |
+| `404` | Not Found | no monitor has that id, or no route has that path |
+| `405` | Method Not Allowed | the path exists, but not for that method; the `Allow` header lists the methods that work |
+| `409` | Conflict | a monitor for that URL exists |
+| `413` | Request Entity Too Large | the body is over 1 MiB |
+| `415` | Unsupported Media Type | the `Content-Type` header is not `application/json` |
+| `500` | Internal Server Error | the store fails |
+
+Every error body has one shape, `{"error": "<message>"}`, with `Content-Type: application/json`. The status code tells a program what happened, and the message tells a person. Any client, such as the status page in <a href={weekHref(10)}>Week 10</a>, reads the message the same way on every route.
+
+### How Go Serves a Request
+
+The `net/http` package does the network work for you. `http.Server` accepts connections, reads each request, and passes it to a **handler**: any value with the method `ServeHTTP(w http.ResponseWriter, r *http.Request)`. `r` holds the method, the URL, the headers and the body. `w` is where the handler writes the status code, the headers and the body of the answer.
+
+The server runs each connection in its own goroutine, the concurrency tool from <a href={weekHref(5)}>Week 5</a>. Two clients therefore run your handlers at the same time, and any data the handlers share needs a lock.
+
+`http.ServeMux` is a handler that picks another handler. It is a **router**, also called a mux, short for multiplexer. Since Go 1.22, its patterns hold a method, a path and **wildcards**: `"GET /api/monitors/{id}"` matches `GET /api/monitors/7`, and `r.PathValue("id")` returns `"7"`. A wildcard matches one whole path segment. When two patterns match a request, the more specific one wins: `/api/monitors/new` beats `/api/monitors/{id}`. When the path matches no pattern, the mux answers `404`. When the path matches but the method does not, it answers `405` with an `Allow` header.
+
+A handler that wraps another handler is called **middleware**: it runs code before and after the inner handler, for every route at once. Your api gets two pieces of middleware this week: one turns the plain-text `404` and `405` answers of the mux into JSON, and one logs every request.
+
+<Diagram
+  id="request-flow"
+  title="One POST /api/monitors, from the client to the store and back"
+  code={`shape: sequence_diagram
+client: "curl or\\nthe status page"
+srv: "http.Server"
+mux: "ServeMux"
+h: "create\\nhandler"
+store: "MemStore"
+
+client -> srv: "POST, JSON body"
+srv -> mux: "ServeHTTP(w, r)"
+mux -> h: "pattern matches"
+h -> h: "Content-Type,\\ndecode, Validate"
+h -> store: "Create(ctx, m)"
+store -> h: "Monitor, ID 1"
+h -> client: "201, Location, JSON"
+`}
+  steps={[
+    { hl: ['client', 'srv', 'client->srv'], caption: 'The client sends the request line, the headers and the JSON body. http.Server reads the request line and the headers in the goroutine of that connection.' },
+    { hl: ['srv', 'mux', 'h', 'srv->mux', 'mux->h'], caption: 'The server calls ServeHTTP on the handler you gave it: the mux, wrapped in middleware. The mux matches the method and the path against its patterns and calls the handler for POST /api/monitors.' },
+    { hl: ['h', 'h->h'], caption: 'The handler checks the request in order: the Content-Type header, then the JSON, then the rules for a monitor. The first failure ends the request with a 4xx, and the store never sees it.' },
+    { hl: ['h', 'store', 'h->store', 'store->h'], caption: 'Only a valid request reaches the store, through the Store interface. MemStore takes its lock, refuses a duplicate URL, and gives the monitor the next ID and the current time.' },
+    { hl: ['h', 'client', 'h->client'], caption: 'The handler sets the headers, writes 201 with WriteHeader, then writes the monitor as JSON. Location names the new monitor: /api/monitors/1.' },
+  ]}
+/>
+
+### Reading and Writing JSON
+
+The `encoding/json` package turns Go values into JSON and back. A **struct tag**, from Week 6, names the JSON field of each struct field: `IntervalSeconds int` with the tag `json:"interval_seconds"` reads and writes `"interval_seconds"`. Four behaviors of the package shape your handlers:
+
+- **A missing field gets its zero value.** A body without `interval_seconds` decodes with `IntervalSeconds` set to `0`. Validation then refuses `0`, which turns a missing field into a clear error.
+- **Unknown fields are ignored** by default. Without a check, a client that sends `"interval": 60` gets `interval_seconds must be between 30 and 3600, got 0` for a value it believes it sent. `Decoder.DisallowUnknownFields` makes the typo itself the error.
+- **A nil slice encodes as `null`, not `[]`.** A list handler that returns a nil slice for an empty store sends `null`, and a frontend that calls `.map` on it crashes.
+- **`time.Time` encodes as RFC 3339 text**, such as `"2026-10-11T06:52:07.622539Z"`: the date, a `T`, the time, and the time zone, where `Z` means UTC.
+
+A body is untrusted input of any size. `http.MaxBytesReader` wraps the body and fails the read after a limit, here 1 MiB, which stops a client from filling the memory of your api with one request.
+
+### Validate at the Boundary
+
+Your api is a **trust boundary**: data from outside crosses into code that relies on it. Week 6 explained why the backend checks every request even when the frontend checks the form: anyone can send a request with `curl`. The handler checks everything once, at the boundary, and the code behind it trusts what it gets.
+
+The order of the checks decides the status code, and each check names the first thing that is wrong:
+
+<Diagram
+  id="post-checks"
+  title="The checks of POST /api/monitors, in order, and the status code each one answers"
+  code={`direction: down
+req: "POST /api/monitors"
+ct: "Content-Type is\\napplication/json?"
+dec: "body decodes: one object,\\nknown fields, under 1 MiB?"
+val: "monitor.Validate passes?"
+cr: "store.Create"
+ok: "201 Created\\nLocation and the monitor"
+e415: "415"
+e400: "400, or 413\\nfor a large body"
+e400b: "400"
+e409: "409 for a duplicate\\n500 for any other error"
+
+req -> ct
+ct -> dec: yes
+ct -> e415: no
+dec -> val: yes
+dec -> e400: no
+val -> cr: yes
+val -> e400b: no
+cr -> ok: no error
+cr -> e409: error
+`}
+/>
+
+`400`, `409`, `413` and `415` are all mistakes by the client, but each one asks for a different fix: correct the body, pick another URL, send less, or set the header. A `500` is never the fault of the client. Its message stays fixed, `internal error`, and the real cause goes to your log: a database error can hold table names, SQL text or a host name, and none of that belongs in a response.
+
+### Layers and the Store Interface
+
+The code splits into layers, each with one job:
+
+- `internal/api` knows HTTP: routes, JSON, headers and status codes.
+- `internal/monitor` knows monitors: the type, the rules in `Validate`, and the `Store` interface.
+- A store keeps monitors. The handlers call it only through the four methods of `Store`, and never learn whether a map or Postgres sits behind it.
+
+An **interface** in Go lists methods, and any type with those methods satisfies it, with no `implements` keyword. <a href={weekHref(2)}>Week 2</a> used the `Getter` interface to swap the HTTP client for a fake in tests. Here the same idea swaps the storage.
+
+<Diagram
+  id="layers"
+  title="Who calls what: the handlers depend on the Store interface, not on a store"
+  code={`direction: down
+main: "cmd/api"
+api: "internal/api\\nHTTP"
+rules: "monitor.Validate"
+store: "monitor.Store\\ninterface"
+mem: "MemStore\\nWeek 7"
+pg: "Postgres store\\nWeek 8"
+fake: "brokenStore\\ntests"
+
+main -> api: "NewHandler(store)"
+api -> rules: "checks input"
+api -> store: "List, Get,\\nCreate, Delete"
+store <- mem: implements
+store <- pg: implements {style.stroke-dash: 3}
+store <- fake: implements
+`}
+  steps={[
+    { hl: ['main', 'api', 'main->api'], caption: 'main in cmd/api picks the store and hands it to NewHandler. It is the only place in the program that knows which store runs.' },
+    { hl: ['api', 'rules', 'store', 'api->rules', 'api->store'], caption: 'The handlers check input with monitor.Validate and reach storage only through the four methods of the Store interface.' },
+    { hl: ['store', 'mem', 'fake', 'store<-mem', 'store<-fake'], caption: 'This week, MemStore keeps monitors in a map. The tests add brokenStore, a fake whose methods return an error, to test the 500 path.' },
+    { hl: ['store', 'pg', 'store<-pg'], caption: 'Week 8 adds a Postgres store with the same four methods. main passes it in, and no handler changes.' },
+  ]}
+/>
+
+### OpenAPI: The Contract
+
+An **API contract** is the written promise of what the API accepts and returns. **OpenAPI** is the standard format for it: a YAML or JSON file that lists every path, method, parameter, request body, response and status code. Version 3.1 describes data with **JSON Schema**, the standard vocabulary for the shape of JSON: types, required fields, and limits such as `minimum: 30`.
+
+The file serves three readers. People read it as documentation. Tools lint it, render it as a browsable page, and generate clients and types from it. Tests compare it with the code. Some teams write the contract first and the code after it, others generate the contract from the code. Here you write the code first, then the contract by hand, and a test fails when the two list different routes. The <a href={trackHref('system-design')}>System and Software Design track</a> compares the approaches.
+
+### Testing HTTP Handlers
+
+A handler is a function of a request, which makes it easy to test without a network. The `net/http/httptest` package gives you two tools:
+
+- `httptest.NewRecorder()`: a `ResponseWriter` that keeps the status, the headers and the body in memory. Call `h.ServeHTTP(rec, req)` directly, with no port and no goroutines. Use it for many small cases.
+- `httptest.NewServer(h)`: starts `h` on a free port of `127.0.0.1`, and a real `http.Client` talks to it. Use it to test a whole flow the way a client sees it, including what the server itself adds, such as `Content-Length`.
+
+A **fake** is a small type that satisfies an interface with canned behavior. A store that always fails is hard to get from a real database and takes a few lines as a fake. The <a href={trackHref('testing')}>Testing track</a> compares fakes, stubs and mocks.
 
 ## Build
 
-This section is not written yet.
+By the end of this section, the api serves the four monitor routes from an in-memory store, logs every request, and ships an OpenAPI file that a test keeps honest. The code comes from the site examples in `examples/go/week07/your-monitor`, a copy of the Week 6 tree with the changes of this week. Their import paths start with `fsp/examples/week07/your-monitor`, and yours start with `github.com/<user>/your-monitor`.
+
+```txt
+your-monitor/
+├── api/
+│   └── openapi.yaml           new: the contract
+├── cmd/
+│   ├── api/main.go            serves internal/api instead of its own /healthz
+│   └── worker/                unchanged: still reads urls.txt
+└── internal/
+    ├── api/                   new: api.go, json.go, log.go and their tests
+    ├── monitor/               new: monitor.go, memstore.go, monitor_test.go
+    └── check/, pool/, probe/  unchanged
+```
+
+Start a branch: `git switch main`, `git pull`, then `git switch -c week-07`.
+
+### Step 1: Define the Monitor and Its Rules
+
+Create `internal/monitor/monitor.go`. It holds the type, the two errors a store returns, and the `Store` interface:
+
+<CodeFrom file="go/week07/your-monitor/internal/monitor/monitor.go" region="types" lang="go" title="internal/monitor/monitor.go" />
+
+`ErrNotFound` and `ErrDuplicate` are **sentinel errors**: fixed values that callers compare with `errors.Is`. The handler maps each one to a status code, and the store knows nothing about HTTP. Add the rules below the interface:
+
+<CodeFrom file="go/week07/your-monitor/internal/monitor/monitor.go" region="validate" lang="go" title="internal/monitor/monitor.go" />
+
+`url.Parse` accepts `example.com` without an error: it reads the text as a path, with no scheme and no host. That is why `Validate` checks the scheme and the host itself. Each message names the rule and repeats the value, because the person who reads it fixes the request from the message alone.
+
+### Step 2: Keep Monitors in Memory
+
+Create `internal/monitor/memstore.go`:
+
+<CodeFrom file="go/week07/your-monitor/internal/monitor/memstore.go" region="memstore" lang="go" title="internal/monitor/memstore.go" />
+
+- `mu` guards the map and `lastID`. Every method locks it first, and `defer` unlocks it on every return path.
+- `var _ Store = (*MemStore)(nil)` costs nothing at run time and fails the build when `MemStore` stops satisfying `Store`.
+- `Create` checks for the duplicate and assigns the ID under one lock. With the check and the insert under two separate locks, two requests for the same URL both pass the check before either one stores its monitor.
+- IDs only grow: deleting monitor 1 never frees ID 1. A client that still holds `/api/monitors/1` gets `404`, never a different monitor.
+- `now` is a field that the tests replace with a fixed clock. `List` sorts by ID, because Go returns map entries in random order.
+
+### Step 3: Test the Rules and the Store
+
+Create `internal/monitor/monitor_test.go`, in `package monitor`, with the imports `context`, `errors`, `strings`, `sync`, `testing` and `time`. A test in the same package reads unexported fields, such as `now`. `TestValidate` is a table of URLs and intervals with the error text each one must produce, in the style of Week 2. The store tests check IDs, the fixed clock, duplicates and deletes, then hit the store from 100 goroutines at once:
+
+<CodeFrom file="go/week07/your-monitor/internal/monitor/monitor_test.go" region="store-test" lang="go" title="internal/monitor/monitor_test.go" />
+
+Run `go test -race ./internal/monitor`. Then comment out every `s.mu.Lock()` and `defer s.mu.Unlock()` line in `memstore.go` and run it again: `TestMemStoreConcurrent` fails with `WARNING: DATA RACE`, the report from Week 5. Put the lines back.
+
+### Step 4: Write the JSON Helpers
+
+Create `internal/api/json.go`. Two helpers write every JSON response, which keeps the error shape the same on every route:
+
+<CodeFrom file="go/week07/your-monitor/internal/api/json.go" region="write" lang="go" title="internal/api/json.go" />
+
+The order inside `writeJSON` matters. Headers set after `WriteHeader` never reach the client, because `WriteHeader` sends them. A `Write` with no `WriteHeader` before it sends `200`. The reader of the body comes next:
+
+<CodeFrom file="go/week07/your-monitor/internal/api/json.go" region="decode" lang="go" title="internal/api/json.go" />
+
+- `mime.ParseMediaType` splits `application/json; charset=utf-8` into the type and its parameters, which accepts the header with a charset as well.
+- `errors.As` finds an error of a given type anywhere in the chain of wrapped errors and fills in the variable. `*http.MaxBytesError` carries the limit, and `*json.UnmarshalTypeError` carries the field name and the JSON type that arrived.
+- The second `Decode` reads what follows the object. `io.EOF` means the body ends there. A second value, such as `{}`, is an error, because a client that sends two objects expects two monitors and gets one.
+- `encoding/json` in Go 1.24 has no error type for an unknown field, only the message `json: unknown field "interval"`. The helper matches that text and drops the `json: ` prefix.
+
+### Step 5: Add the Routes
+
+Create `internal/api/api.go`. It replaces the `newMux` and `healthz` functions of `cmd/api/main.go`, which you delete in Step 8:
+
+<CodeFrom file="go/week07/your-monitor/internal/api/api.go" region="routes" lang="go" title="internal/api/api.go" />
+
+The routes live in a map, which gives the OpenAPI test in Step 9 one list to compare against. `h.list` is a **method value**: the method `list` bound to `h`, with the type `func(http.ResponseWriter, *http.Request)` that `HandleFunc` takes. The fallback middleware comes next:
+
+<CodeFrom file="go/week07/your-monitor/internal/api/api.go" region="fallback" lang="go" title="internal/api/api.go" />
+
+`mux.Handler(r)` asks the mux which handler it picks, without running it. An empty pattern means no route matches, and the mux hands back its own `404` or `405` handler. `jsonFallback` runs that handler against `statusOnly`: the `Allow` header lands in the real header map, and the plain-text body goes nowhere. The read handlers:
+
+<CodeFrom file="go/week07/your-monitor/internal/api/api.go" region="read" lang="go" title="internal/api/api.go" />
+
+`/healthz` keeps the answer from Week 6, `{"status":"ok"}`, which means the Compose healthcheck needs no change. `strconv.ParseInt(raw, 10, 64)` reads base-10 digits into an `int64` and fails on `abc`, `1.5` and an empty string. `MemStore` never returns a nil list, but the `[]` guard stays in the handler: a store that starts from `var list []Monitor` and finds zero rows returns nil, and the api still sends `[]`.
+
+### Step 6: Create and Delete
+
+<CodeFrom file="go/week07/your-monitor/internal/api/api.go" region="create" lang="go" title="internal/api/api.go" />
+
+`createRequest` holds only the fields a client sends. Decoding straight into `monitor.Monitor` accepts an `id` and a `created_at` from the client. The handler follows the order of the checks diagram, and the `switch` on the store error maps each sentinel to its status code.
+
+<CodeFrom file="go/week07/your-monitor/internal/api/api.go" region="delete" lang="go" title="internal/api/api.go" />
+
+`internalError` writes the cause to the log and the fixed message to the client. The `log` package writes to standard output, as it has since Week 3.
+
+### Step 7: Test the API
+
+Create `internal/api/api_test.go`, in `package api`. It imports `bytes`, `context`, `encoding/json`, `errors`, `io`, `log`, `net/http`, `net/http/httptest`, `os`, `strings`, `testing`, `time` and your `internal/monitor` package. Move `TestHealthz` from `cmd/api/main_test.go` into it, with two changes: call `NewHandler(monitor.NewMemStore())` where it calls `newMux()`, and decode into `struct{ Status string }` where it uses the deleted `health` type. Two helpers build a handler with one monitor in it and send one request:
+
+<CodeFrom file="go/week07/your-monitor/internal/api/api_test.go" region="helpers" lang="go" title="internal/api/api_test.go" />
+
+The table of bad requests checks each status code and the exact error message:
+
+<CodeFrom file="go/week07/your-monitor/internal/api/api_test.go" region="errors-test" lang="go" title="internal/api/api_test.go" />
+
+`TestMonitorLifecycle` in the example file starts the API with `httptest.NewServer` and walks one monitor through list, create, get, list and delete with a real client: an empty list is exactly `[]` plus a newline, `Location` is `/api/monitors/1`, and a `GET` after the delete answers `404`. The fake store covers what a healthy `MemStore` never does:
+
+<CodeFrom file="go/week07/your-monitor/internal/api/api_test.go" region="fake-store-test" lang="go" title="internal/api/api_test.go" />
+
+`log.SetOutput(&logs)` sends the log into a buffer for the test, and `t.Cleanup` puts it back. Run the tests with `go test -race ./internal/...`.
+
+### Step 8: Serve It from cmd/api
+
+`newHandler` wraps the API in `LogRequests`, the request log from [Observe It](#observe-it): create `internal/api/log.go` from that section first. In `cmd/api/main.go`, delete the `health` type and the `newMux` and `healthz` functions, remove the `encoding/json` import, and import your `internal/api` and `internal/monitor` packages. Add `newHandler`:
+
+<CodeFrom file="go/week07/your-monitor/cmd/api/main.go" region="handler" lang="go" title="cmd/api/main.go" />
+
+In `main`, pass `newHandler()` to `serve` where it passes `newMux()`, and do the same in `TestCheckHealth` and `TestServeStopsWhenCancelled` in `cmd/api/main_test.go`. `serve`, `checkHealth` and the `-healthcheck` mode stay as they are.
+
+### Step 9: Describe the API in OpenAPI
+
+Create `api/openapi.yaml` at the root of the repository. It opens with the version and the description of the API:
+
+<CodeFrom file="go/week07/your-monitor/api/openapi.yaml" region="info" lang="yaml" title="api/openapi.yaml" />
+
+`security: []` states that no route needs a login yet: <a href={weekHref(11)}>Week 11</a> adds one. Each path lists its methods, and each method lists its responses by status code:
+
+<CodeFrom file="go/week07/your-monitor/api/openapi.yaml" region="paths" lang="yaml" title="api/openapi.yaml" />
+
+`$ref` points at a definition elsewhere in the file, which keeps each schema in one place. The `components` section at the end of the file holds them: `NewMonitor`, the body of a `POST`, with `additionalProperties: false` for the unknown-field rule; `Monitor`; `Error`; and the shared responses:
+
+<CodeFrom file="go/week07/your-monitor/api/openapi.yaml" region="components" lang="yaml" title="api/openapi.yaml" />
+
+Lint the file with Redocly CLI, which `npx` downloads on first use:
+
+```sh
+npx @redocly/cli lint api/openapi.yaml
+```
+
+It prints `Your API description is valid` with three warnings: the file has no `license`, and the `GET` routes of `/healthz` and `/api/monitors` document no `4XX` response. Those two routes have no client mistake to report, which makes both warnings safe to accept. An `error` line, such as `no-unresolved-refs` for a misspelled `$ref`, fails the lint.
+
+The linter checks that the file is valid OpenAPI, not that it matches your code. A test closes that gap. Create `internal/api/openapi_test.go`:
+
+<CodeFrom file="go/week07/your-monitor/internal/api/openapi_test.go" region="openapi-test" lang="go" title="internal/api/openapi_test.go" />
+
+`go test` runs each test in the folder of its package, which is why the path is `../../api/openapi.yaml`. The Go standard library has no YAML parser, and the test reads only the two indentation levels it needs. Add `"PUT /api/monitors/{id}": h.create,` to `routes`, run `go test ./internal/api`, and read the two lists the test prints. Then remove the line.
+
+### Step 10: Run It
+
+Start the api with `make run-api`. In a second terminal, create a monitor:
+
+```txt
+$ curl -i -X POST http://127.0.0.1:8080/api/monitors \
+    -H 'Content-Type: application/json' \
+    -d '{"url": "https://example.com", "interval_seconds": 60}'
+HTTP/1.1 201 Created
+Content-Type: application/json
+Location: /api/monitors/1
+Date: Sun, 11 Oct 2026 06:52:07 GMT
+Content-Length: 102
+
+{"id":1,"url":"https://example.com","interval_seconds":60,"created_at":"2026-10-11T06:52:07.622539Z"}
+```
+
+`-i` prints the status line and the headers, `-X` sets the method, `-H` adds a header, and `-d` sends the body. Add a second monitor for `https://example.org` with `"interval_seconds": 300`, then read the list. `jq` is a command-line JSON tool that indents its input: install it with `brew install jq` on macOS or `sudo apt install jq` on Ubuntu.
+
+```txt
+$ curl -s http://127.0.0.1:8080/api/monitors | jq
+[
+  {
+    "id": 1,
+    "url": "https://example.com",
+    "interval_seconds": 60,
+    "created_at": "2026-10-11T06:52:07.622539Z"
+  },
+  {
+    "id": 2,
+    "url": "https://example.org",
+    "interval_seconds": 300,
+    "created_at": "2026-10-11T06:52:07.630101Z"
+  }
+]
+```
+
+Now send mistakes, one at a time, with `-s` to hide the progress meter:
+
+```txt
+$ curl -s -X POST http://127.0.0.1:8080/api/monitors -H 'Content-Type: application/json' -d '{"url": "https://example.com", "interval_seconds": 60}'
+{"error":"a monitor for https://example.com already exists"}
+$ curl -s -X POST http://127.0.0.1:8080/api/monitors -H 'Content-Type: application/json' -d '{"url": "example.net", "interval": 60}'
+{"error":"unknown field \"interval\""}
+$ curl -s http://127.0.0.1:8080/api/monitors/abc
+{"error":"id must be an integer, got \"abc\""}
+$ curl -s http://127.0.0.1:8080/api/monitors/42
+{"error":"monitor 42 not found"}
+$ curl -s -o /dev/null -w '%{http_code}\n' -X DELETE http://127.0.0.1:8080/api/monitors/2
+204
+```
+
+`-w '%{http_code}\n'` prints the status code, and `-o /dev/null` throws the body away. The times in your output differ. The IDs match when you start from an empty store. `make up` builds the api image with the new code, and the same commands work against the container.
+
+### Step 11: Commit
+
+```sh
+git add api cmd/api internal/api internal/monitor
+git commit -m "Serve the monitors REST API from an in-memory store, with OpenAPI and tests"
+git push -u origin week-07
+```
+
+Open a pull request from `week-07` into `main`, read the diff once more, and merge it.
 
 ## Observe It
 
 <ObserveIt>
-This section is not written yet.
+
+Log one line per request. Create `internal/api/log.go`:
+
+<CodeFrom file="go/week07/your-monitor/internal/api/log.go" region="log" lang="go" title="internal/api/log.go" />
+
+The handler never tells the middleware what status it sent. `statusRecorder` finds out by standing between them: it embeds the real `ResponseWriter`, which gives it every method of the real one, and overrides `WriteHeader` and `Write` to take notes on the way through. `internal/api/log_test.go` in the examples checks the lines with a logger that writes to a buffer. The run from Step 10 logs:
+
+```txt
+2026/10/11 06:52:06 listening addr=127.0.0.1:8080
+2026/10/11 06:52:07 request method=POST path=/api/monitors status=201 bytes=102 duration_ms=0.1
+2026/10/11 06:52:07 request method=POST path=/api/monitors status=201 bytes=103 duration_ms=0.1
+2026/10/11 06:52:07 request method=GET path=/api/monitors status=200 bytes=207 duration_ms=0.1
+2026/10/11 06:52:07 request method=POST path=/api/monitors status=409 bytes=61 duration_ms=0.1
+2026/10/11 06:52:07 request method=POST path=/api/monitors status=400 bytes=39 duration_ms=0.1
+2026/10/11 06:52:07 request method=GET path=/api/monitors/abc status=400 bytes=47 duration_ms=0.0
+2026/10/11 06:52:07 request method=GET path=/api/monitors/42 status=404 bytes=33 duration_ms=0.1
+2026/10/11 06:52:07 request method=DELETE path=/api/monitors/2 status=204 bytes=0 duration_ms=0.0
+```
+
+The line logs the path and never the body: in Week 11, bodies carry passwords. Read the lines by status class:
+
+- **`status=4..` lines** are mistakes by clients. A burst on one route after a frontend release points to a client that sends old field names. The error message is in the response, not the log: repeat the request with `curl` to read it.
+- **`status=5..` lines** are your faults. Each one follows an `error method=... err=...` line from `internalError`, which holds the cause.
+- **`duration_ms`** stays under a millisecond for a small request with the in-memory store. In Week 8, every request waits for Postgres, and this number shows the cost.
+
+Under `make up`, the Compose healthcheck calls `/healthz` every 10 seconds, and each call logs a line. Filter those out when you read: `docker compose logs api | grep -v 'path=/healthz'`. Count the answers by status code with `docker compose logs api | grep -o 'status=[0-9]*' | sort | uniq -c`. Week 13 replaces these lines with structured logs and request metrics.
+
 </ObserveIt>
 
 ## Operate It
 
 <OperateIt>
-This section is not written yet.
+
+**A restart empties the store.** Create a monitor, stop the api with **Ctrl+C**, start it again, and list: the answer is `[]`. Under Compose, `docker compose restart api` does the same, as does every `make up` that rebuilds the image. Until Week 8, every monitor is gone on the next start.
+
+**A panic in a handler drops the connection.** When a handler panics, for example on a write to a nil map, `net/http` recovers the panic for that one request, logs it, and closes the connection without an answer. The rest of the server keeps running:
+
+```txt
+$ curl -sS http://127.0.0.1:8080/api/monitors
+curl: (52) Empty reply from server
+```
+
+The api log holds `http: panic serving 127.0.0.1:36424: assignment to entry in nil map` and a stack trace that names the line. No `request` line follows, because the panic unwinds through `LogRequests` before it logs. An empty reply with a stack trace in the log means a bug in your handler.
+
+| What you see | What it points to |
+| --- | --- |
+| `415` and `Content-Type must be application/json` from `curl -d` | `curl -d` sends `Content-Type: application/x-www-form-urlencoded` unless you pass `-H 'Content-Type: application/json'` |
+| `404` and `not found` for `/api/monitors/` | The trailing slash makes a different path, and no pattern matches it |
+| `405` and `Allow: DELETE, GET, HEAD` | The path exists, and the method you sent is not in `Allow` |
+| `400` and `unknown field` | A typo in a field name, or a client written against another version of the contract |
+| `413` and `body is larger than 1048576 bytes` | The client sends over 1 MiB: a bug in the client, or a file sent to the wrong route |
+| `TypeError: Cannot read properties of null (reading 'map')` in the browser | The list route answers `null`: the nil-slice guard is missing |
+| `500` and `internal error` | The store fails: the `error method=` line in the api log holds the cause |
+| `curl: (7) Failed to connect to 127.0.0.1 port 8080` | The api is not running, or listens on another address: read its `listening addr=` line |
+
 </OperateIt>
 
 ## AI This Week
 
 <AiThisWeek>
-This section is not written yet.
+
+Stage 2, review everything: generate code with the assistant, then read every line, write or extend the tests, and explain it back. Do not merge code you cannot explain or that has no test.
+
+**Do:** give the assistant `api/openapi.yaml` and ask for one row of `TestErrors` per documented `4xx` response. Then review the rows like a pull request. Check each expected status code against the file, run the tests, and break one handler on purpose, for example answer `400` for a duplicate, to watch the right row fail. Add the rows it leaves out yourself, such as a trailing slash or a second object after the first.
+
+**Do not:** accept a generated `create` handler because a test of the happy path passes. Each of these mistakes passes that test: `200` instead of `201`; no `Location` header; no `http.MaxBytesReader`; unknown fields silently ignored; `err.Error()` of a store error sent to the client; `null` for an empty list; `500` for a duplicate URL. Read the handler against the checks diagram on this page, line by line, before you commit it.
+
 </AiThisWeek>
 
 ## Side Lab
 
-<SideLab title="Optional lab: not written yet">
-This section is not written yet.
+<SideLab title="Speak HTTP/1.1 by hand with netcat">
+
+HTTP/1.1 is text: a request line, header lines, an empty line, then the body. Every line ends in a carriage return and a line feed, written `\r\n`. `nc`, short for netcat, opens a TCP connection and passes its input through it. macOS ships it, and Ubuntu installs it by default. Start your api with `make run-api` and send a request through `printf`, which turns each `\r\n` into those two bytes:
+
+```txt
+$ printf 'GET /api/monitors HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' | nc 127.0.0.1 8080
+HTTP/1.1 200 OK
+Content-Type: application/json
+Date: Sun, 11 Oct 2026 06:52:35 GMT
+Content-Length: 3
+Connection: close
+
+[]
+```
+
+`Connection: close` asks the server to close the connection after its answer, which ends `nc`. Without it, HTTP/1.1 keeps the connection open for the next request, and `nc` waits.
+
+**1. Leave out Host.** Send the same request without the `Host` line. Go answers `400 Bad Request: missing required Host header` as plain text, before your handlers run: HTTP/1.1 requires the header, because one address can serve many sites.
+
+**2. Send a body.** The server knows where the body ends from `Content-Length`, the size in bytes. The body below is 54 bytes, which `printf '%s' '<body>' | wc -c` confirms:
+
+```sh
+printf 'POST /api/monitors HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 54\r\nConnection: close\r\n\r\n{"url": "https://example.com", "interval_seconds": 60}' | nc 127.0.0.1 8080
+```
+
+The answer is `201 Created` with a `Location` header.
+
+**3. Lie about the length.** Set `Content-Length: 20` and send the same body. The server reads 20 bytes, `{"url": "https://exa`, and answers `400` with `body is not valid JSON`. Then set `Content-Length: 100`. The server waits for the 46 bytes that never arrive, and `nc` waits for an answer that never comes. Press **Ctrl+C**. The api logs the request with a `duration_ms` as long as you waited: the Week 6 `ReadHeaderTimeout` covers the headers, not the body. Week 11 covers the timeouts that stop a slow client from holding a connection.
+
 </SideLab>
 
 ## Done When
