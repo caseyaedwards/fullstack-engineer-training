@@ -1,19 +1,25 @@
 ---
 title: "Week 0: Setup"
+description: Install and check the toolchain, create the your-monitor repository on GitHub, practice the weekly rhythm of one branch and one pull request, and learn the AI rules for the course.
 week: 0
 phase: foundations
-hours: [5, 8]
+hours: [3, 5]
 aiStage: 1
 tracks: [git, ai-assisted-dev, work-tracking]
 done:
-  - id: item-1
-    text: "Placeholder item 1: this week is not written yet"
-  - id: item-2
-    text: "Placeholder item 2: this week is not written yet"
-  - id: item-3
-    text: "Placeholder item 3: this week is not written yet"
+  - id: toolchain-checked
+    text: On your machine, the version commands print Git, Go 1.24 or newer, Node 22, GitHub CLI, curl, Docker and Docker Compose, and docker run hello-world prints Hello from Docker.
+  - id: editor-ready
+    text: "VS Code runs with the golang.go extension, the Go: Locate Configured Go Tools command reports gopls as installed, and inline suggestions are off."
+  - id: repo-on-github
+    text: Your your-monitor repository on GitHub holds go.mod, README.md and .gitignore, and git status in your clone reports that main is up to date with origin/main.
+  - id: first-pull-request
+    text: You have merged a pull request from a week-00 branch on your own repository, and git log --oneline --graph shows its merge commit on main.
+  - id: ai-stage-one
+    text: You can name the three AI stages and what each one allows, and this week you use your assistant only to explain, never to write files in your repository.
 ---
 
+import { Tabs, TabItem } from '@astrojs/starlight/components';
 import WeekHeader from '../../../components/WeekHeader.astro';
 import ObserveIt from '../../../components/ObserveIt.astro';
 import OperateIt from '../../../components/OperateIt.astro';
@@ -21,43 +27,529 @@ import AiThisWeek from '../../../components/AiThisWeek.astro';
 import SideLab from '../../../components/SideLab.astro';
 import ReadWith from '../../../components/ReadWith.astro';
 import DoneWhen from '../../../components/DoneWhen.astro';
+import Diagram from '../../../components/Diagram.astro';
+import { weekHref, trackHref } from '../../../lib/links';
 
 <WeekHeader />
 
+Over the next 18 weeks, you build an **uptime monitor**: a program that checks a list of websites on a schedule and reports which ones are up, how fast they answer and why a failing one fails. This week has no Go to write. You set up what every later week depends on: the tools installed and checked, a repository for the monitor on GitHub, and a working rhythm of one branch and one pull request per week. You also learn the rules for AI assistants on this course, because they apply from today.
+
+:::note
+The steps cover macOS and Linux. On Windows, install WSL 2 with `wsl --install` in PowerShell run as administrator, restart, open **Ubuntu** from the Start menu, and follow the Linux steps inside it.
+:::
+
 ## Goals
 
-This section is not written yet.
+- Install Git, Go, Node, VS Code with the Go extension, Docker and curl, and check each one with its version command.
+- Create the `your-monitor` repository on GitHub, clone it, and push a first commit with `go.mod`, `README.md` and `.gitignore`.
+- Use the Git commands of the weekly rhythm: branch, commit, push, pull request, merge and pull.
+- Learn the three stages of AI use on this course, and set up your editor for stage 1.
 
 ## Concepts
 
-This section is not written yet.
+### The Terminal, the Shell and PATH
+
+You run most of this course in a **terminal**: the window where you type commands. On macOS, open **Terminal** from **Applications**, **Utilities**. On Ubuntu, press Ctrl+Alt+T. The program inside the terminal that reads your commands is the **shell**: zsh on macOS and bash on Ubuntu. In the command blocks on this site, `$` stands for the shell prompt. Type what follows it, not the `$`.
+
+When you type `go`, the shell searches a list of folders for a program named `go`. That list is the `PATH` **environment variable**: a named value that every program you start from the shell inherits. `echo $PATH` prints it.
+
+Installing a tool means two things: put the program in a folder, and put that folder on `PATH`. When the second part is missing, the shell answers `command not found`. [Operate It](#operate-it) shows how to fix that.
+
+Each shell reads a start-up file when it opens: `~/.zshrc` for zsh, `~/.bashrc` for bash, and also `~/.profile` when you log in on Ubuntu. The `~` stands for your home folder. A line you add to a start-up file applies to terminals you open after the change, not to the one already open.
+
+### Where Each Tool Sits
+
+Here is the toolchain for the course, and the job of each tool:
+
+- **Git**: version control. It records snapshots of your project folder, called commits, and keeps the full history on your laptop.
+- **GitHub**: a website that hosts a copy of your Git repository and adds pull requests: pages where you review a change before it joins the main history. The **GitHub CLI**, the `gh` command, signs Git in to GitHub.
+- **Go**: the language of the backend. The Go toolchain is one program, `go`, with subcommands: `go build` compiles your code into a program, `go test` runs your tests, and `go run` compiles and runs in one step.
+- **VS Code with the Go extension**: your editor. The extension runs **gopls**, the Go language server: a background program that reads your code and gives the editor errors as you type, completions, the type of a value on hover, and go-to-definition.
+- **curl**: sends an HTTP request from the terminal and prints the answer. You use it to check a site by hand, the way your monitor checks it in code.
+- **Node 22**: runs JavaScript and TypeScript tooling outside the browser. The status page you build in Week 10 needs it. It comes with `npm`, the Node package manager.
+- **Docker**: runs **containers**: programs packaged with their own files and libraries, isolated from the rest of your machine. Week 6 uses Docker Compose to start the monitor and its database together.
+
+<Diagram
+  id="toolchain"
+  title="Where each tool works on your project"
+  code={`direction: right
+laptop: your laptop {
+  editor: "VS Code\\nwith the Go extension"
+  folder: "your-monitor/\\nfolder"
+  go: Go toolchain
+  git: Git
+  later: "curl, Node, Docker"
+  editor -> folder: edits files
+  go -> folder: builds, tests
+  git -> folder: records snapshots
+}
+github: GitHub {
+  repo: "your-monitor\\nrepository"
+  pr: pull requests
+  pr -> repo: merge
+}
+laptop.git -> github.repo: push, pull
+`}
+  steps={[
+    { hl: ['laptop.editor', 'laptop.folder', 'laptop.editor->laptop.folder'], caption: 'Your project is a plain folder of files. You edit them in VS Code. The Go extension reads the same files through gopls to show errors and types as you type.' },
+    { hl: ['laptop.go', 'laptop.folder', 'laptop.go->laptop.folder'], caption: 'The Go toolchain builds and tests what is in the folder. The go.mod file at the top of the folder tells it that the folder is one Go module, and gives the module its name.' },
+    { hl: ['laptop.git', 'laptop.folder', 'laptop.git->laptop.folder'], caption: 'Git records snapshots of the folder, called commits. It keeps them in a hidden .git folder inside your project, on your laptop.' },
+    { hl: ['laptop.git', 'github.repo', 'laptop.git->github.repo'], caption: 'git push copies your commits to GitHub, and git pull copies new commits back. GitHub holds a second, complete copy of the history.' },
+    { hl: ['github.pr', 'github.repo', 'github.pr->github.repo'], caption: 'On GitHub, a pull request shows the changes on one branch, and merging it adds them to main. From Week 14, automated tests run on every pull request.' },
+    { hl: ['laptop.later'], caption: 'curl, Node and Docker serve the coming weeks: curl to check a site by hand, Docker from Week 6 and Node from Week 10. You install and check them now, and each later week starts with code instead of installs.' },
+  ]}
+/>
+
+### Git: Commits, Branches and Remotes
+
+Git has its own vocabulary. These are the terms this week uses:
+
+- A **repository**: your project folder plus its full history. Git stores the history in a hidden `.git` folder inside the project.
+- A **commit**: a snapshot of every file Git tracks, with a message, an author, a time and a link to the commit before it, called its **parent**. Each commit has an ID: a 40-character hash of its content. In a small repository like yours, Git shows the ID shortened to seven characters, as in `2f97b4a`.
+- The **working folder**: the files as you see and edit them. Git calls it the working tree.
+- The **staging area**: the changes that go into the next commit. `git add` puts a change there, and `git commit` turns the staged changes into a commit. With two steps, you choose which edits go into each commit. Git also calls the staging area the index.
+- A **branch**: a name that points at a commit. Each new commit on a branch moves its name forward. `main` is the default branch. A new branch starts at the commit you are on, and you work on it without touching `main`.
+- A **remote**: another copy of the repository, here on GitHub. `git clone` names it `origin`. `git push` sends your commits to the remote, and `git pull` fetches new commits from it and adds them to your branch.
+- A **pull request**, or PR: a GitHub page that asks to merge one branch into another. It shows the **diff**, the lines each commit adds and removes, and it collects review comments. **Merging** the PR adds the branch commits to `main`. By default, GitHub records the merge as a **merge commit**, a commit with two parents.
+
+The <a href={trackHref('git')}>Git track</a> is the reference for Git on this site.
+
+### The Weekly Rhythm: One Branch and One Pull Request
+
+Every week from Week 1 on follows the same pattern. Start from an up-to-date `main` and create a branch for the week: `week-01`, then `week-02`, and on to `week-18`. Work in small commits, each with a message that says what it changes. Push the branch and open a pull request that lists the **Done When** items of the week. Read your own diff there, line by line, the way you review a change from someone else. Then merge, switch back to `main`, pull, and delete the branch.
+
+With this rhythm, `main` holds only finished weeks, and each pull request is a record of one week of work that you can link to and look back at. In Week 14, you add continuous integration, which runs your tests on every pull request before you merge it.
+
+<Diagram
+  id="weekly-rhythm"
+  title="One week of work, from branch to merge"
+  code={`shape: sequence_diagram
+wt: working folder
+idx: staging area
+repo: "local\\nrepository"
+gh: GitHub
+
+repo -> wt: git switch -c week-01
+wt -> wt: edit, go test
+wt -> idx: git add
+idx -> repo: git commit
+repo -> gh: git push -u origin week-01
+gh -> gh: pull request, review, merge
+gh -> repo: git switch main, git pull
+`}
+  steps={[
+    { hl: ['repo', 'wt', 'repo->wt'], caption: 'git switch -c week-01 creates the branch week-01 at the commit you are on and switches your working folder to it. Your files do not change yet: the new branch points at the same commit as main.' },
+    { hl: ['wt', 'wt->wt'], caption: 'You edit files and run the tests. Git notices the changes but records nothing yet. git status lists the changed files.' },
+    { hl: ['wt', 'idx', 'wt->idx'], caption: 'git add copies the current version of a file into the staging area. Only staged changes go into the next commit.' },
+    { hl: ['idx', 'repo', 'idx->repo'], caption: 'git commit turns the staged changes into a commit on week-01, with your message. Repeat the last three steps as many times as the week needs: one commit per small, working change.' },
+    { hl: ['repo', 'gh', 'repo->gh'], caption: 'git push -u origin week-01 sends the branch and its commits to GitHub. The -u option records origin/week-01 as the upstream branch: the remote branch that later git push and git pull commands use.' },
+    { hl: ['gh', 'gh->gh'], caption: 'On GitHub, you open a pull request from week-01 into main, read the diff, and merge it. The merge commit now exists on GitHub, not yet on your laptop.' },
+    { hl: ['gh', 'repo', 'gh->repo'], caption: 'git switch main, then git pull, brings the merge commit to your local main and updates the files in your folder. Your next week starts from here.' },
+  ]}
+/>
+
+### The AI Rules for This Course
+
+AI assistants are allowed on this course, in three stages that loosen as you learn:
+
+| Stage | Weeks | Allowed | Not allowed |
+| --- | --- | --- | --- |
+| 1: Explain only | 0 to 5 | Ask it to explain errors, concepts and documentation. Ask for hints. | Pasting generated code into the project |
+| 2: Review everything | 6 to 12 | Generate code, then read every line, write or extend the tests, and explain the code back | Merging code you cannot explain or that has no test |
+| 3: Pair partner | 13 to 18 | Use it for scaffolding, configuration, refactors, and as a reviewer of your own code | Letting it decide architecture or incident response for you |
+
+You are in stage 1 now. In the first weeks, the struggle is the learning. When you work out why your Go program fails to compile, you learn Go. When a model writes the program for you, it removes the struggle, and the learning goes with it. The <a href={trackHref('ai-assisted-dev')}>AI-Assisted Development track</a> explains the stages in depth. The **AI This Week** box on every week page names the current stage and gives one do and one do-not for the work of that week.
 
 ## Build
 
-This section is not written yet.
+Steps 1 to 6 install and check the tools. Steps 7 to 10 set up Git and GitHub and take you once through the weekly rhythm. In every command, replace `<user>` with your GitHub username. The outputs on this page come from a run by an example user, Ada Lovelace, with `<user>` where your username appears. If you have no GitHub account yet, create one at [github.com/signup](https://github.com/signup).
+
+### Step 1: Install Git, curl and the GitHub CLI
+
+On macOS, install Homebrew, the macOS package manager, then Git and the GitHub CLI. macOS ships with `curl`. The Homebrew installer asks for your password, installs the Xcode Command Line Tools, and prints commands under **Next steps** that put `brew` on your `PATH`. Run them before `brew install`:
+
+```sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+brew install git gh
+```
+
+On Ubuntu 24.04 and Debian 12, install all three with `apt`, the system package manager. `sudo` runs a command as root, the administrator user, and asks for your password:
+
+```sh
+sudo apt update && sudo apt install -y git curl gh
+```
+
+### Step 2: Install Go
+
+The course needs Go 1.24 or newer. The examples on this site run on Go 1.24, and newer releases compile them unchanged. Install the newest stable release that [go.dev/dl](https://go.dev/dl/) lists at the top: the Go team fixes security bugs only in the two newest releases. Run `uname -m` to find your processor type.
+
+<Tabs syncKey="os">
+<TabItem label="macOS">
+
+From [go.dev/dl](https://go.dev/dl/), download the `.pkg` file: `darwin-arm64` when `uname -m` prints `arm64` for Apple silicon, `darwin-amd64` when it prints `x86_64` for Intel. The installer puts Go in `/usr/local/go` and adds `/usr/local/go/bin` to your `PATH`. Then add `~/go/bin`, where `go install` puts the Go programs it builds, such as gopls:
+
+```sh
+echo 'export PATH="$PATH:$HOME/go/bin"' >> ~/.zshrc
+```
+
+</TabItem>
+<TabItem label="Linux">
+
+On [go.dev/dl](https://go.dev/dl/), find the `.tar.gz` file for Linux: `amd64` when `uname -m` prints `x86_64`, `arm64` when it prints `aarch64`. Set `GOFILE` to its name; the name below is an example. Then download it, replace any older Go in `/usr/local/go`, and put Go and `~/go/bin`, where `go install` puts the programs it builds, on your `PATH`:
+
+```sh
+GOFILE=go1.27.2.linux-amd64.tar.gz
+curl -LO "https://go.dev/dl/$GOFILE"
+sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf "$GOFILE"
+echo 'export PATH="$PATH:/usr/local/go/bin:$HOME/go/bin"' >> ~/.bashrc
+```
+
+`curl -LO` follows redirects and keeps the remote file name. Never unpack a new release over an old one: the files of the two releases mix and break the install.
+
+</TabItem>
+</Tabs>
+
+Close the terminal and open a new one, which reads the new `PATH`.
+
+### Step 3: Install Node 22
+
+Node 22 is a long-term support release that receives security fixes until April 30, 2027. Install it with nvm, the Node Version Manager, which installs Node versions in your home folder without `sudo`. On macOS, run `touch ~/.zshrc` first: the nvm installer adds its start-up lines to that file and skips them when it does not exist.
+
+```sh
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/install.sh | bash
+```
+
+The command downloads nvm 0.40.8, a fixed release, and runs its installer, as the [nvm README](https://github.com/nvm-sh/nvm#install--update-script) documents. Open a new terminal, install Node 22, and make it the default for every new terminal:
+
+```sh
+nvm install 22
+nvm alias default 22
+```
+
+### Step 4: Install Visual Studio Code and the Go Extension
+
+Download VS Code from [code.visualstudio.com](https://code.visualstudio.com/). On macOS, unzip it, move **Visual Studio Code** into **Applications**, open it, press Cmd+Shift+P to open the **Command Palette**, and run **Shell Command: Install 'code' command in PATH**. On Linux, install the `.deb` package with `sudo apt install ./code_*.deb` from your Downloads folder. Then install the Go extension, which the Go team publishes under the ID `golang.go`:
+
+```sh
+code --install-extension golang.go
+```
+
+The extension turns on two settings for Go files, through gopls: **format on save**, which lays out the code the standard Go way, and **organize imports on save**, which adds the standard-library imports your code uses and sorts them. Saving also removes every import that your code does not use yet.
+
+Then turn off inline suggestions: the gray code that an AI assistant offers as you type. Accepting one pastes generated code into your project, which stage 1 does not allow. Open **Settings** with Cmd+, or Ctrl+, search for `inline suggest`, and clear **Editor › Inline Suggest: Enabled**. In `settings.json`, the setting reads `"editor.inlineSuggest.enabled": false`. Another editor that runs gopls, such as GoLand or Neovim, also works, but the steps on this site use VS Code.
+
+### Step 5: Install Docker
+
+You need Docker from Week 6. Install it now to find any problem early.
+
+On macOS, download Docker Desktop for Apple silicon or Intel from [docker.com](https://www.docker.com/products/docker-desktop/), drag **Docker** into **Applications**, open it once and accept the terms. Keep Docker Desktop running when you use `docker`: it runs the Docker engine in a small Linux virtual machine, because containers need a Linux kernel. It is free for personal use, education and companies with fewer than 250 employees and less than $10 million in annual revenue. A larger employer needs a paid subscription for work use.
+
+On Linux, install Docker Engine with the convenience script, as the [Docker install guide for Ubuntu](https://docs.docker.com/engine/install/ubuntu/) describes. The script installs the engine, the `docker` command and the Compose plugin, and starts the engine. The last command adds you to the `docker` group, to run `docker` without `sudo`:
+
+```sh
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+sudo usermod -aG docker $USER
+```
+
+Log out and back in for the group change to apply. Membership of the `docker` group equals root access: any member can start a container that reads every file on the machine. Add only your own account.
+
+### Step 6: Check Every Tool
+
+Open a new terminal and run each version command. This output comes from Ubuntu 24.04. Your numbers are the versions you installed, and on macOS the Go line ends in `darwin/arm64` or `darwin/amd64`:
+
+```txt
+$ git --version
+git version 2.43.0
+$ go version
+go version go1.24.7 linux/amd64
+$ node --version
+v22.22.0
+```
+
+Check that `go version` shows 1.24 or newer and that `node --version` starts with `v22`. Then run the remaining checks. The first four print a version on their first line, such as `Docker version 29.8.2, build 7fc2dff`, and any version that Homebrew, Ubuntu 24.04 or Debian 12 installs works:
+
+```sh
+gh --version
+curl --version
+docker --version
+docker compose version
+code --version
+code --list-extensions
+docker run hello-world
+```
+
+`code --version` prints three lines: the VS Code version, its commit and your processor type. `code --list-extensions` lists `golang.go`. `docker run hello-world` downloads a tiny test image and runs it, and its output includes `Hello from Docker!`. `docker --version` checks only the command, and this run proves that the engine works too. Keep the version output: you record it in Step 10.
+
+### Step 7: Configure Git and Sign in to GitHub
+
+Tell Git who you are. Git writes this name and email into every commit. Use the email of your GitHub account, or the private `noreply` address that GitHub shows under **Settings**, **Emails**, to keep your address out of public commits. The third line names the first branch of every new repository `main`, as GitHub does:
+
+```sh
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+git config --global init.defaultBranch main
+```
+
+GitHub does not accept your account password for `git push`. The GitHub CLI signs you in through the browser and stores a **token**, a long random password that GitHub issues to `gh`, and Git uses it for every push and pull. Run `gh auth login` and answer the prompts:
+
+1. Where you use GitHub: **GitHub.com**.
+2. Preferred protocol for Git operations: **HTTPS**.
+3. Authenticate Git with your GitHub credentials: **Yes**. This makes `gh` the Git credential helper, the program Git asks for a password.
+4. How to authenticate: **Login with a web browser**. Copy the one-time code that `gh` prints, press Enter, and paste the code into the page that opens.
+
+Then run `gh auth status`. It names your account next to a check mark, `✓`. When it prints `You are not logged into any GitHub hosts`, the login did not finish: run `gh auth login` again.
+
+### Step 8: Create the Repository and Clone It
+
+On [github.com](https://github.com/), open the **+** menu at the top right and choose **New repository**. Name it `your-monitor` and make it **Public**, to share your progress with a link; **Private** works the same way on this site. Leave the README, `.gitignore` and license options empty, because you create the first commit yourself. Click **Create repository**, then clone it. `git clone` copies the repository into a new folder and names the GitHub copy `origin`. It warns that the repository is empty, which is expected before the first commit:
+
+```txt
+$ mkdir -p ~/code && cd ~/code
+$ git clone https://github.com/<user>/your-monitor.git
+Cloning into 'your-monitor'...
+warning: You appear to have cloned an empty repository.
+$ cd your-monitor
+```
+
+### Step 9: Make the First Commit
+
+**Create the Go module.** A **module** is a Go project: a tree of folders of Go code with a `go.mod` file at the top. The **module path** in `go.mod` names the module, and every import of a package inside it starts with that path. Match it to the repository address on GitHub: then `go install` and other modules find your code there.
+
+```sh
+go mod init github.com/<user>/your-monitor
+```
+
+The command prints `go: creating new go.mod` and writes a `go.mod` with two lines: `module github.com/<user>/your-monitor`, and a `go` line such as `go 1.24.7`. The `go` line sets the oldest Go version that can build the module, and its number depends on the Go release you installed.
+
+**Write the README and the .gitignore.** Open the folder in VS Code with `code .`, where `.` means the current folder. `README.md` is the page GitHub shows under the file list. Write two or three sentences about the project:
+
+```md title="README.md"
+# your-monitor
+
+An uptime monitor: it checks a list of URLs on a schedule and reports which ones are up, how fast they answer and why a failing one fails.
+```
+
+`.gitignore` lists files that Git never offers to commit, one pattern per line, with `#` for comments. Type these lines yourself:
+
+```txt title=".gitignore"
+# Programs that go build writes
+/your-monitor
+*.exe
+*.test
+
+# Coverage profiles from go test -coverprofile
+*.out
+
+# Secrets: never commit these
+.env
+
+# Editor and operating system files
+.idea/
+.DS_Store
+```
+
+- `/your-monitor`: the program that `go build` writes in the repository root, named after the last part of the module path. The leading `/` matches only at the root.
+- `*.exe` and `*.test`: Windows programs, and the test programs that `go test -c` writes.
+- `*.out`: coverage profiles from `go test -coverprofile`.
+- `.env`: a file of secrets such as API keys and passwords. Anyone who can read your repository can read a secret you push to it.
+- `.idea/` and `.DS_Store`: GoLand settings, and the file where the macOS Finder stores folder view settings.
+
+**Install the Go tools for the editor.** In VS Code, open the Command Palette and run **Go: Install/Update Tools**, select every tool and click **OK**. The extension installs gopls and its helpers into `~/go/bin`. Then run **Go: Locate Configured Go Tools**: its output shows `gopls` as installed.
+
+**Stage, commit and push.** Run `git status`: it lists the three files as **Untracked**, which means Git sees them but has never recorded them. Stage them and look again:
+
+```txt
+$ git add go.mod README.md .gitignore
+$ git status
+On branch main
+...
+Changes to be committed:
+	new file:   .gitignore
+	new file:   README.md
+	new file:   go.mod
+```
+
+The files are now in the staging area. Commit them with a message that says what the commit does, then push:
+
+```txt
+$ git commit -m "Start the uptime monitor: Go module, README and .gitignore"
+[main (root-commit) 2f97b4a] Start the uptime monitor: Go module, README and .gitignore
+ 3 files changed, 22 insertions(+)
+$ git push -u origin main
+To https://github.com/<user>/your-monitor.git
+ * [new branch]      main -> main
+branch 'main' set up to track 'origin/main'.
+```
+
+`root-commit` marks the first commit: it has no parent. Your commit ID differs from `2f97b4a`, because the ID covers your name, your email and the time. Both outputs are trimmed: `git commit` also lists the files, and `git push` prints progress lines such as `Writing objects`. Reload the repository page on GitHub: it shows the three files and your README.
+
+### Step 10: Practice the Weekly Rhythm
+
+The first commit goes straight to `main`, because a pull request needs a `main` to merge into. From now on, every change goes through a branch and a pull request. Practice the loop once: record your toolchain versions in the README.
+
+**Branch, change, commit, push.** Create the branch `week-00`, add a **Toolchain** section to the end of `README.md` with one line per tool from Step 6, such as `- Go: go version go1.24.7 linux/amd64`, and read the change with `git diff` before you commit. `git diff` marks each added line with `+` and each removed line with `-`:
+
+```sh
+git switch -c week-00
+git diff
+git add README.md
+git commit -m "Record toolchain versions in the README"
+git push -u origin week-00
+```
+
+GitHub answers the push with `remote:` lines that link to `https://github.com/<user>/your-monitor/pull/new/week-00`, a page to open a pull request.
+
+**Open the pull request.** Open that link, or the repository page, where GitHub shows a **Compare & pull request** button. Check that the base branch is `main` and the compare branch is `week-00`. Write a title that says what the week delivers, and list the Done When items of the week in the description as a task list: GitHub turns each `- [ ] item` line into a checkbox. The <a href={trackHref('work-tracking')}>Ticket and Work Tracking track</a> covers tracking larger work. Click **Create pull request**.
+
+**Review and merge.** Open the **Files changed** tab and read every line, the way you review a change before it ships: this is where you catch a stray debug line or a file you did not mean to commit. On the **Conversation** tab, **This branch has no conflicts with the base branch** means GitHub can merge it as it is. Click **Merge pull request**, then **Confirm merge**, then **Delete branch**.
+
+**Pull.** Back in the terminal, switch to `main`, pull the merge commit, and delete the local branch:
+
+```txt
+$ git switch main
+Switched to branch 'main'
+Your branch is up to date with 'origin/main'.
+$ git pull
+Updating 2f97b4a..b02b984
+Fast-forward
+$ git branch -d week-00
+Deleted branch week-00 (was d7c529a).
+$ git fetch --prune
+```
+
+The `git pull` output is trimmed. **Fast-forward** means your local `main` has no commits of its own, and Git moves the name forward to the merge commit. `git branch -d` deletes a branch only when its commits are merged. `git fetch --prune` removes `origin/week-00`, the local record of the branch you deleted on GitHub.
+
+That is the milestone for Week 0: your toolchain works, `your-monitor` is on GitHub with its first commits, and you know the loop. <a href={weekHref(1)}>Week 1</a> starts from this repository, on a branch named `week-01`. Every week repeats the same commands:
+
+```sh
+git switch main && git pull
+git switch -c week-01
+# edit, test, then commit each small step:
+git add <files>
+git commit -m "Say what this commit changes"
+git push -u origin week-01
+# open the pull request, review the diff, merge it, then:
+git switch main && git pull
+git branch -d week-01
+```
 
 ## Observe It
 
 <ObserveIt>
-This section is not written yet.
+
+Git tells you its state whenever you ask. Ask before and after every command this week, until reading the state is a habit.
+
+**`git status`** names your branch on its first line. Read it before every commit: it catches a commit on the wrong branch before you make it. `Your branch is up to date with 'origin/main'` compares your branch with `origin/main`, the copy of the GitHub branch that your last fetch saved, not with GitHub itself. In Step 10, `git switch main` reports `up to date` while the merge commit already exists on GitHub. `git pull` and `git fetch` refresh that copy.
+
+**`git log --oneline --graph --decorate --all`** draws the history. After Step 10:
+
+```txt
+*   b02b984 (HEAD -> main, origin/main) Merge pull request #1 from <user>/week-00
+|\
+| * d7c529a Record toolchain versions in the README
+|/
+* 2f97b4a Start the uptime monitor: Go module, README and .gitignore
+```
+
+`HEAD -> main` means you are on `main`. When `main` and `origin/main` sit on the same line, your laptop and GitHub match. The lines that split and join again show the `week-00` branch and its merge commit.
+
+**`git diff --staged`** shows exactly what the next commit holds, and plain `git diff` shows the changes you have not staged yet. Read the staged diff before every commit, the way you read the diff of a failing snapshot test.
+
+**The Toolchain section in your README** is your baseline. When an example from a later week behaves differently on your machine, compare `go version` and `node --version` with it first.
+
 </ObserveIt>
 
 ## Operate It
 
 <OperateIt>
-This section is not written yet.
+
+Setup fails in a handful of repeatable ways, and each one prints a message that names the problem.
+
+**A tool you installed is not found.** The program exists, but its folder is not on your `PATH`, or the terminal started before you changed `PATH`. On macOS, zsh prints `zsh: command not found: go`. On Ubuntu, bash prints `Command 'go' not found` and suggests installing Go with `snap` or `apt`. Do not follow that suggestion: it installs a second Go, and the Ubuntu package is older than Go 1.24. Open a new terminal first. If the error stays, run `ls /usr/local/go/bin`, which lists `go` and `gofmt` when Go is installed, and `echo $PATH | tr ':' '\n'`, which prints one `PATH` folder per line. When `/usr/local/go/bin` is missing, repeat the `PATH` line from Step 2. When two installs exist, `which -a go` lists both, and the first one runs.
+
+**`git push` is rejected.** You committed on `main` while `main` on GitHub has a commit you do not have, for example the merge of your last pull request. The output is trimmed:
+
+```txt
+ ! [rejected]        main -> main (fetch first)
+error: failed to push some refs to 'https://github.com/<user>/your-monitor.git'
+hint: Updates were rejected because the remote contains work that you do not
+hint: have locally.
+```
+
+Git refuses because accepting the push removes the GitHub commit from `main`. Your commit belongs on a week branch. Commit or stash any open edits, then move the commit to a branch and reset `main` to match GitHub:
+
+```sh
+git fetch
+git branch week-01
+git reset --hard origin/main
+git switch week-01
+```
+
+`git branch week-01` creates a branch at your commit and keeps it safe. `git reset --hard origin/main` moves `main` back to the GitHub version and discards any change you have not committed. Then push `week-01` and open a pull request as in Step 10. Never fix a rejected push with `git push --force`: it overwrites the history on GitHub and deletes the commit you are missing.
+
+**A secret reaches GitHub.** Deleting the file in a new commit leaves it in history, where anyone with access can read it. Revoke the secret at the service that issued it and create a new one. Then check that `.gitignore` covers the file: `git check-ignore -v .env` prints the matching `.gitignore` line, or nothing when no line matches.
+
+| What you see | What it points to |
+| --- | --- |
+| `go version` shows an older version than you installed | A second Go comes first on `PATH`: run `which -a go` |
+| `git push` asks for a username and password | Git has no credential helper for GitHub: run `gh auth status`, then `gh auth setup-git` |
+| `fatal: Authentication failed` | The stored token is expired or revoked: run `gh auth login` again |
+| `failed to connect to the docker API` | The Docker engine is not running: open Docker Desktop, or run `sudo systemctl start docker` on Linux |
+| `permission denied` on `/var/run/docker.sock` | On Linux, you are not in the `docker` group, or you have not logged out and back in since Step 5 |
+
 </OperateIt>
 
 ## AI This Week
 
 <AiThisWeek>
-This section is not written yet.
+
+**Stage 1: Explain only.** Use the assistant as a patient colleague who explains, never as one who types into your project.
+
+**Do:** when an install or a Git command fails, paste the full error text, for example the `! [rejected]` push message, and ask what each line means and what state of your repository it describes. Then run `git status` and `git log --oneline --graph --all` yourself, and check the explanation against what Git shows before you act.
+
+**Do not:** ask the assistant for a `.gitignore` or a README and paste the result. Type each `.gitignore` line from Step 9 yourself, because you need to know what each line keeps out of your history. The same goes for any command it suggests: do not run a command you cannot explain, above all `git push --force` or `git reset --hard`, which discard work.
+
 </AiThisWeek>
 
 ## Side Lab
 
-<SideLab title="Optional lab: not written yet">
-This section is not written yet.
+<SideLab title="Look inside .git and see what a commit is made of">
+
+Git commands are a front end to a small store of files under `.git`. Twenty minutes in that store makes branches and commits concrete. Run these commands in `your-monitor` after Step 10. Your IDs differ from the ones below, because they are hashes of your own content.
+
+**1. Find the branch and its commit.** `cat .git/HEAD` prints `ref: refs/heads/main`: `HEAD` is a one-line file that names your current branch. `git rev-parse main` prints the full 40-character ID that the branch name points at.
+
+**2. Read a commit.** `git cat-file -p` prints any object that Git stores. A commit is a short text record:
+
+```txt
+$ git cat-file -p HEAD
+tree 499605d40ed8683a47fedf543a0865eccf110329
+parent 2f97b4a4c3ccb0765b16fe2f90c829c0df9b39eb
+parent d7c529a77419bc9a282ad7d1e573d0af5e8a9b66
+author Ada Lovelace <ada@example.com> 1791729060 +0000
+committer GitHub <noreply@github.com> 1791729060 +0000
+
+Merge pull request #1 from <user>/week-00
+```
+
+`tree` is the snapshot of the whole folder. This merge commit has two `parent` lines: the old `main` and the tip of `week-00`. You clicked **Merge pull request**, and GitHub wrote the commit. The number is the time in Unix time: seconds since January 1, 1970, UTC. GitHub also signs the commits it creates: in your output, a `gpgsig` block follows the `committer` line. This example leaves it out, along with the second line of the message.
+
+**3. Read the snapshot.** `git cat-file -p 'HEAD^{tree}'` lists each file of the snapshot by mode, type, ID and name. Each file is a **blob**, the content of one file. In the example, the `README.md` line reads `100644 blob f13eab5ae41ea45ec2f34e2927de92317efe59af README.md`.
+
+**4. Prove that the ID is the content.** `git hash-object` computes the ID that Git gives a file. Compare it with the `README.md` line of the tree, then add one line and compute it again:
+
+```txt
+$ git hash-object README.md
+f13eab5ae41ea45ec2f34e2927de92317efe59af
+$ echo "x" >> README.md
+$ git hash-object README.md
+fbeb702e49e1fe3ccaad73f545f52b94d82daef5
+$ git restore README.md
+```
+
+The first ID matches the tree. One added line gives a completely different ID, and `git restore` puts the committed version back. Now explain two things in your own words. First, why nobody can change an old commit without changing the ID of every later commit: start from the `tree` and `parent` lines. Second, what `git branch -d week-00` deletes, and what it leaves in place.
+
 </SideLab>
 
 ## Done When
