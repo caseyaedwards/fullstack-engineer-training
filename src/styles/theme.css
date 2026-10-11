@@ -1,7 +1,10 @@
 /*
  * Site palette: ivory paper and clay, after the reference page Casey picked
- * (thariqs.github.io/html-effectiveness). Light mode takes its colours as they
- * are; dark mode is the same warm neutrals and clay, inverted.
+ * (thariqs.github.io/html-effectiveness). Light mode uses its ivory, paper,
+ * slate, clay, olive and grays #f0eee6 to #3d3d3a. Where a reference colour
+ * fails AA as text (gray #87867f, clay #d97757, clay-d #b85c3e at 4.3:1), this
+ * file derives a darker one. Dark mode is the same warm neutrals and clay,
+ * inverted.
  *
  * Starlight's documented theming approach: override its colour variables under
  * :root (dark mode) and :root[data-theme='light']. Every component, the D2
@@ -10,8 +13,9 @@
  * Shiki's vitesse-dark and vitesse-light themes (astro.config.mjs).
  *
  * Light mode: the page is ivory #faf9f5, raised surfaces (nav, code frames) are
- * paper #ffffff, inline code and tab bars are #f0eee6, hairlines #e6e3da and
- * borders #d1cfc5. Headings are slate #141413, body text #3d3d3a, secondary text
+ * paper #ffffff, inline code and tab bars are #f0eee6, and hairlines and
+ * card borders are #e6e3da. Starlight's light mode draws hairlines in gray-6
+ * (#f0eee6, 1.1:1 on ivory), so the light block points them at gray-5. Headings are slate #141413, body text #3d3d3a, secondary text
  * #5e5d59 (6.3:1). The reference page's #87867f gray is 3.5:1 on ivory, so no
  * text uses it.
  * Dark mode: the page is #1c1b19, a warm near-black (not pure black). Sidebar,
@@ -23,7 +27,7 @@
  * --sl-color-accent is the clay #d97757 of strokes, borders, focus rings and
  * diagram highlights, in both modes. --sl-color-accent-high is the link and
  * site-title colour (Starlight's --sl-color-text-accent) and the fill of the
- * current sidebar item: clay is 3.0:1 on ivory, so light mode darkens it to
+ * current sidebar item: clay is 2.96:1 on ivory, so light mode darkens it to
  * #a14d30 (5.5:1), and dark mode lightens it to #e5896b (6.7:1).
  * --sl-color-accent-low is the tinted surface of callouts, notes, completed
  * weeks and lit diagram shapes, and in dark mode the text of the current
@@ -84,8 +88,8 @@
   --sl-color-gray-1: #141413;
   --sl-color-gray-2: #3d3d3a; /* body text */
   --sl-color-gray-3: #5e5d59; /* secondary text */
-  --sl-color-gray-4: #d1cfc5; /* borders, never text */
-  --sl-color-gray-5: #e6e3da; /* hairlines */
+  --sl-color-gray-4: #d1cfc5; /* aside table borders, file tree lines; never text */
+  --sl-color-gray-5: #e6e3da; /* hairlines, card and table borders */
   --sl-color-gray-6: #f0eee6; /* inline code, tab bars */
   --sl-color-gray-7: #ffffff; /* paper: nav, code frames */
   --sl-color-black: #faf9f5; /* ivory: the page */
@@ -106,6 +110,11 @@
   /* Starlight's light mode draws links in --sl-color-accent, which here is a stroke colour. */
   --sl-color-text-accent: var(--sl-color-accent-high);
   --sl-color-bg-accent: var(--sl-color-accent-high);
+
+  /* Starlight's light hairlines are gray-6, which barely shows on ivory. */
+  --sl-color-hairline: var(--sl-color-gray-5);
+  --sl-color-hairline-light: var(--sl-color-gray-5);
+  --sl-color-hairline-shade: var(--sl-color-gray-5);
 
   --sl-color-backdrop-overlay: rgb(20 20 19 / 0.5);
 }
@@ -147,6 +156,10 @@
 
     --sl-color-text-accent: var(--sl-color-accent-high);
     --sl-color-bg-accent: var(--sl-color-accent-high);
+
+    --sl-color-hairline: var(--sl-color-gray-5);
+    --sl-color-hairline-light: var(--sl-color-gray-5);
+    --sl-color-hairline-shade: var(--sl-color-gray-5);
   }
 }
 

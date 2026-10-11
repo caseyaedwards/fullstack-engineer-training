@@ -302,3 +302,31 @@ test(`dark mode page background is warm near-black #1c1b19`, async ({ page }) =>
   expect(toHex(c)).toBe('#1c1b19');
   expect(toHex(await variable(page, '--sl-color-bg'))).toBe('#1c1b19');
 });
+
+// Light mode is the reference page's palette: ivory page, paper surfaces, slate
+// headings, and hairlines drawn in #e6e3da (Starlight's default gray-6 hairline
+// barely shows on ivory).
+test(`light mode neutrals follow the reference page`, async ({ page }) => {
+  await load(page, HOME, 'light');
+  const want: Record<string, string> = {
+    '--sl-color-bg': '#faf9f5',
+    '--sl-color-gray-7': '#ffffff',
+    '--sl-color-white': '#141413',
+    '--sl-color-hairline': '#e6e3da',
+    '--sl-color-hairline-light': '#e6e3da',
+    '--sl-color-hairline-shade': '#e6e3da',
+  };
+  for (const [name, hex] of Object.entries(want)) {
+    expect.soft(toHex(await variable(page, name)), name).toBe(hex);
+  }
+});
+
+// Headings in page content and the site title are serif; component labels
+// (.not-content, such as the home timeline's phase headings) keep the sans.
+test(`serif headings stay inside page content`, async ({ page }) => {
+  await load(page, HOME, 'light');
+  const family = (sel: string) => page.locator(sel).first().evaluate((el) => getComputedStyle(el).fontFamily);
+  expect(await family('h1#_top')).toMatch(/serif/);
+  expect(await family('.site-title')).toMatch(/serif/);
+  expect(await family('.week-timeline h3')).not.toMatch(/Georgia|ui-serif/);
+});
