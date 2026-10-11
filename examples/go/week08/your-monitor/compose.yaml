@@ -1,0 +1,58 @@
+# region: compose
+# The uptime monitor on your laptop: docker compose up starts all three.
+# The worker reads its monitors from Postgres, not from urls.txt.
+# Compose reads variables such as ${POSTGRES_PASSWORD} from .env.
+name: your-monitor
+
+services:
+  postgres:
+    image: postgres:17
+    # Log every statement that runs for 200 ms or longer: the slow-query log.
+    command: ["postgres", "-c", "log_min_duration_statement=200ms"]
+    environment:
+      POSTGRES_USER: monitor
+      POSTGRES_DB: monitor
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "monitor", "-d", "monitor"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      target: api
+    environment:
+      DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD}@postgres:5432/monitor?sslmode=disable
+    ports:
+      - "127.0.0.1:${API_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "/api", "-healthcheck", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+  worker:
+    build:
+      context: .
+      target: worker
+    command: ["-interval", "30s", "-workers", "${WORKERS:-10}"]
+    environment:
+      DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD}@postgres:5432/monitor?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
+volumes:
+  pgdata:
+# endregion: compose
