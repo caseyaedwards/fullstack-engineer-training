@@ -1,10 +1,10 @@
 /*
  * Week template components (WeekHeader, ObserveIt, OperateIt, AiThisWeek, SideLab,
  * ReadWith, UsedInWeeks). Colours come only from Starlight's --sl-color-* variables,
- * set to the Gruvbox palette in theme.css and swapped by Starlight when the
- * light/dark toggle changes, so nothing here needs a dark-mode variant. Accent
- * borders and tints are Gruvbox green; the Operate and AI callouts use Gruvbox
- * orange and purple.
+ * set to the ivory and clay palette in theme.css and swapped by Starlight when
+ * the light/dark toggle changes, so nothing here needs a dark-mode variant.
+ * Accent borders and tints are clay; the Operate and AI callouts use the
+ * palette's amber and violet.
  */
 
 .week-header {
@@ -84,7 +84,7 @@
   cursor: pointer;
 }
 .side-lab summary:focus-visible {
-  outline: 2px solid var(--sl-color-accent);
+  outline: 2px solid var(--sl-color-accent-high);
   outline-offset: 2px;
 }
 .side-lab[open] summary {
@@ -137,7 +137,7 @@
   accent-color: var(--sl-color-accent);
 }
 .done-when input:focus-visible {
-  outline: 2px solid var(--sl-color-accent);
+  outline: 2px solid var(--sl-color-accent-high);
   outline-offset: 2px;
 }
 
@@ -174,7 +174,7 @@
   border-color: var(--sl-color-accent);
 }
 .week-timeline a:focus-visible {
-  outline: 2px solid var(--sl-color-accent);
+  outline: 2px solid var(--sl-color-accent-high);
   outline-offset: 2px;
 }
 .tl-n {
@@ -215,4 +215,23 @@
    copied Makefile recipe still starts with a tab. Draw each tab four columns wide. */
 .expressive-code pre {
   tab-size: 4;
+}
+
+/*
+ * Type, after the reference page: headings in a serif at weight 500 with slight
+ * negative tracking, body text in the system sans. System font stacks only, so
+ * the site loads no web fonts. Component labels (.not-content, such as the
+ * home timeline's phase headings) keep the sans. Focus rings in this file and
+ * diagrams.css use --sl-color-accent-high: clay itself is 2.96:1 on ivory, just
+ * under the 3:1 a focus indicator needs.
+ */
+:root {
+  --fsp-font-serif: ui-serif, Georgia, 'Times New Roman', Times, serif;
+}
+.sl-markdown-content :is(h1, h2, h3):not(.not-content *),
+h1#_top,
+.site-title {
+  font-family: var(--fsp-font-serif);
+  font-weight: 500;
+  letter-spacing: -0.012em;
 }

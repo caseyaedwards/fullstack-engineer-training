@@ -10,14 +10,12 @@
  * lifelines, B3-B6 container/shape fills (B6 = plain shapes, B4/B5 = nested
  * containers, sequence actors); AA/AB accents.
  *
- * Strokes take the accent green (Gruvbox bright green #b8bb26 in dark mode,
- * faded green #79740e in light). Plain shapes fill with --sl-color-accent-low, a
- * Gruvbox green blended over the page. Containers and sequence actors use the
- * neutral Gruvbox surfaces: bg1 #3c3836 and bg0 #282828 in dark mode, which sit
- * between the page and the green tint. Gruvbox light's bg1 and bg2 are darker
- * and more saturated than its green tint, so a neutral box would look heavier
- * than a lit one; light mode (and print) fills them with bg1 #ebdbb2 and bg0
- * #fbf1c7 instead. Lifelines are a quieter mix of the accent and the page, so
+ * Strokes take the accent clay #d97757. Plain shapes fill with
+ * --sl-color-accent-low, clay blended over the page. Containers and sequence
+ * actors use the neutral surfaces #33322e and #262521 in dark mode. Light mode's raised gray (#e6e3da) is
+ * darker than its clay tint, so a neutral box would look heavier than a lit
+ * one; light mode (and print) fills them with #f0eee6 and paper #ffffff
+ * instead. Lifelines are a quieter mix of the accent and the page, so
  * the messages between them carry the eye.
  */
 .dg {
@@ -66,7 +64,7 @@
 
 /* A box that scrolls is focusable (src/scripts/walkthrough.ts), so arrow keys scroll it. */
 .dg .dg-svg:focus-visible {
-  outline: 2px solid var(--sl-color-accent);
+  outline: 2px solid var(--sl-color-accent-high);
   outline-offset: 2px;
 }
 
@@ -80,11 +78,10 @@
 /*
  * Walkthrough (src/scripts/walkthrough.ts). A step lights some elements and dims
  * the rest. Dimmed elements are context, so they fade (opacity) and lose the
- * accent (neutral fg3 strokes), but their labels keep 4.5:1 against what they sit
- * on: full-strength fg0 text at 65% opacity on Gruvbox dark. Gruvbox light's fills
- * (bg1, the green tint) are darker relative to its page than the dark ones are,
- * so light mode and print fade less (75%) to keep labels in bg1 containers at
- * 4.5:1. Lit elements keep full opacity, a thicker accent stroke, an
+ * accent (neutral secondary-text strokes), but their labels keep 4.5:1 against what they sit
+ * on: full-strength heading text at 65% opacity. Light mode and print fade
+ * less (75%) and use lighter container fills, which keeps dimmed boxes from
+ * reading heavier than lit ones; labels pass 4.5:1 either way. Lit elements keep full opacity, a thicker accent stroke, an
  * accent-tinted shape fill and the brightest text colour.
  */
 :root[data-theme='light'] .dg {
@@ -122,7 +119,7 @@
 /*
  * D2 draws every arrowhead in a diagram from one shared <marker>, so a rule on
  * one edge's arrowhead would recolour them all. context-stroke paints each
- * arrowhead in the stroke of the line that uses it: green when lit, neutral when
+ * arrowhead in the stroke of the line that uses it: clay when lit, neutral when
  * dimmed. Browsers without context-stroke keep the accent fill.
  */
 .dg .dg-svg marker :is(polygon, path) {
@@ -173,7 +170,7 @@
 }
 
 .dg-nav button:focus-visible {
-  outline: 2px solid var(--sl-color-accent);
+  outline: 2px solid var(--sl-color-accent-high);
   outline-offset: 2px;
 }
 
