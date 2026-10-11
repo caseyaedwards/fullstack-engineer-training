@@ -12,6 +12,7 @@ package week12
 import (
 	"bytes"
 	"encoding/json"
+	"go/format"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -209,6 +210,34 @@ func TestRegressionTestsCatchThePlantedBugs(t *testing.T) {
 	for _, name := range names {
 		if !strings.Contains(out, "--- FAIL: "+name+" ") {
 			t.Errorf("%s does not fail on the planted code:\n%s", name, out)
+		}
+	}
+}
+
+// TestDelveLinesMatchThePage keeps the Delve session in Step 6 true: the
+// page sets a breakpoint on line 47 of probe.go and reads lines 64 and 67
+// in the stack. Both versions of probe.go, stripped of region markers and
+// formatted as the reader has them, must keep those lines where they are.
+func TestDelveLinesMatchThePage(t *testing.T) {
+	lines := map[int]string{
+		47: "*d = time.Since(*from)",
+		64: "ConnectDone:",
+		67: "TLSHandshakeDone:",
+	}
+	for _, path := range []string{"testdata/planted/internal/probe/probe.go", "your-monitor/internal/probe/probe.go"} {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src, err := format.Source(marker.ReplaceAll(b, nil))
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		got := strings.Split(string(src), "\n")
+		for n, want := range lines {
+			if n > len(got) || !strings.Contains(got[n-1], want) {
+				t.Errorf("%s: line %d does not hold %q; update the dlv session in Step 6", path, n, want)
+			}
 		}
 	}
 }

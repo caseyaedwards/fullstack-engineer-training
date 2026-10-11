@@ -54,6 +54,13 @@ test('week 12 shows each fix with its regression test', () => {
   assert.doesNotMatch(go, /end\(&t\.TLS, &connectStart\)|max-age=300/, 'the planted code must not appear as a fix');
 });
 
+test('the side lab bisects the worker with a check that builds at every commit', () => {
+  const sh = blocks('sh').join('\n');
+  assert.match(sh, /git bisect run sh -c 'go run \.\/cmd\/worker -h 2>&1 \| grep -q "\(default 1s\)"'/);
+  // poll_test.go does not compile before the worker commit, so bisecting with it names the wrong commit.
+  assert.doesNotMatch(html, /Repeat it with <code[^>]*>TestIdleWorkersWaitForPoll/);
+});
+
 test('week 12 links to the weeks whose code it debugs, with the site base', () => {
   const hrefs = new Set([...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1]));
   for (const slug of ['04-networking', '05-concurrency', '09-jobs-alerts', '10-frontend', '11-security-auth', '13-observability']) {

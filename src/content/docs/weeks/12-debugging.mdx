@@ -220,14 +220,7 @@ Create a branch, download the commits as one patch file, and apply them with `gi
 curl -fsSLo /tmp/teammate.patch ${patchURL}
 git am /tmp/teammate.patch`} />
 
-```txt
-Applying: api: send security headers with every answer
-Applying: api: let browsers cache the public reads
-Applying: worker: name the flag defaults
-Applying: probe: say what each trace hook measures
-```
-
-When `git am` stops with `patch does not apply`, a file of yours differs from the version on the earlier pages. Run `git am --abort`, compare that file with the page that shows it, and try again.
+`git am` prints one `Applying:` line per commit. When it stops with `patch does not apply`, a file of yours differs from the version on the earlier pages. Run `git am --abort`, compare that file with the page that shows it, and try again.
 
 Run `make test`. Every test passes, the new `TestSecureHeaders` included. Rebuild and start the stack with `make up`, and start the status page with `make web`. Run `git log -4` and read the commit messages: each one claims what its change does. The next four steps check each claim.
 
@@ -236,9 +229,9 @@ Run `make test`. Every test passes, the new `TestSecureHeaders` included. Rebuil
 The first commit says that every answer carries three security headers from the REST Security Cheat Sheet of OWASP, the Open Worldwide Application Security Project from <a href={weekHref(11)}>Week 11</a>:
 
 - `X-Content-Type-Options: nosniff`: the browser trusts the `Content-Type` the api sends and never guesses another type.
-- `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'none'`: no other site can show an answer inside a frame on its own page. The second is the modern form, and the first covers old browsers.
+- `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'none'`: no page can show an answer inside a frame, not even a page from the api's own origin. The second is the modern form, and the first covers old browsers.
 
-Check the claim on the wire. `-s` hides the progress bar, `-v` prints the exchange, and `-o /dev/null` drops the body. The output below leaves out the lines that start with `*`:
+Check the claim on the wire. `-s` hides the progress bar, `-v` prints the exchange, and `-o /dev/null` drops the body. The output below leaves out the lines that start with `*`. The last line counts the body bytes that curl dropped:
 
 ```sh
 curl -sv -o /dev/null http://127.0.0.1:8080/healthz
@@ -255,6 +248,7 @@ curl -sv -o /dev/null http://127.0.0.1:8080/healthz
 < Date: Sun, 11 Oct 2026 07:41:18 GMT
 < Content-Length: 16
 <
+{ [16 bytes data]
 ```
 
 Lines that start with `>` go out, and lines that start with `<` come back, as in <a href={weekHref(4)}>Week 4</a>. None of the three headers arrives. The test says they are there, and the wire says they are not: the two read different things.
@@ -265,19 +259,20 @@ Here is how Go sends headers. A handler sets them in the map that `w.Header()` r
 
 <CodeFrom file="go/week12/your-monitor/internal/api/headers_test.go" region="headers-test" lang="go" title="internal/api/headers_test.go" />
 
-Run `go test ./internal/api -run TestSecureHeaders`. It fails, as a test written before the fix must:
+Run `go test ./internal/api -run TestSecureHeaders`. It fails, as a test written before the fix must. This output is trimmed to the first three of its eleven lines:
 
 ```txt
 --- FAIL: TestSecureHeaders (0.00s)
-    headers_test.go:27: GET /healthz: X-Content-Type-Options = "", want "nosniff"
-    headers_test.go:27: GET /healthz: X-Frame-Options = "", want "DENY"
+    headers_test.go:25: GET /healthz: X-Content-Type-Options = "", want "nosniff"
+    headers_test.go:25: GET /healthz: X-Frame-Options = "", want "DENY"
+    headers_test.go:25: GET /healthz: Content-Security-Policy = "", want "frame-ancestors 'none'"
 ```
 
 Now move the three `Set` calls above `next.ServeHTTP`:
 
 <CodeFrom file="go/week12/your-monitor/internal/api/headers.go" region="headers" lang="go" title="internal/api/headers.go" />
 
-The test passes. Run `make up` and the same `curl` again. The headers arrive on every answer, a `204` from `DELETE` and the JSON `404` included.
+The test passes. Run `make up` and the same `curl` again, and once more against `/no-such-page`. The headers arrive on both answers, the JSON `404` included. Step 4 checks a `204` too, which needs a login.
 
 ### Step 4: A Stale Status Page Found with DevTools
 
@@ -301,7 +296,7 @@ Open DevTools with **F12**, or **Cmd+Option+I** on macOS, and select the **Netwo
 
 Now tick **Disable cache** at the top of the panel. The next refresh reaches the api, and `https://example.org` appears. Untick it, and the page goes stale again. Remember this trap: the checkbox works only while DevTools is open, which means a caching bug can vanish the moment you start to look for it.
 
-`grep -rn Cache-Control internal/` finds `cache.go`. The fix is the value that the cheat sheet from the first commit lists first for every api answer: `no-store`. Write the test first:
+`grep -rn Cache-Control internal/` finds `cache.go`. The header also covers `GET /api/me`, which answers with the user that the session cookie from Week 11 names, and with `public`, a shared cache can hand that answer to the next person behind the same proxy. The fix is the value that the cheat sheet from the first commit lists first for every api answer: `no-store`. Write the test first:
 
 <CodeFrom file="go/week12/your-monitor/internal/api/cache_test.go" region="cache-test" lang="go" title="internal/api/cache_test.go" />
 
@@ -310,6 +305,12 @@ It fails with `Cache-Control = "public, max-age=300", want no-store`. Then chang
 <CodeFrom file="go/week12/your-monitor/internal/api/cache.go" region="cache" lang="go" title="internal/api/cache.go" />
 
 `no-cache` with an `ETag` header has the browser ask whether the answer changed, and get a short `304 Not Modified` back when it did not, which saves bytes on large answers. The status page answers are small, and `no-store` is simpler to get right. Run `make up`. Your browser still holds the old answers until their 300 seconds run out: with DevTools open, right-click the reload button and pick **Empty Cache and Hard Reload**. After that, every poll shows a size in bytes.
+
+Last, check a write. The answer to the `POST` above holds the `id` of the new monitor. Delete it with the session cookie. The answer is `204 No Content`, with the three security headers and `Cache-Control: no-store`:
+
+```sh
+curl -sv -o /dev/null -b /tmp/monitor-cookies.txt -X DELETE http://127.0.0.1:8080/api/monitors/<id>
+```
 
 ### Step 5: A Busy Idle Worker Found with a CPU Profile
 
@@ -320,7 +321,7 @@ docker compose stop worker scheduler
 make run ARGS="-workers 10 -debug-addr 127.0.0.1:6060"
 ```
 
-In a second terminal, check its CPU use with the process ID from its first log line, `pid=8933` in this example output:
+In a second terminal, check its CPU use with the process ID from its first log line, `pid=8933` in this example output. The command is the binary that `go run` built and keeps in the Go build cache, and the hash in its path differs on your machine:
 
 ```sh
 ps -o pid,%cpu,command -p 8933
@@ -328,7 +329,7 @@ ps -o pid,%cpu,command -p 8933
 
 ```txt
   PID %CPU COMMAND
- 8933 96.0 /tmp/go-build1234/b001/exe/worker -workers 10 -debug-addr 127.0.0.1:6060
+ 8933 96.0 /home/you/.cache/go-build/3a/3a93fa48…-d/worker -workers 10 -debug-addr 127.0.0.1:6060
 ```
 
 A worker with nothing to do uses a whole CPU. Take a 10-second CPU profile and sort it by cumulative time. The output here is trimmed:
@@ -346,10 +347,10 @@ Duration: 10.11s, Total samples = 9.10s (89.99%)
      6.21s 68.24% 68.79%      6.21s 68.24%  internal/runtime/syscall.Syscall6
 ```
 
-`Total samples = 9.10s` in 10.11 seconds means that the worker keeps 0.9 of a CPU busy. `go tool pprof` saves each profile under `~/pprof/` and prints the file name. Read the `cum` column from the top: 87% of the time runs inside `run`, the worker loop, and 85% inside `queue.Work`. The large flat value of `Syscall6` is the operating system call that sends and receives bytes: the worker talks to Postgres nonstop. `-peek` shows what one function calls, here from the file the first command saved:
+`Total samples = 9.10s` in 10.11 seconds means that the worker keeps 0.9 of a CPU busy. `go tool pprof` saves each profile under `~/pprof/` and prints its path on a `Saved profile in` line, with a number that rises with each profile. Read the `cum` column from the top: 87% of the time runs inside `run`, the worker loop, and 85% inside `queue.Work`. The large flat value of `Syscall6` is the Linux system call that sends and receives bytes, and macOS shows its own syscall frame there: the worker talks to Postgres nonstop. `-peek` shows what one function calls, here from the file that the `Saved profile in` line names:
 
 ```sh
-go tool pprof -peek 'queue.Work$' ~/pprof/pprof.worker.samples.cpu.001.pb.gz
+go tool pprof -peek 'queue.Work$' <saved profile>
 ```
 
 ```txt
@@ -366,24 +367,26 @@ The new constant reads `defaultPoll = 1000 // one second`. A constant without a 
 
 <CodeFrom file="go/week12/your-monitor/cmd/worker/poll_test.go" region="poll-test" lang="go" title="cmd/worker/poll_test.go" />
 
-Before the fix, it fails with `two idle workers looked at the queue 21744 times in 200 ms, want 2`. Change the constant to `defaultPoll = time.Second`, and the test passes. Run the worker again and take a new profile: `Total samples = 10ms (0.1%)`. For a picture of the same data, open a saved profile with `go tool pprof -http=127.0.0.1:8081 <file>` and pick **View**, then **Flame Graph**. The default graph view needs Graphviz: `brew install graphviz` on macOS, `sudo apt install graphviz` on Ubuntu. Stop your worker with Ctrl+C and start the two services in Docker again with `docker compose start worker scheduler`.
+Before the fix, it fails with two lines: `poll_test.go:15: defaultPoll = 1µs, want about a second` and `poll_test.go:25: two idle workers looked at the queue 16477 times in 200 ms, want 2`. Change the constant to `defaultPoll = time.Second`, and the test passes. Run the worker again and take a new profile: `Total samples` drops to about 10 to 20 ms, under 1% of the 10 seconds. For a picture of the same data, open a saved profile with `go tool pprof -http=127.0.0.1:8081 <file>` and pick **View**, then **Flame Graph**. The default graph view needs Graphviz: `brew install graphviz` on macOS, `sudo apt install graphviz` on Ubuntu. Stop your worker with Ctrl+C and start the two services in Docker again with `docker compose start worker scheduler`.
 
 ### Step 6: A Slow Handshake Found with Delve
 
-The fourth commit says it changes no behavior. Look at the results of an HTTPS monitor. This example output leaves out the other fields:
+The fourth commit says it changes no behavior. Look at an HTTPS monitor: `GET /api/monitors/<id>` shows its `url`, and the results show its timings. Use the `id` of a monitor whose `url` starts with `https://`. This example output leaves out the other fields:
 
 ```sh
+curl -s http://127.0.0.1:8080/api/monitors/1
 curl -s 'http://127.0.0.1:8080/api/monitors/1/results?limit=1'
 ```
 
 ```txt
+{"id":1,"url":"https://example.com","interval_seconds":30}
 [{"monitor_id":1,"up":true,"status_code":200,"dns_ms":12,"connect_ms":12,"tls_ms":25,"first_byte_ms":50}]
 ```
 
-TLS takes about twice as long as connect. Week 4 names two causes: a server on TLS 1.2, which needs two round trips, and a HelloRetryRequest. Test the first with `curl -v https://example.com`: the `SSL connection using TLSv1.3` line rules it out. Next, measure the same handshake with a second tool. `curl -w` prints timings, each counted from the start: `time_connect` ends with the TCP handshake and `time_appconnect` with the TLS handshake. This is example output:
+TLS takes about twice as long as connect. Week 4 names two causes: a server on TLS 1.2, which needs two round trips, and a HelloRetryRequest. In the commands below, replace `<url>` with the `url` of your monitor. Test the first cause with `curl -v <url>`: an `SSL connection using TLSv1.3` line rules it out. On `TLSv1.2`, the double time is real: pick another monitor. Next, measure the same handshake with a second tool. `curl -w` prints timings, each counted from the start: `time_connect` ends with the TCP handshake and `time_appconnect` with the TLS handshake. This is example output for `https://example.com`:
 
 ```sh
-curl -so /dev/null -w 'connect %{time_connect}s  tls done %{time_appconnect}s\n' https://example.com
+curl -so /dev/null -w 'connect %{time_connect}s  tls done %{time_appconnect}s\n' <url>
 ```
 
 ```txt
@@ -396,7 +399,7 @@ curl measures a TLS handshake of 13 ms, the difference between the two. Your mon
 
 ```txt
 --- FAIL: TestTLSRowIsTheHandshakeOnly (0.31s)
-    tls_test.go:37: Connect = 127.67µs, TLS = 306.994225ms; want each under the 300ms gap between them
+    tls_test.go:35: Connect = 173.662µs, TLS = 304.454165ms; want each under the 300ms gap between them
 ```
 
 The TLS row holds the 300 ms wait, which means it starts before the wait does. Run the test under Delve and stop where every row gets its value: the line `*d = time.Since(*from)` inside `end`. `grep -n 'time.Since(\*from)' internal/probe/probe.go` gives its line number, 47 in this example:
@@ -441,11 +444,7 @@ t = github.com/you/your-monitor/internal/probe.Timings {DNS: 0, Connect: 4126996
 
 Line 67 is the `TLSHandshakeDone` hook, and `from` holds the same address as before. `frame 1 locals` lists what the hook closes over: `connectStart`, not `tlsStart`. The TLS row counts from the start of the TCP connect. Type `exit` to leave Delve.
 
-Three details in that session are worth a second look:
-
-- `goroutine(9)`: the hooks run in a goroutine of the HTTP client, not in the one that runs the test, as Week 4 explains. A breakpoint finds code wherever it runs.
-- `Connect: 412699689` is 412 ms, not the fraction of a millisecond the test prints. `end` computes it after the first stop, and the clock keeps running while you type.
-- One look settles the hypothesis: two different hooks hand `end` the same pointer.
+Two more details in that session are worth a second look. `goroutine(9)` shows that the hooks run in a goroutine of the HTTP client, not in the one that runs the test, as Week 4 explains: a breakpoint finds code wherever it runs. `Connect: 412699689` is 412 ms, not the fraction of a millisecond the test prints, because `end` computes it after the first stop, and the clock keeps running while you type.
 
 Fix the hook: `end(&t.TLS, &tlsStart)`. Keep the new comments, which are good:
 
@@ -474,7 +473,7 @@ Two of the four bugs leave clues in output you already have. Make these habits:
 
 - **Log the settings a program runs with, at start.** The worker prints `poll=1µs` on its first line. A busy loop, a wrong timeout or the wrong database shows up there before anywhere else. The api prints only its address: add every value it reads from a command-line flag or the environment to its `listening` line, except secrets such as `DATABASE_URL`, which holds the database password.
 - **Measure the same thing with two tools.** `curl -w` against `tls_ms` catches the TLS row. When a number from your code matters, find a second tool that measures it on its own, and compare them once.
-- **Keep a baseline profile.** Take a 10-second CPU profile of the healthy worker, idle and with 100 monitors, and save both files. A later profile that disagrees with the baseline points at what changed. Note the `Total samples` line of each: the fixed idle worker shows `10ms (0.1%)`.
+- **Keep a baseline profile.** Take a 10-second CPU profile of the healthy worker, idle and with 100 monitors, and save both files. A later profile that disagrees with the baseline points at what changed. Note the `Total samples` line of each: the fixed idle worker stays under 1%.
 - **Count the requests the api serves.** The api logs one line per request since <a href={weekHref(7)}>Week 7</a>. With the status page open, `docker compose logs api | grep -c 'path=/api/monitors '` counts its polls. Under the caching bug, the count stays flat while the page polls.
 
 <a href={weekHref(13)}>Week 13</a> turns these into metrics and dashboards. The <a href={trackHref('observability')}>Observability track</a> covers profiles as one of the signals a service gives off.
@@ -528,14 +527,25 @@ git bisect run sh -c 'cp /tmp/tls_test.go internal/probe/ && go test ./internal/
 git bisect reset
 ```
 
-`git bisect start` takes the bad commit first, the last one from Sam, then the good one. `git bisect run` runs the command at each step: exit code `0` marks the commit good, and any code from `1` to `127` except `125` marks it bad. The command copies the test in, runs it, removes it again, and passes on the result of `go test`. Git ends with:
+`git bisect start` takes the bad commit first, the last one from Sam, then the good one. `git bisect run` runs the command at each step: exit code `0` marks the commit good, and any code from `1` to `127` except `125` marks it bad. The command copies the test in, runs it, removes it again, and passes on the result of `go test`. Git ends with this output, trimmed:
 
 ```txt
-ade3b0ec6f8b43981fa792d347be577cc5c74096 is the first bad commit
+7509dc33fbab214a899ac1239c16a80f66bbcb0e is the first bad commit
+commit 7509dc33fbab214a899ac1239c16a80f66bbcb0e
+Author: Sam Rivera <sam@example.com>
+
     probe: say what each trace hook measures
 ```
 
-Your hash differs. `git bisect reset` returns you to the branch you started from. Repeat it with `TestIdleWorkersWaitForPoll` from `cmd/worker/poll_test.go`, and bisect names the worker commit.
+Your hash differs. `git bisect reset` returns you to the branch you started from. The same trick fails for the worker. `poll_test.go` uses `defaultPoll`, which exists only from the worker commit on. Before it, the test does not compile, and `go test` exits with `1`. Every commit then counts as bad, and bisect blames the first commit from Sam. A check must work at every commit, or exit with `125`, which tells bisect to skip a commit it cannot test. The help text from `-h` works at every commit:
+
+```sh
+git bisect start $(git log --format=%h -1 --author=sam@example.com) main
+git bisect run sh -c 'go run ./cmd/worker -h 2>&1 | grep -q "(default 1s)"'
+git bisect reset
+```
+
+`grep -q` exits with `0` when the help shows the one-second default, and with `1` when it does not. Bisect ends with `1fd93181c116499becbefbb47d1c1881950d9daa is the first bad commit` and `worker: name the flag defaults`.
 
 </SideLab>
 
