@@ -39,7 +39,7 @@ A **logical backup** holds the schema and the rows of one database as SQL statem
 
 A **physical backup** copies the data files of the whole Postgres server, called a **cluster**, as they lie on disk. `pg_basebackup` takes one from a running server. Files copied one by one while Postgres writes come from different moments, which is where the write-ahead log (WAL) comes in. Postgres appends every change to the WAL before it touches the table files, in **segments** of 16 MB. With **WAL archiving**, Postgres copies each finished segment to backup storage, through the `archive_command` or `archive_library` settings. A restore takes the base backup and replays the archived WAL on top of it, up to any moment you choose. This is **point-in-time recovery** (PITR): restore to 14:31:59, one second before the bad `DELETE`. With `archive_timeout` set to 60 seconds, Postgres closes a segment at least once a minute when there are writes, which brings the RPO down to about a minute.
 
-A physical backup restores only into the same major version, on the same CPU architecture. Since Postgres 17, `pg_basebackup --incremental` copies only the blocks that changed since an earlier backup, and `pg_combinebackup` merges the chain back into a full one. Tools such as pgBackRest, Barman and WAL-G manage base backups, WAL archives, retention and encryption for you.
+A physical backup restores only into the same major version, on the same central processing unit (CPU) architecture. Since Postgres 17, `pg_basebackup --incremental` copies only the blocks that changed since an earlier backup, and `pg_combinebackup` merges the chain back into a full one. Tools such as pgBackRest, Barman and WAL-G manage base backups, WAL archives, retention and encryption for you.
 
 | | Logical, `pg_dump` | Physical, `pg_basebackup` and WAL |
 | --- | --- | --- |
@@ -53,7 +53,7 @@ A physical backup restores only into the same major version, on the same CPU arc
 
 The **3-2-1 rule** sets a minimum: keep **three** copies of the data, the live one included, on **two** different kinds of storage, with **one** copy in another place. Different storage means different failure modes: a disk and an object store, not two folders on one disk. Another place means another building and, for a cloud server, another provider or at least another account.
 
-Two additions answer the attacker. Keep one copy **immutable**: object storage with **Object Lock** refuses to delete or overwrite an object until its retention period ends, whatever key asks. And give the server only the keys it needs to add a backup, never the keys to read, list or delete the old ones.
+Two additions answer the attacker. Keep one copy **immutable**: object storage with **Object Lock** in compliance mode refuses to delete or overwrite an object until its retention period ends, whatever key asks. In governance mode, a key with the bypass permission can still delete it. And give the server only the keys it needs to add a backup, never the keys to read, list or delete the old ones.
 
 ### Encryption and Keys
 
@@ -121,7 +121,7 @@ The example writes a checksum manifest for a folder of backup files and checks a
 
 <CodeFrom file="go/tracks/backups/backups.go" region="manifest" lang="go" title="backups.go" />
 
-SHA-256 is a **cryptographic hash**: it turns any file into 32 bytes, written as 64 hexadecimal characters, and changing one bit of the file changes about half the bits of the hash. Nobody has found two different files with the same SHA-256. `hashFile` streams the file through the hash with `io.Copy`, which keeps memory flat for a dump of any size. `WriteManifest` writes the result in the format of the `sha256sum` command: on a copy without Go, `sha256sum --check SHA256SUMS` checks the same files. A manifest is only as safe as its own copy: keep one where the backup files are not, or sign it.
+SHA-256, from the Secure Hash Algorithm 2 family, is a **cryptographic hash**: it turns any file into 32 bytes, written as 64 hexadecimal characters, and changing one bit of the file changes about half the bits of the hash. Nobody has found two different files with the same SHA-256. `hashFile` streams the file through the hash with `io.Copy`, which keeps memory flat for a dump of any size. `WriteManifest` writes the result in the format of the `sha256sum` command: on a copy without Go, `sha256sum --check SHA256SUMS` checks the same files. A manifest is only as safe as its own copy: keep one where the backup files are not, or sign it.
 
 <CodeFrom file="go/tracks/backups/backups.go" region="verify" lang="go" title="backups.go" />
 
@@ -129,7 +129,7 @@ SHA-256 is a **cryptographic hash**: it turns any file into 32 bytes, written as
 
 <CodeFrom file="go/tracks/backups/backups_test.go" region="test" lang="go" title="backups_test.go" />
 
-`b[0] ^= 0x01` flips the lowest bit of the first byte: the file keeps its size, which defeats any check that compares sizes. Two more tests check the manifest file byte for byte against a known hash and run the real `sha256sum --check` over it, which fails in CI when `sha256sum` is missing and skips elsewhere.
+`b[0] ^= 0x01` flips the lowest bit of the first byte: the file keeps its size, which defeats any check that compares sizes. Two more tests check the manifest file byte for byte against a known hash and run the real `sha256sum --check` over it, which fails in continuous integration (CI) when `sha256sum` is missing and skips elsewhere. The region builds its folder with `tree`, a helper at the top of the test file that writes a dump, its counts file and one WAL segment in a subfolder.
 
 In the Week 17 setup, age already detects a changed `.dump.age`: it uses authenticated encryption, and decryption fails on a single changed byte. A manifest earns its place for files that travel unencrypted, such as a folder of WAL segments on an internal disk, or for checking many files at once before a long restore.
 
@@ -154,7 +154,7 @@ In the Week 17 setup, age already detects a changed `.dump.age`: it uses authent
 - **pgBackRest.** It manages full, differential and incremental backups, WAL archives, retention, encryption and parallel restore, with its own verification.
 - **Postgres 17 incremental backups.** `summarize_wal`, `pg_basebackup --incremental` and `pg_combinebackup` cut the size of each base backup to the changed blocks.
 - **Object Lock in compliance mode.** Not even the account owner can delete a locked object before its date, which protects against a stolen account too.
-- **Disaster recovery plans.** A written, tested runbook for restoring the whole service, not only the database: DNS, certificates, secrets and the cluster itself. The <TrackLink slug="sre">SRE and Incident Response track</TrackLink> covers runbooks.
+- **Disaster recovery plans.** A written, tested runbook for restoring the whole service, not only the database: Domain Name System (DNS) records, certificates, secrets and the cluster itself. Site reliability engineering (SRE) treats runbooks as tested code, and the <TrackLink slug="sre">SRE and Incident Response track</TrackLink> covers them.
 
 ## Further Reading
 

@@ -55,12 +55,21 @@ func TestVerifyFindsEachKindOfDamage(t *testing.T) {
 
 	// One flipped bit in the dump: same size, different content.
 	dump := filepath.Join(dir, "monitor-20261011-031700.dump")
-	b, _ := os.ReadFile(dump)
+	b, err := os.ReadFile(dump)
+	if err != nil {
+		t.Fatal(err)
+	}
 	b[0] ^= 0x01
-	os.WriteFile(dump, b, 0o644)
+	if err := os.WriteFile(dump, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	// A deleted WAL segment, and a file nobody listed.
-	os.Remove(filepath.Join(dir, "wal", "000000010000000000000001"))
-	os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("left behind\n"), 0o644)
+	if err := os.Remove(filepath.Join(dir, "wal", "000000010000000000000001")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("left behind\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	want := []Problem{
 		{Path: "monitor-20261011-031700.dump", Kind: "changed"},

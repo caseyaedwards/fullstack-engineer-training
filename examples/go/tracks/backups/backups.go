@@ -43,7 +43,7 @@ func WriteManifest(dir string) (Manifest, error) {
 			return nil, err
 		}
 		m[p] = sum
-		fmt.Fprintf(&out, "%s  %s\n", sum, p) // two spaces: binary-safe text mode
+		fmt.Fprintf(&out, "%s  %s\n", sum, p) // two spaces: the separator that sha256sum --check expects
 	}
 	if err := os.WriteFile(filepath.Join(dir, ManifestName), []byte(out.String()), 0o644); err != nil {
 		return nil, err
