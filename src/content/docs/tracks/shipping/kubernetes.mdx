@@ -18,7 +18,7 @@ Kubernetes runs containers on a set of machines and keeps them running the way y
 
 ### Objects, Desired State and Control Loops
 
-Everything in Kubernetes is an **object**: a Deployment, a Pod, a Service, a Secret. You write objects as YAML documents called **manifests**, and `kubectl apply` sends them to the cluster. `kubectl` is the command-line client of Kubernetes. Most objects have two halves. The **spec** is the desired state, which you write. The **status** is the observed state, which the cluster writes.
+Everything in Kubernetes is an **object**: a Deployment, a Pod, a Service, a Secret. You write objects as **manifests**: documents in YAML, an indented text format for data, and `kubectl apply` sends them to the cluster. `kubectl` is the command-line client of Kubernetes. Most objects have two halves. The **spec** is the desired state, which you write. The **status** is the observed state, which the cluster writes.
 
 A **controller** is a program that runs a **control loop** for one type of object: read the spec, read what exists, act on the difference, and repeat. The loop is **level-triggered**: it acts on the state it finds now, not on a list of events it missed. A controller that restarts after a crash reads the current state and carries on, with no history to replay. A node that dies, a pod that exits, a `kubectl scale`: each one shows up as a difference on the next pass of some loop, and the loop repairs it.
 
@@ -55,15 +55,15 @@ node.kubelet -> cp.api: watches
 node.proxy -> cp.api: watches
 `}
   steps={[
-    { hl: ['you', 'cp.api', 'cp.etcd', 'you->cp.api', 'cp.api->cp.etcd'], caption: 'The API server is the only door. It authenticates each request, checks RBAC, validates the object against its schema, and stores it in etcd, a key-value database that keeps the cluster state.' },
-    { hl: ['cp.cm', 'cp.api', 'cp.cm->cp.api'], caption: 'The controller manager runs dozens of control loops in one process: Deployments, ReplicaSets, Jobs, EndpointSlices, nodes. Each loop watches its objects through the API server and writes new ones.' },
-    { hl: ['cp.sched', 'cp.api', 'cp.sched->cp.api'], caption: 'The scheduler watches for pods with no node. It filters out nodes that lack the requested CPU and memory or break a rule, scores the rest, and writes the best node name into the pod.' },
-    { hl: ['node.kubelet', 'node.cri', 'node.pods', 'node.kubelet->cp.api', 'node.kubelet->node.cri', 'node.cri->node.pods'], caption: 'The kubelet on each node watches for pods assigned to it, and starts their containers through containerd over the Container Runtime Interface, CRI. It runs the probes and reports the pod status back.' },
-    { hl: ['node.proxy', 'node.kubelet', 'node.proxy->cp.api'], caption: 'kube-proxy watches Services and EndpointSlices, and writes packet rules on the node that send traffic for each Service address to one of its ready pods.' },
+    { hl: ['you', 'cp.api', 'cp.etcd', 'you->cp.api', 'cp.api->cp.etcd'], caption: 'The API server is the only door. It authenticates each request, checks that the caller holds the permission for it, validates the object against its schema, and stores it in etcd, a key-value database that keeps the cluster state.' },
+    { hl: ['cp.cm', 'cp.api', 'cp.cm->cp.api'], caption: 'The controller manager runs dozens of control loops in one process: Deployments, ReplicaSets, Jobs, nodes, and EndpointSlices, the lists of ready pod addresses behind each Service. Each loop watches its objects through the API server and writes new ones.' },
+    { hl: ['cp.sched', 'cp.api', 'cp.sched->cp.api'], caption: 'The scheduler watches for pods with no node. It filters out nodes that lack the processor time and memory the pod requests, or break a rule, scores the rest, and writes the best node name into the pod.' },
+    { hl: ['node.kubelet', 'node.cri', 'node.pods', 'node.kubelet->cp.api', 'node.kubelet->node.cri', 'node.cri->node.pods'], caption: 'The kubelet on each node watches for pods assigned to it, and starts their containers through containerd over the Container Runtime Interface, CRI. It runs the probes, the health checks defined for each container, and reports the pod status back.' },
+    { hl: ['node.proxy', 'node.proxy->cp.api'], caption: 'kube-proxy watches Services and EndpointSlices, and writes packet rules on the node that send traffic for each Service address to one of its ready pods.' },
   ]}
 />
 
-A small cluster such as k3s on one virtual private server (VPS) runs all of these on one machine, and the node is its own control plane. kind runs each node as a Docker container on your laptop.
+A small cluster such as k3s on one virtual private server (VPS) runs all of these on one machine, and the node is its own control plane. k3s keeps the cluster state in SQLite by default, in place of etcd. kind runs each node as a Docker container on your laptop.
 
 ### Workloads
 
@@ -94,7 +94,7 @@ A **ConfigMap** holds settings, and a **Secret** holds passwords and keys. Both 
 
 What protects a Secret is who can read it, and **RBAC**, role-based access control, decides that:
 
-- A **ServiceAccount** is an identity for a program, such as CI or a pod.
+- A **ServiceAccount** is an identity for a program, such as a continuous integration (CI) pipeline or a pod.
 - A **Role** lists **verbs**, such as `get`, `list`, `watch`, `create` and `patch`, on **resources**, such as `deployments` or `secrets`, in one **namespace**, a named group of objects inside the cluster. A **ClusterRole** does the same across the cluster.
 - A **RoleBinding** grants a Role to users, groups or ServiceAccounts, and a **ClusterRoleBinding** grants a ClusterRole everywhere.
 
@@ -120,19 +120,19 @@ sched: scheduler
 kubelet: "kubelet\\non node-1"
 
 you -> api: "apply: image api:v2"
-dc -> api: "create ReplicaSet api-v2"
-rc -> api: "create Pod api-v2-x7k2q"
+dc -> api: "create ReplicaSet api-6f9c7d"
+rc -> api: "create Pod api-6f9c7d-x7k2q"
 sched -> api: "bind Pod to node-1"
 kubelet -> api: "Pod Ready"
-dc -> api: "scale ReplicaSet api-v1 down"
-rc -> api: "delete one Pod of api-v1"
+dc -> api: "scale ReplicaSet api-5d8b4c down"
+rc -> api: "delete one Pod of api-5d8b4c"
 `}
   steps={[
     { hl: ['you', 'api', 'you->api'], caption: 'kubectl sends the Deployment with the new image tag. The API server checks RBAC and the schema, stores the new spec in etcd, and answers at once. Nothing runs yet.' },
     { hl: ['dc', 'api', 'dc->api'], caption: 'The Deployment controller sees a pod template that no ReplicaSet matches. It creates a new ReplicaSet, named after a hash of the template, with one replica: maxSurge allows one pod above the wanted count.' },
     { hl: ['rc', 'api', 'rc->api'], caption: 'The ReplicaSet controller sees a ReplicaSet that wants one pod and has none, and creates a Pod object from the template, with a random suffix on its name.' },
-    { hl: ['sched', 'api', 'sched->api'], caption: 'The scheduler sees a pod with no node, picks node-1, which has the requested CPU and memory free, and binds the pod to it.' },
-    { hl: ['kubelet', 'api', 'kubelet->api'], caption: 'The kubelet on node-1 sees the pod, pulls the image, starts the container and runs the readiness probe. When the probe passes, it marks the pod Ready, and the EndpointSlice controller adds the pod to the Service.' },
+    { hl: ['sched', 'api', 'sched->api'], caption: 'The scheduler sees a pod with no node, picks node-1, which has the requested processor time and memory free, and binds the pod to it.' },
+    { hl: ['kubelet', 'api', 'kubelet->api'], caption: 'The kubelet on node-1 sees the pod, pulls the image, starts the container and runs the readiness probe, the check that says whether the pod can take traffic. When the probe passes, it marks the pod Ready, and the EndpointSlice controller adds the pod to the Service.' },
     { hl: ['dc', 'rc', 'api', 'dc->api#1', 'rc->api#1'], caption: 'With the new pod available and maxUnavailable at 0, the Deployment controller scales the old ReplicaSet down by one, and the ReplicaSet controller deletes one old pod. The two loops repeat until every pod runs the new template.' },
   ]}
 />
@@ -164,16 +164,16 @@ The second pass is the property that matters. A control loop must **converge**: 
 
 <WeekLink n={15} anchor="from-compose-to-a-cluster">From Compose to a Cluster in Week 15</WeekLink> moves the monitor from Compose to kind with Kubernetes 1.36, and walks through the API server, etcd, the controller manager, the scheduler and the kubelet as you apply your first manifest. <WeekLink n={15} anchor="pods-deployments-and-labels">Pods, Deployments and Labels</WeekLink> gives every program a Deployment, <WeekLink n={15} anchor="services-a-stable-name-for-changing-pods">Services: A Stable Name for Changing Pods</WeekLink> gives each one a Service, and <WeekLink n={15} anchor="state-statefulset-volumes-configmap-and-secret">State: StatefulSet, Volumes, ConfigMap and Secret</WeekLink> runs Postgres with a volume of its own. <WeekLink n={15} anchor="side-lab">The Week 15 side lab</WeekLink> follows a Service into the iptables rules of the node.
 
-<WeekLink n={16} anchor="who-can-reach-what">Who Can Reach What in Week 16</WeekLink> moves the cluster to k3s on a VPS, with Secrets encrypted at rest, and gives CI a `deployer` ServiceAccount whose Role can apply the prod overlay in one namespace and reach no other.
+<WeekLink n={16} anchor="one-box-running-kubernetes">One Box Running Kubernetes in Week 16</WeekLink> moves the cluster to k3s on a VPS, and <WeekLink n={16} anchor="step-4-install-k3s">Step 4</WeekLink> installs it with Secrets encrypted at rest. <WeekLink n={16} anchor="who-can-reach-what">Who Can Reach What</WeekLink> and <WeekLink n={16} anchor="step-11-give-ci-a-way-in">Step 11</WeekLink> give CI a `deployer` ServiceAccount whose Role can apply the prod overlay, the Kustomize layer of production settings over the Week 15 base, in one namespace and reach no other.
 
-<WeekLink n={17} anchor="rolling-updates-and-rollbacks">Rolling Updates and Rollbacks in Week 17</WeekLink> tunes `maxSurge`, `maxUnavailable` and `minReadySeconds`, adds a preStop hook against dropped requests, and practices `kubectl rollout undo`. <WeekLink n={17} anchor="scaling-out-with-the-horizontalpodautoscaler">Scaling Out with the HorizontalPodAutoscaler</WeekLink> adds a controller that writes the replica count of a Deployment for you.
+<WeekLink n={17} anchor="rolling-updates-and-rollbacks">Rolling Updates and Rollbacks in Week 17</WeekLink> tunes `maxSurge`, `maxUnavailable` and `minReadySeconds`, adds a preStop hook, a command that the kubelet runs before it stops a container, against dropped requests, and practices `kubectl rollout undo`. <WeekLink n={17} anchor="scaling-out-with-the-horizontalpodautoscaler">Scaling Out with the HorizontalPodAutoscaler</WeekLink> adds a controller that writes the replica count of a Deployment for you.
 
 ## Common Mistakes
 
 - **A selector that matches no pods.** The API server refuses a Deployment whose selector does not match its own template labels. It accepts a Service whose selector matches no pod labels, and that Service sends every connection nowhere, with no error anywhere. Keep the selector labels and the template labels in one place, and check them with a test, as Week 15 does.
 - **`replicas` in a manifest that an autoscaler scales.** Every `kubectl apply` resets the count, and the autoscaler scales back up a moment later. Remove `replicas` from every Deployment that a HorizontalPodAutoscaler manages.
-- **A liveness probe that checks a dependency.** When Postgres goes down, the kubelet restarts every api pod, and the restarts fix nothing. Keep liveness to the process itself, and put dependencies in readiness.
-- **No requests on a container.** The scheduler places the pod as if it needs nothing, and the node runs out of memory under load. Set CPU and memory requests on every container, and a memory limit.
+- **A liveness probe that checks a dependency.** The kubelet restarts a container whose liveness probe fails. When Postgres goes down, the kubelet restarts every api pod, and the restarts fix nothing. Keep liveness to the process itself, and put dependencies in readiness, which only takes the pod out of its Service.
+- **No requests on a container.** The scheduler places the pod as if it needs nothing, and the node runs out of memory under load. Set processor and memory requests on every container, and a memory limit.
 - **A Secret treated as encrypted.** base64 is an encoding, and anyone with `get`, `list` or `watch` on Secrets, or permission to create pods in the namespace, reads every value. Encrypt etcd at rest and grant Secret access to as few identities as possible.
 - **The `latest` image tag.** With `latest`, the default pull policy is `Always`: each new pod pulls whatever the tag points at that moment, and two pods of one Deployment run two versions under one name. A push of a new `latest` changes no pod template, which means no rollout starts, and a rollback has no older name to return to. Tag images with the commit SHA.
 - **Changes made with `kubectl edit` in production.** The next `kubectl apply` from Git overwrites them, or keeps a change nobody reviewed. Change the manifests in Git and apply them.
@@ -183,7 +183,7 @@ The second pass is the property that matters. A control loop must **converge**: 
 - **Server-side apply:** the API server tracks which client owns each field, which ends the fights between `kubectl`, controllers and autoscalers over the same object.
 - **Operators and custom resources:** your own object types with your own control loop, built on the same pattern as `Reconcile` with a library such as controller-runtime.
 - **NetworkPolicy:** firewall rules between pods. Until a policy selects a pod, it accepts traffic from every other pod, and a policy works only when the network plugin of the cluster enforces it.
-- **Pod Security Standards and admission control:** the API server checks every pod against the `restricted` profile, or against your own policies, before it stores it.
+- **Pod Security Standards and admission control:** the API server checks each pod against a profile, such as `restricted`, before it stores it, but only in a namespace labeled to enforce one. Without the label, the level is `privileged`, which allows everything. Your own policies run as admission control too.
 - **Gateway API:** the successor to Ingress for routing HTTP traffic into the cluster, with roles split between cluster operators and application teams.
 - **Cluster upgrades:** one minor version at a time, control plane first, then the nodes, with the deprecated API versions removed from every manifest before the upgrade.
 
