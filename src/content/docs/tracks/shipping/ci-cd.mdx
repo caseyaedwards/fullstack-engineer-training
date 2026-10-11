@@ -56,7 +56,7 @@ A **pipeline** is the ordered set of stages a commit passes through: check, buil
 Two rules keep a pipeline honest:
 
 - **Build once, deploy that build everywhere.** The image you test in staging is the same image, byte for byte, that reaches production. A pipeline that rebuilds per environment deploys bytes nobody tested: a base image or a dependency can change between the two builds.
-- **Name the artifact after the commit.** A tag such as `latest` moves with every build and says nothing about the code inside. A tag made of the commit SHA, named after the Secure Hash Algorithm: the 40-character hash Git computes from a commit, names one exact source tree. It answers which code an image holds, and which image to roll back to.
+- **Name the artifact after the commit.** A tag such as `latest` moves with every build and says nothing about the code inside. Git computes a 40-character hash of each commit with SHA, the Secure Hash Algorithm. A tag made of that commit SHA names one exact source tree. It answers which code an image holds, and which image to roll back to.
 
 ### GitHub Actions in Brief
 
@@ -196,7 +196,7 @@ A check that passes everything proves nothing. `TestChecksCatchMistakes` in the 
 - **Merge queues:** GitHub tests each pull request on top of the ones queued before it, which catches two changes that pass alone and break together.
 - **GitOps with Argo CD or Flux:** the cluster pulls its desired state from a Git repository, and a deploy becomes a commit, reviewed like any other.
 - **Progressive delivery:** canary releases and feature flags expose a change to a small share of traffic first, which turns a bad deploy into a small incident.
-- **DORA metrics:** DevOps Research and Assessment, DORA, a research program on software delivery, measures how well a team ships with deployment frequency, lead time for changes, change failure rate and recovery time.
+- **DORA metrics:** deployment frequency, lead time for changes, change failure rate and recovery time measure how well a team ships. DevOps Research and Assessment, DORA, the research program behind them, publishes a yearly report on software delivery built on them.
 
 ## Further Reading
 

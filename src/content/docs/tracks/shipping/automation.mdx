@@ -12,7 +12,7 @@ import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
-Automation turns the commands you type into files that a machine runs the same way every time. A command you run by hand lives in your shell history and your memory. A command in a script, a Makefile or a playbook lives in Git, where a colleague reviews it, and runs the same at 03:00 as at noon. As a full-stack engineer, you automate three kinds of work: the commands of a repository, the jobs that run on a schedule, and the configuration of the servers your code runs on.
+Automation turns the commands you type into files that a machine runs the same way every time. A command you run by hand lives in your shell history and your memory. A command in a script, a Makefile or a playbook lives in Git, where a colleague reviews it, and runs the same at 03:00 as at noon. As a full-stack engineer, you automate three kinds of work: repository commands, scheduled jobs, and the configuration of the servers your code runs on.
 
 ## What It Is
 
@@ -22,7 +22,7 @@ Automation comes in two styles.
 
 An **imperative** script lists steps: install this package, append this line, restart this service. It does exactly what it says, every time it runs. Run it twice, and it appends the line twice and restarts the service twice. When a step fails halfway, the machine sits in a state that no file describes.
 
-A **declarative** tool takes a **desired state**. For chrony, the service that keeps the system clock in sync, that state reads: the package is present, its configuration file holds these lines, its service runs. On each run, the tool compares that state with the machine, and changes only what differs. A task that finds the machine already right does nothing and reports `ok`. That property is **idempotence**: running the automation once or ten times leaves the machine in the same state. Week 9 uses the same word for a queue job that does no harm when it runs twice.
+A **declarative** tool takes a **desired state**. For chrony, the service that keeps the system clock in sync, that state reads: the package is present, its configuration file holds these lines, its service runs. On each run, the tool compares that state with the machine, and changes only what differs. A task that finds the machine already right does nothing and reports `ok`. That property is **idempotence**: running the automation once or ten times leaves the machine in the same state. Week 9 uses the word for a queue job that runs twice safely.
 
 <Diagram
   id="steps-vs-state"
@@ -88,7 +88,7 @@ A Makefile is the front door of a repository: whoever clones it, a colleague or 
 
 ### Check Mode and Honest Tasks
 
-`ansible-playbook --check` is a dry run: each module that supports it reports the changes it finds necessary, and makes none. `--diff` adds the line-by-line difference for every file a task plans to write. Together they catch drift and a wrong template before either reaches the server. Check mode has two limits:
+`ansible-playbook --check` is a dry run: each module that supports it reports the changes it finds necessary, and makes none. `--diff` adds the line-by-line difference for every file a task plans to write. Together they show drift and every template change before the run. Check mode has two limits:
 
 - Each task sees the server as it is, not as the earlier simulated tasks leave it. On a fresh server, the package task reports `changed` and installs nothing, and the service task then fails: no chrony service exists yet.
 - `validate`, the template option that tests a new file before it replaces the old one, runs only on a real run. A template with a typo passes `--check`.
@@ -208,7 +208,7 @@ monitor.example.com        : ok=5    changed=0    unreachable=0    failed=0    s
 - **A restart task instead of a handler.** The service restarts on every run, which drops connections for nothing. Notify a handler from the task that changes the configuration.
 - **A failed run that skips its handlers.** When a later task fails, the handlers queued earlier do not run, and the new configuration waits on disk for a restart that never comes. Fix the failure and run again: the file is already in place, the template reports `ok`, and nothing notifies the handler. Set `force_handlers: true` on the play, or pass `--force-handlers`, and queued handlers run even when a later task fails.
 - **`lineinfile` for a whole file.** Five `lineinfile` tasks against one configuration file leave every other line as the package wrote it, and the repository never shows the whole file the server runs with. Own the whole file with `ansible.builtin.template`.
-- **Secrets in plain variables.** A password in `vars:` lands in Git. Encrypt it with `ansible-vault`, and hide its value in the output with `no_log: true` on the tasks that use it.
+- **Secrets in plain variables.** A password in `vars:` lands in Git. Encrypt it with `ansible-vault`, the Ansible tool for encrypted variable files, and hide its value in the output with `no_log: true` on the tasks that use it.
 - **A shell script without `set -eu`.** The script carries on past a failure and reports success. Start every script with it, and run ShellCheck in CI.
 - **Spaces in a Makefile recipe.** Make accepts only a tab at the start of a recipe line, and stops with `missing separator` otherwise. Set your editor to keep tabs in files named `Makefile`.
 
