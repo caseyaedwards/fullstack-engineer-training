@@ -114,22 +114,20 @@ client: ACME client
 ca: "Let's Encrypt"
 web: "port 80 of the name"
 
-client -> ca: "new account, account public key"
-client -> ca: "new order: status.example.com"
+client -> ca: "account key, order: status.example.com"
 ca -> client: "authorization: http-01, token T"
 client -> web: "serve T and key thumbprint"
 client -> ca: "challenge ready"
-ca -> web: "GET /.well-known/acme-challenge/T"
-web -> ca: "T.thumbprint"
+ca -> web: "GET the token URL, expect T.thumbprint"
 client -> ca: "finalize: CSR"
 ca -> client: "certificate and chain"
 `}
   steps={[
-    { hl: ['client', 'ca', 'client->ca'], caption: 'The client generates an account key pair and registers the public half. From now on, it signs every request with the account key, and the CA knows which account asks.' },
-    { hl: ['client', 'ca', 'client->ca#1', 'ca->client'], caption: 'The client orders a certificate for status.example.com. The CA answers with an authorization for that name and a set of challenges, among them http-01 with a random token T.' },
-    { hl: ['client', 'web', 'client->web'], caption: 'The client publishes the key authorization, the token plus a thumbprint of the account public key, at the challenge path on port 80. The thumbprint ties the proof to this account and no other.' },
-    { hl: ['client', 'ca', 'web', 'client->ca#2', 'ca->web', 'web->ca'], caption: 'The client tells the CA the challenge is ready. Let\'s Encrypt fetches the URL from several vantage points on the internet, which defeats an attacker who controls one network path. Nearly all of them must get the right answer: one failed vantage point is tolerated, a hijacked path to most of them is not.' },
-    { hl: ['client', 'ca', 'client->ca#3', 'ca->client#1'], caption: 'The authorization is valid. The client generates the certificate key pair and sends a CSR. The CA logs a precertificate in Certificate Transparency, signs the 90-day certificate with the proof of logging inside, and returns it with the intermediate.' },
+    { hl: ['client', 'ca', 'client->ca'], caption: 'The client generates an account key pair, registers the public half and orders a certificate for status.example.com. It signs every request with the account key, which tells the CA which account asks.' },
+    { hl: ['client', 'ca', 'ca->client'], caption: 'The CA answers with an authorization for that name and a set of challenges, among them http-01 with a random token T.' },
+    { hl: ['client', 'web', 'client->web'], caption: 'The client publishes the key authorization, the token plus a thumbprint of the account public key, at /.well-known/acme-challenge/T on port 80. The thumbprint ties the proof to this account and no other.' },
+    { hl: ['client', 'ca', 'web', 'client->ca#1', 'ca->web'], caption: 'The client tells the CA the challenge is ready. Let\'s Encrypt fetches the URL from several vantage points on the internet, which defeats an attacker who controls one network path. Nearly all of them must get T.thumbprint back: one failed vantage point is tolerated, a hijacked path to most of them is not.' },
+    { hl: ['client', 'ca', 'client->ca#2', 'ca->client#1'], caption: 'The authorization is valid. The client generates the certificate key pair and sends a CSR. The CA logs a precertificate in Certificate Transparency, signs the 90-day certificate with the proof of logging inside, and returns it with the intermediate.' },
   ]}
 />
 

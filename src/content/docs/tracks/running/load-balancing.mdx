@@ -106,31 +106,22 @@ The walkthrough follows one backend that stops answering its health check, with 
   id="health-check"
   title="A backend fails its health check, leaves the pool and comes back"
   code={`shape: sequence_diagram
-cl: client
 lb: load balancer
 a: backend A
 b: backend B
 
-lb -> a: "GET /healthz"
-a -> lb: "200"
-lb -> b: "GET /healthz"
-b -> lb: "no answer in 2 s"
-lb -> b: "GET /healthz, 5 s later"
-b -> lb: "503"
-cl -> lb: "GET /api/monitors"
-lb -> a: "GET /api/monitors"
-lb -> b: "GET /healthz"
-b -> lb: "200"
-lb -> b: "GET /healthz"
-b -> lb: "200, back in the pool"
+lb -> a: "GET /healthz: 200"
+lb -> b: "GET /healthz: no answer in 2 s"
+lb -> b: "5 s later: 503"
+lb -> a: "client request: GET /api/monitors"
+lb -> b: "GET /healthz: 200, then 200"
 `}
   steps={[
-    { hl: ['lb', 'a', 'b', 'lb->a', 'a->lb', 'lb->b'], caption: 'Every 5 seconds, the balancer sends GET /healthz to each backend. A answers 200. Both backends are in the pool and share the traffic.' },
-    { hl: ['lb', 'b', 'b->lb'], caption: 'B does not answer within the 2-second timeout of the check. One failure: B stays in the pool, because one slow answer is not enough to act on.' },
-    { hl: ['lb', 'b', 'lb->b#1', 'b->lb#1'], caption: 'The next check gets 503 Service Unavailable. Two failures in a row reach the unhealthy threshold, and B leaves the pool. Requests in flight on B finish or fail; new ones go elsewhere.' },
-    { hl: ['cl', 'lb', 'a', 'cl->lb', 'lb->a#1'], caption: 'A request arrives. The pool holds only A, and round robin over a pool of one picks A every time. If A fails too, the balancer has no backend left and answers 503 itself.' },
-    { hl: ['lb', 'b', 'lb->b#2', 'b->lb#2'], caption: 'The balancer keeps checking B while it is out of the pool. B answers 200 once: one success is below the healthy threshold, and B stays out.' },
-    { hl: ['lb', 'b', 'lb->b#3', 'b->lb#3'], caption: 'A second 200 in a row reaches the healthy threshold. B rejoins the pool and takes its share of new requests again.' },
+    { hl: ['lb', 'a', 'b', 'lb->a'], caption: 'Every 5 seconds, the balancer sends GET /healthz to each backend. A answers 200. Both backends are in the pool and share the traffic.' },
+    { hl: ['lb', 'b', 'lb->b'], caption: 'B does not answer within the 2-second timeout of the check. One failure: B stays in the pool, because one slow answer is not enough to act on.' },
+    { hl: ['lb', 'b', 'lb->b#1'], caption: 'The next check gets 503 Service Unavailable. Two failures in a row reach the unhealthy threshold, and B leaves the pool. Requests in flight on B finish or fail; new ones go elsewhere.' },
+    { hl: ['lb', 'a', 'lb->a#1'], caption: 'A client request arrives. The pool holds only A, and round robin over a pool of one picks A every time. If A fails too, the balancer has no backend left and answers 503 itself.' },
+    { hl: ['lb', 'b', 'lb->b#2'], caption: 'The balancer keeps checking B while it is out of the pool. One 200 is below the healthy threshold. A second 200 in a row reaches it, and B rejoins the pool and takes its share of new requests again.' },
   ]}
 />
 
