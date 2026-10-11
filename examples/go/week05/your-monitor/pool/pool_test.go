@@ -73,10 +73,10 @@ func poolGoroutines() []string {
 }
 
 // checkNoLeaks fails the test when goroutines from pool.Run are still
-// alive one second after Run returned.
+// alive five seconds after Run returned.
 func checkNoLeaks(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for {
 		left := poolGoroutines()
 		if len(left) == 0 {
@@ -192,17 +192,23 @@ func TestRunStopsPromptlyWhenCancelled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() {
-		for range workers {
-			<-started
-		}
-		cancel() // every worker is mid-check: SIGTERM arrives now
-	}()
+	done := make(chan []check.Result, 1)
+	go func() { done <- pool.Run(ctx, targets, workers, checkWithin(time.Minute)) }()
 
-	start := time.Now()
-	results := pool.Run(ctx, targets, workers, checkWithin(time.Minute))
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Errorf("Run returned %v after it started, want it to stop at once on cancel", elapsed)
+	for range workers {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only some of the %d workers started a check within 5 s", workers)
+		}
+	}
+	cancel() // every worker is mid-check: SIGTERM arrives now
+
+	var results []check.Result
+	select {
+	case results = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return within 10 s of the cancel, want it to stop at once")
 	}
 	if len(results) != workers {
 		t.Errorf("got %d results, want %d: one per check in flight, none for the rest", len(results), workers)

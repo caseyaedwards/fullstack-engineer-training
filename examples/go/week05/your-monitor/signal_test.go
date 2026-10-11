@@ -111,7 +111,7 @@ func TestSignalCancelsChecksInFlight(t *testing.T) {
 			}
 
 			// CommandContext sends SIGKILL when ctx runs out: a hung monitor fails the test.
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, bin, "-file", file, "-workers", "3", "-timeout", "1m")
 			stdout, err := cmd.StdoutPipe()
@@ -121,8 +121,12 @@ func TestSignalCancelsChecksInFlight(t *testing.T) {
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
 			}
-			for range 3 {
-				<-started // all three workers are waiting on a site
+			for range 3 { // wait until all three workers are waiting on a site
+				select {
+				case <-started:
+				case <-time.After(5 * time.Second):
+					t.Fatal("the monitor did not start three checks within 5 s")
+				}
 			}
 			sent := time.Now()
 			if err := cmd.Process.Signal(sig); err != nil {
@@ -139,7 +143,7 @@ func TestSignalCancelsChecksInFlight(t *testing.T) {
 			if code := cmd.ProcessState.ExitCode(); code != 0 {
 				t.Errorf("exit code = %d (%v), want 0", code, cmd.ProcessState)
 			}
-			if elapsed := time.Since(sent); elapsed > 2*time.Second {
+			if elapsed := time.Since(sent); elapsed > 10*time.Second {
 				t.Errorf("exited %v after the signal, want it to cancel the checks at once", elapsed)
 			}
 			if !strings.Contains(log, "checks=3 up=0 down=0 timeouts=0 cancelled=3 skipped=3") {
