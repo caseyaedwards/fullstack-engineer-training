@@ -1,0 +1,44 @@
+#!/bin/sh
+# region: backup-script
+# backup.sh: dumps the database that the PG* variables name, counts its
+# rows in the same snapshot, encrypts the dump to the age public key in
+# AGE_RECIPIENT, and uploads the dump and the counts to BACKUP_REMOTE
+# with rclone. The dump leaves the pod only encrypted.
+set -eu
+work=${WORK_DIR:-/work}
+name="monitor-$(date -u +%Y%m%d-%H%M%S)"
+start=$(date +%s)
+
+fail() { echo "backup: FAILED: $*"; exit 1; }
+
+# One read-only transaction exports its snapshot. pg_dump dumps exactly
+# that snapshot, and the counts come from it too, however many results
+# the worker writes in the meantime.
+DUMP="$work/$name.dump" psql -X -q -At -F ' ' -v ON_ERROR_STOP=1 -o "$work/$name.counts" <<'SQL' ||
+BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY;
+SELECT pg_export_snapshot() AS snapshot \gset
+\setenv SNAPSHOT :snapshot
+\! pg_dump --format=custom --snapshot="$SNAPSHOT" --file="$DUMP" || rm -f "$DUMP"
+SELECT (SELECT count(*) FROM monitors), (SELECT count(*) FROM check_results),
+  (SELECT count(*) FROM incidents), (SELECT max(version) FROM schema_migrations);
+COMMIT;
+SQL
+  fail "psql exited with $?"
+[ -s "$work/$name.dump" ] || fail "pg_dump wrote no dump"
+pg_restore --list "$work/$name.dump" >/dev/null || fail "the dump does not read back"
+
+age --encrypt --recipient="$AGE_RECIPIENT" --output="$work/$name.dump.age" "$work/$name.dump" ||
+  fail "age exited with $?"
+rm "$work/$name.dump"
+
+# The key may add objects and nothing else: rclone must not list the
+# bucket, check whether it exists, or read an object back. The counts go
+# last, so a .counts object always has its dump beside it.
+for f in "$name.dump.age" "$name.counts"; do
+  rclone copyto --no-check-dest --s3-no-check-bucket --s3-no-head \
+    "$work/$f" "$BACKUP_REMOTE/$f" || fail "rclone could not upload $f"
+done
+
+echo "backup: $name.dump.age, $(($(stat -c %s "$work/$name.dump.age") / 1024)) KiB," \
+  "counts $(cat "$work/$name.counts"), in $(($(date +%s) - start)) s"
+# endregion: backup-script

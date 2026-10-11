@@ -38,8 +38,10 @@ spec:
         app.kubernetes.io/name: postgres
     spec:
       # The image starts as root only to switch to its postgres user, 999.
-      # Start it as 999: it skips the switch. fsGroup gives the group 999
-      # write access to the volumes.
+      # Start it as 999: it skips the switch. fsGroup hands the volumes that
+      # support it, such as emptyDir, to the group 999. kind's volumes are
+      # folders on the node that fsGroup leaves alone: the local-path
+      # provisioner creates each one with mode 0777.
       securityContext:
         runAsNonRoot: true
         runAsUser: 999

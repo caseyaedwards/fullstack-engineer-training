@@ -2,7 +2,7 @@
 # Deploy: applies the Kubernetes manifests to the cluster that the
 # KUBECONFIG secret names, with the images that CI pushed for one commit.
 # It runs only when you start it from the Actions tab or with
-# gh workflow run deploy.yml. The cluster is k3s on one VPS: the job
+# gh workflow run deploy.yml. The cluster is K3s on one VPS: the job
 # reaches its API server through an SSH tunnel, because the firewall
 # keeps port 6443 closed to the internet.
 name: Deploy
@@ -18,7 +18,8 @@ on:
 permissions:
   contents: read
 
-# One deploy at a time. A second run waits for the first to finish.
+# One deploy at a time. A second run waits for the first to finish. A
+# third run cancels the waiting second one: the newest request wins.
 concurrency:
   group: deploy-production
   cancel-in-progress: false
@@ -92,7 +93,7 @@ jobs:
             echo "resources:"
             echo "  - ../overlays/prod"
             echo "images:"
-            for t in api worker scheduler alerter web; do
+            for t in api worker scheduler alerter web backup; do
               echo "  - name: your-monitor-$t"
               echo "    newName: ghcr.io/${GITHUB_REPOSITORY,,}/$t"
               echo "    newTag: $SHA"

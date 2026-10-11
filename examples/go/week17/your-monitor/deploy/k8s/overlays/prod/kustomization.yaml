@@ -1,9 +1,10 @@
-# region: kustomization
-# The VPS: the base manifests, plus the way in from the internet. Two
+# region: prod-kustomization
+# The VPS: the base manifests, plus the way in from the internet. The
 # Secrets are not here, because they never enter Git: postgres, with the
-# database password, and ghcr-pull, with a token that can read your
-# images. You create both on the cluster by hand. Week 17 adds the parts
-# under "Week 17".
+# database password, ghcr-pull, with a token that can read your images,
+# and, from Week 17, offsite, with the key that uploads backups. You
+# create them on the cluster by hand. Week 17 adds the parts under
+# "Week 17".
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: your-monitor
@@ -25,8 +26,9 @@ patches:
         path: /spec/template/spec/imagePullSecrets
         value:
           - name: ghcr-pull
-  # Week 17: how each Deployment rolls out, the api limits, the Traefik
-  # limit on the Ingress, and no replicas field where an HPA sets the count.
+  # Week 17: how each Deployment rolls out, the pause before a pod stops,
+  # the api limits, the Traefik limit on the Ingress, and no replicas
+  # field where an HPA sets the count.
   - path: rollout.yaml
     target:
       kind: Deployment
@@ -35,6 +37,10 @@ patches:
     target:
       kind: Deployment
       name: scheduler|alerter
+  - path: prestop.yaml
+    target:
+      kind: Deployment
+      name: api|web
   - path: api.yaml
   - path: ingress-middleware.yaml
   - target:
@@ -44,9 +50,11 @@ patches:
       - op: remove
         path: /spec/replicas
 configMapGenerator:
-  # Week 17: the backup and restore-drill scripts, mounted into the CronJobs.
-  - name: backup-scripts
-    files:
-      - backup/backup.sh
-      - backup/restore-drill.sh
-# endregion: kustomization
+  # Week 17: where backups go and the key that encrypts them. Both are
+  # public: only the private key, which never comes near the VPS, opens
+  # a backup. Replace the recipient with the public key of your own key.
+  - name: backup-config
+    literals:
+      - AGE_RECIPIENT=age1-replace-with-your-public-key
+      - BACKUP_REMOTE=offsite:your-monitor-backups
+# endregion: prod-kustomization

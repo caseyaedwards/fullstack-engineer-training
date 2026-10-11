@@ -164,7 +164,10 @@ func (l *Limiter) Allow(key netip.Prefix, now time.Time) time.Duration {
 			l.sweep(now)
 		}
 		if len(l.buckets) >= l.max {
-			return l.refill // full of active clients: new ones wait
+			// Full of active clients: refuse the new one. Room frees up
+			// only when some bucket sits idle for a whole refill time, so
+			// the Retry-After of one refill time is a hint, not a promise.
+			return l.refill
 		}
 		b = &bucket{tokens: rate.NewLimiter(l.limit, l.burst)}
 		l.buckets[key] = b

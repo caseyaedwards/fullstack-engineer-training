@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -10,24 +11,37 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fsp/examples/week17/your-monitor/internal/db"
 )
 
-const scripts = "k8s/overlays/prod/backup"
+const scripts = "backup"
+
+// need fails the test in CI and skips it elsewhere: CI must run every
+// test, a laptop without the tools may not.
+func need(t *testing.T, why string) {
+	t.Helper()
+	if os.Getenv("CI") == "true" {
+		t.Fatal(why)
+	}
+	t.Skip(why)
+}
 
 // pgBin returns a folder that holds initdb, pg_ctl, pg_dump and
 // pg_restore of one Postgres version: the folder of initdb on the PATH,
 // or the newest /usr/lib/postgresql/<version>/bin, where Debian and
-// Ubuntu install them. Without them, the test fails in CI and is skipped
-// elsewhere. initdb refuses to run as root.
+// Ubuntu install them. It also needs age and rclone on the PATH.
 func pgBin(t *testing.T) string {
 	t.Helper()
 	if os.Geteuid() == 0 {
-		t.Skip("initdb refuses to run as root: run this test as another user")
+		need(t, "initdb refuses to run as root: run this test as another user")
+	}
+	for _, tool := range []string{"age", "age-keygen", "rclone"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			need(t, tool+" not found: install age and rclone to run this test")
+		}
 	}
 	if p, err := exec.LookPath("initdb"); err == nil {
 		return filepath.Dir(p)
@@ -45,17 +59,15 @@ func pgBin(t *testing.T) string {
 			return dir
 		}
 	}
-	if os.Getenv("CI") == "true" {
-		t.Fatal("initdb not found: CI must provide the Postgres server tools")
-	}
-	t.Skip("initdb not found: install the Postgres server tools to run this test")
+	need(t, "initdb not found: install the Postgres server tools to run this test")
 	return ""
 }
 
 // live starts an empty Postgres server of its own in a temporary folder,
 // reachable only through a socket there, with the database monitor
-// migrated and holding two monitors and three results. It returns the
-// environment that points pg_dump and psql at it.
+// migrated and holding two monitors and three results, and the database
+// empty migrated and holding nothing. It returns the environment that
+// points pg_dump and psql at monitor.
 func live(t *testing.T, bin string) []string {
 	t.Helper()
 	// A short folder: a Unix socket path holds at most 107 bytes.
@@ -70,16 +82,18 @@ func live(t *testing.T, bin string) []string {
 	t.Cleanup(func() {
 		exec.Command(filepath.Join(bin, "pg_ctl"), "--pgdata="+dir+"/data", "--mode=immediate", "stop").Run()
 	})
-	run(t, nil, filepath.Join(bin, "createdb"), "--host="+dir, "--username=monitor", "monitor")
-
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, fmt.Sprintf("host=%s user=monitor dbname=monitor", dir))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
-	if err := db.Migrate(ctx, pool); err != nil {
-		t.Fatal(err)
+	var pool *pgxpool.Pool
+	for _, name := range []string{"empty", "monitor"} {
+		run(t, nil, filepath.Join(bin, "createdb"), "--host="+dir, "--username=monitor", name)
+		pool, err = pgxpool.New(ctx, fmt.Sprintf("host=%s user=monitor dbname=%s", dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pool.Close()
+		if err := db.Migrate(ctx, pool); err != nil {
+			t.Fatal(err)
+		}
 	}
 	_, err = pool.Exec(ctx, `
 		insert into monitors (url, interval_seconds) values ('https://example.com', 60), ('https://example.org', 60);
@@ -88,7 +102,25 @@ func live(t *testing.T, bin string) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "PGHOST=" + dir, "PGUSER=monitor", "PGDATABASE=monitor"}
+	return []string{"PATH=" + bin + ":" + os.Getenv("PATH"), "PGHOST=" + dir, "PGUSER=monitor", "PGDATABASE=monitor",
+		"RCLONE_CONFIG=/dev/null", "RCLONE_CONFIG_OFFSITE_TYPE=local"}
+}
+
+// backup runs backup.sh against the database of env, encrypting to the
+// public key of identity, and uploads to the folder remote.
+func backup(t *testing.T, env []string, identity, remote string) string {
+	t.Helper()
+	recipient := strings.TrimSpace(run(t, nil, "age-keygen", "-y", identity))
+	return run(t, append(env, "WORK_DIR="+t.TempDir(), "AGE_RECIPIENT="+recipient, "BACKUP_REMOTE=offsite:"+remote),
+		"sh", filepath.Join(scripts, "backup.sh"))
+}
+
+// key writes a new age identity and returns the path of the file.
+func key(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "key.txt")
+	run(t, nil, "age-keygen", "-o", path)
+	return path
 }
 
 // run runs a command with env added to the environment, and fails the
@@ -111,39 +143,26 @@ func script(env []string, name string, args ...string) (string, error) {
 
 // region: backup-test
 
-// TestBackupKeepsFourteenDays runs backup.sh: it writes one new dump and
-// deletes the dumps that are 14 or more days old, and the leftovers of a
-// dump that never finished.
-func TestBackupKeepsFourteenDays(t *testing.T) {
+// TestBackupUploadsOnlyCiphertext runs backup.sh: the remote gets the
+// dump, encrypted with age, and the row counts of the same snapshot, and
+// no unencrypted dump is left behind.
+func TestBackupUploadsOnlyCiphertext(t *testing.T) {
 	env := live(t, pgBin(t))
-	backups := t.TempDir()
-	now := time.Now()
-	old := map[string]time.Duration{
-		"monitor-20260901-031700.dump":         14*24*time.Hour + time.Hour, // deleted
-		"monitor-20260902-031700.dump":         13*24*time.Hour + time.Hour, // kept
-		"monitor-20260903-031700.dump.partial": 2 * time.Hour,               // deleted
+	remote := t.TempDir()
+	out := backup(t, env, key(t), remote)
+	if !regexp.MustCompile(`(?m)^backup: monitor-\d{8}-\d{6}\.dump\.age, \d+ KiB, counts 2 3 0 3, in \d+ s$`).MatchString(out) {
+		t.Errorf("output:\n%s\nwant a line backup: monitor-<time>.dump.age, <n> KiB, counts 2 3 0 3, in <n> s", out)
 	}
-	for name, age := range old {
-		p := filepath.Join(backups, name)
-		if err := os.WriteFile(p, []byte("old"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chtimes(p, now.Add(-age), now.Add(-age)); err != nil {
-			t.Fatal(err)
-		}
+	files, _ := filepath.Glob(filepath.Join(remote, "*"))
+	if len(files) != 2 || !strings.HasSuffix(files[0], ".counts") || !strings.HasSuffix(files[1], ".dump.age") {
+		t.Fatalf("remote holds %v, want one .counts and one .dump.age", files)
 	}
-
-	out := run(t, append(env, "BACKUP_DIR="+backups), "sh", filepath.Join(scripts, "backup.sh"))
-	if !regexp.MustCompile(`(?m)^backup: monitor-\d{8}-\d{6}\.dump, \d+ KiB in \d+ s$`).MatchString(out) {
-		t.Errorf("output:\n%s\nwant a line backup: monitor-<time>.dump, <n> KiB in <n> s", out)
+	head, _ := os.ReadFile(files[1])
+	if !bytes.HasPrefix(head, []byte("age-encryption.org/v1\n")) {
+		t.Errorf("%s is not an age file", files[1])
 	}
-	left, _ := filepath.Glob(filepath.Join(backups, "*"))
-	var names []string
-	for _, p := range left {
-		names = append(names, filepath.Base(p))
-	}
-	if len(names) != 2 || names[0] != "monitor-20260902-031700.dump" || !strings.HasPrefix(names[1], "monitor-2") {
-		t.Errorf("backups left: %v, want the 13-day-old dump and the new one", names)
+	if counts, _ := os.ReadFile(files[0]); string(counts) != "2 3 0 3\n" {
+		t.Errorf("counts %q, want \"2 3 0 3\\n\"", counts)
 	}
 }
 
@@ -151,50 +170,71 @@ func TestBackupKeepsFourteenDays(t *testing.T) {
 
 // region: drill-test
 
-// TestRestoreDrill takes a real dump and restores it with the drill, then
-// breaks the drill three ways: no dump, a dump too old, a dump cut short.
+// TestRestoreDrill takes a real backup, then runs the drill on copies of
+// the remote: as it is, and broken six ways. Each way fails with its own
+// message, which is what the reader sees in the drill log.
 func TestRestoreDrill(t *testing.T) {
-	bin := pgBin(t)
-	env := live(t, bin)
-	backups := t.TempDir()
-	run(t, append(env, "BACKUP_DIR="+backups), "sh", filepath.Join(scripts, "backup.sh"))
+	env := live(t, pgBin(t))
+	identity := key(t)
+	good := t.TempDir()
+	backup(t, env, identity, good)
+	files, _ := filepath.Glob(filepath.Join(good, "*.dump.age"))
+	dump := filepath.Base(files[0])
 
-	drill := func(extra ...string) (string, error) {
-		work, err := os.MkdirTemp("", "drill")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { os.RemoveAll(work) })
-		return script(append(append(env, "BACKUP_DIR="+backups, "DRILL_DIR="+work), extra...),
-			"sh", filepath.Join(scripts, "restore-drill.sh"))
-	}
+	// A backup of the empty database, to slip in under the name of the
+	// real one: what a backup of the wrong database looks like.
+	emptied := t.TempDir()
+	backup(t, append(env, "PGDATABASE=empty"), identity, emptied)
+	emptyDump, _ := filepath.Glob(filepath.Join(emptied, "*.dump.age"))
 
-	out, err := drill()
-	if err != nil {
-		t.Fatalf("drill: %v\n%s", err, out)
+	tests := []struct {
+		name  string
+		env   []string
+		spoil func(remote string)
+		want  string
+	}{
+		{"a good backup", nil, func(string) {}, "restore drill: ok, restore "},
+		{"no backup at all", nil, func(r string) { os.RemoveAll(r); os.Mkdir(r, 0o755) }, "FAILED: no dump"},
+		{"the newest backup is too old", []string{"MAX_AGE_HOURS=0"}, func(string) {}, "hours old"},
+		{"the dump is cut short", nil, func(r string) { os.Truncate(filepath.Join(r, dump), 2000) }, "FAILED: age could not decrypt"},
+		{"another key encrypted it", []string{"AGE_IDENTITY=" + key(t)}, func(string) {}, "FAILED: age could not decrypt"},
+		{"the counts differ", nil, func(r string) {
+			counts := strings.TrimSuffix(dump, ".dump.age") + ".counts"
+			os.WriteFile(filepath.Join(r, counts), []byte("2 4 0 3\n"), 0o644)
+		}, "FAILED: the restored counts differ"},
+		{"the dump holds an empty database", nil, func(r string) {
+			b, _ := os.ReadFile(emptyDump[0])
+			os.WriteFile(filepath.Join(r, dump), b, 0o644)
+		}, "FAILED: the restored database has no monitors, the backup counted 2"},
 	}
-	for _, want := range []string{"restored: 2 3 0 3\n", "live:     2 3 0 3\n", "restore drill: ok, restore "} {
-		if !strings.Contains(out, want) {
-			t.Errorf("drill output:\n%s\nwant it to contain %q", out, want)
-		}
-	}
-
-	if out, err := drill("MAX_AGE_HOURS=0"); err == nil || !strings.Contains(out, "hours old") {
-		t.Errorf("dump older than MAX_AGE_HOURS: err %v, output:\n%s", err, out)
-	}
-
-	dumps, _ := filepath.Glob(filepath.Join(backups, "monitor-*.dump"))
-	if err := os.Truncate(dumps[0], 2000); err != nil {
-		t.Fatal(err)
-	}
-	if out, err := drill(); err == nil || !strings.Contains(out, "restore drill: FAILED: pg_restore") {
-		t.Errorf("dump cut short: err %v, output:\n%s", err, out)
-	}
-
-	os.Remove(dumps[0])
-	if out, err := drill(); err == nil || !strings.Contains(out, "no dump") {
-		t.Errorf("no dump: err %v, output:\n%s", err, out)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			remote := t.TempDir()
+			if err := os.CopyFS(remote, os.DirFS(good)); err != nil {
+				t.Fatal(err)
+			}
+			tt.spoil(remote)
+			drill := append(env, "BACKUP_REMOTE=offsite:"+remote, "AGE_IDENTITY="+identity,
+				"BACKUP_DIR="+t.TempDir(), "DRILL_DIR="+shortDir(t))
+			out, err := script(append(drill, tt.env...), "sh", filepath.Join(scripts, "restore-drill.sh"))
+			if ok := tt.want == "restore drill: ok, restore "; ok != (err == nil) || !strings.Contains(out, tt.want) {
+				t.Errorf("err %v, output:\n%s\nwant it to contain %q", err, out, tt.want)
+			}
+		})
 	}
 }
 
 // endregion: drill-test
+
+// shortDir returns a new temporary folder with a short path: the drill
+// puts the socket of its server there, and a socket path holds at most
+// 107 bytes.
+func shortDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "drill")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}

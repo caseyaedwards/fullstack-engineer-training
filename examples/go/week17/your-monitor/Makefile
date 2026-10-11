@@ -73,7 +73,7 @@ e2e: web/node_modules
 web/node_modules: web/package-lock.json
 	npm --prefix web ci
 # region: kind
-# The kind cluster: Kubernetes 1.33 in one Docker container, as
+# The kind cluster: Kubernetes 1.36 in one Docker container, as
 # deploy/k8s/kind-config.yaml describes it. Each kubectl command names the
 # context of this cluster, so none of them reaches another cluster.
 KIND_CLUSTER := your-monitor
@@ -102,9 +102,9 @@ $(KIND_ENV):
 	umask 077; printf 'POSTGRES_PASSWORD=%s\n' "$$(openssl rand -hex 16)" > $@
 
 # Render the overlay and check every object against the schemas of
-# Kubernetes 1.33, without a cluster.
+# Kubernetes 1.36, without a cluster.
 k8s-check: $(KIND_ENV)
-	kubectl kustomize deploy/k8s/overlays/kind | kubeconform -strict -kubernetes-version 1.33.0 -summary
+	kubectl kustomize deploy/k8s/overlays/kind | kubeconform -strict -kubernetes-version 1.36.0 -summary
 
 # Send every object to the cluster, then wait for Postgres and each program.
 kind-deploy: $(KIND_ENV)

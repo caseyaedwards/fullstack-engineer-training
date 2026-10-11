@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { base, root } from './helpers.mjs';
 
 // Week 17 scales the monitor, rolls it out and back, limits each client in the api and
-// at Traefik, and backs up Postgres with a timed restore drill. These checks keep the
+// at Traefik, and sends an encrypted Postgres backup off the box, with a timed restore drill. These checks keep the
 // page complete, and keep the limiter code and the manifests on the page in step with
 // the tested example tree.
 
@@ -22,9 +22,9 @@ const blocks = (lang) =>
 const text = unescape(html.replace(/<[^>]+>/g, ' '));
 const dir = join(root, 'examples/go/week17/your-monitor');
 
-test('week 17 has three inline-SVG diagrams with walkthrough steps', () => {
+test('week 17 has two inline-SVG diagrams with walkthrough steps', () => {
   for (const f of figures) assert.match(f, /<svg[\s>]/, 'figure without inline <svg>');
-  for (const id of ['hpa-loop', 'rolling-update', 'client-address']) {
+  for (const id of ['rolling-update', 'client-address']) {
     assert.ok(figures.some((f) => f.includes(`id="${id}"`) && f.includes('dg-steps')), `diagram ${id} has no walkthrough`);
   }
 });
@@ -40,13 +40,20 @@ test('week 17 shows the client address walk, the bucket and the spoofing test', 
   assert.match(go, /w\.Header\(\)\.Set\("Retry-After"/);
 });
 
+test('week 17 sets the namespace in the admin context before any other kubectl command', () => {
+  const sh = blocks('sh');
+  const first = sh.findIndex((b) => /\bkubectl\b/.test(b));
+  assert.match(sh[first] ?? '', /^kubectl config set-context --current --namespace=your-monitor$/m,
+    'the Week 16 admin kubeconfig has no namespace: set it before the first kubectl command');
+});
+
 test('week 17 tells the reader to go get golang.org/x/time at @latest', () => {
   const sh = blocks('sh').join('\n');
   assert.match(sh, /go get golang\.org\/x\/time@latest/);
   assert.doesNotMatch(sh, /x\/time@v\d/, 'the reader must not pin the examples version');
 });
 
-test('week 17 shows the HPA, the rollout settings, the Middleware and both CronJobs', () => {
+test('week 17 shows the HPA, the rollout settings, the Middleware and the backup CronJob', () => {
   const yaml = blocks('yaml').join('\n');
   assert.match(yaml, /apiVersion: autoscaling\/v2\s+kind: HorizontalPodAutoscaler/);
   assert.match(yaml, /maxUnavailable: 0/);
@@ -56,10 +63,28 @@ test('week 17 shows the HPA, the rollout settings, the Middleware and both CronJ
   assert.match(yaml, /router\.middlewares: your-monitor-redirect-https@kubernetescrd,your-monitor-ratelimit@kubernetescrd/);
   assert.match(yaml, /resources: \[horizontalpodautoscalers\]/, 'the deployer Role must grant the HPAs');
   assert.match(yaml, /resources: \[cronjobs\]/, 'the deployer Role must grant the CronJobs');
-  assert.match(yaml, /resources: \[persistentvolumeclaims\]/, 'the deployer Role must grant the backup claim');
   assert.match(yaml, /externalTrafficPolicy: Local/);
   assert.match(yaml, /kind: CronJob\s+metadata:\s+name: pg-backup/);
-  assert.match(blocks('sh').join('\n'), /pg_restore --host="\$work"/, 'the drill script is not on the page');
+  assert.match(yaml, /secretRef:\s+name: offsite/, 'the upload key comes from a Secret');
+  assert.match(yaml, /- path: prestop\.yaml\s+target:\s+kind: Deployment\s+name: api\|web/, 'web needs the preStop pause too');
+});
+
+test('week 17 encrypts each backup, sends it off the box and drills a restore that compares', () => {
+  const sh = blocks('sh').join('\n');
+  assert.match(sh, /age --encrypt --recipient="\$AGE_RECIPIENT"/);
+  assert.match(sh, /rclone copyto --no-check-dest --s3-no-check-bucket --s3-no-head/);
+  assert.match(sh, /pg_dump --format=custom --snapshot="\$SNAPSHOT"/, 'the counts must come from the snapshot of the dump');
+  assert.match(sh, /age --decrypt --identity="\$AGE_IDENTITY"/);
+  assert.match(sh, /pg_restore --host="\$work"/, 'the drill script is not on the page');
+  assert.match(sh, /\[ "\$restored" = "\$want" \] \|\| fail/, 'the drill must fail on a count mismatch');
+  assert.match(sh, /kubectl create secret generic offsite --from-env-file=offsite\.env/);
+  assert.match(sh, /pg_restore -U monitor -d monitor --clean --if-exists/, 'the restore runbook is not on the page');
+  assert.doesNotMatch(sh, /pg_dump -U monitor -d monitor --format=custom >/, 'no plaintext dump to the laptop');
+  const go = blocks('go').join('\n');
+  assert.match(go, /func TestNewPodsPassRestricted/);
+  assert.match(go, /func TestRestoreDrill/);
+  assert.match(go, /"FAILED: the restored database has no monitors, the backup counted 2"/);
+  assert.match(text, /RPO is now the interval between uploads/);
 });
 
 test('week 17 validates against Kubernetes 1.36', () => {
@@ -76,7 +101,14 @@ test('the limits on the page match the example manifests and code', () => {
   assert.match(limits, /loginAllRate {2}= 1/);
   assert.match(text, /one login a second after a burst of three/);
   const commands = `${text}\n${blocks('sh').join('\n')}\n${blocks('txt').join('\n')}`;
-  for (const cmd of ['kubectl rollout status', 'kubectl rollout history', 'kubectl rollout undo', 'kubectl create job --from=cronjob/restore-drill']) {
+  for (const cmd of [
+    'kubectl rollout status',
+    'kubectl rollout history',
+    'kubectl rollout undo',
+    'for d in api worker scheduler alerter web; do kubectl rollout undo deployment/$d; done',
+    'kubectl create job --from=cronjob/pg-backup backup-now',
+    'kubectl logs -f job/backup-now',
+  ]) {
     assert.ok(commands.includes(cmd), `${cmd} is not on the page`);
   }
 });

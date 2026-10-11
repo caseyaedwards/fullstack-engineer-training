@@ -71,6 +71,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      # Week 17: the backup tests run backup.sh and restore-drill.sh, which
+      # need age and rclone. The runner image has the Postgres server tools.
+      - run: sudo apt-get update && sudo apt-get install -y age rclone
       - run: go test -race ./...
   # endregion: test
 
@@ -135,10 +138,10 @@ jobs:
     permissions:
       contents: read
       packages: write
-    # Five copies of this job run side by side, one per Dockerfile target.
+    # Six copies of this job run side by side, one per Dockerfile target.
     strategy:
       matrix:
-        target: [api, worker, scheduler, alerter, web]
+        target: [api, worker, scheduler, alerter, web, backup]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

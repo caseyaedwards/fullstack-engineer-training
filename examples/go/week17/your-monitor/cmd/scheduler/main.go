@@ -39,8 +39,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	// region: health
-	// The kubelet probes /healthz on -metrics-addr. A round that fails still
-	// beats: a restart does not fix a database that is down.
+	// The kubelet probes /healthz on -metrics-addr. A round that fails, or
+	// runs out of time, still beats: a restart does not fix a database that
+	// is down.
 	health := obs.NewHealth(3 * *interval)
 	if *metricsAddr != "" {
 		go func() {
@@ -61,7 +62,11 @@ func main() {
 	m := newQueueMetrics(prometheus.DefaultRegisterer)
 	slog.Info("started", "pid", os.Getpid(), "interval", interval.String())
 	every(ctx, *interval, func(ctx context.Context) {
-		round(ctx, pool, m)
+		// A query that hangs ends with the round, after two intervals, and
+		// the round still beats.
+		rctx, cancel := context.WithTimeout(ctx, *interval*2)
+		defer cancel()
+		round(rctx, pool, m)
 		health.Beat()
 	})
 	slog.Info("stopped")

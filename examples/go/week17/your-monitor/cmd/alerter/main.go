@@ -67,7 +67,11 @@ func main() {
 	}
 	slog.Info("started", "pid", os.Getpid(), "interval", interval.String(), "threshold", *threshold)
 	every(ctx, *interval, func(ctx context.Context) {
-		if err := a.Round(ctx); err != nil && ctx.Err() == nil {
+		// A query that hangs ends with the round, after two intervals, and
+		// the round still beats.
+		rctx, cancel := context.WithTimeout(ctx, *interval*2)
+		defer cancel()
+		if err := a.Round(rctx); err != nil && ctx.Err() == nil {
 			slog.Error("round failed", "err", err)
 		}
 		health.Beat()

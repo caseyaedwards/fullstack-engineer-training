@@ -8,8 +8,9 @@
 //
 // With -debug-addr, it serves its Prometheus metrics on /metrics and its
 // health on /healthz, on that address. With -pprof-addr, a loopback
-// address, it serves pprof there. With OTEL_EXPORTER_OTLP_ENDPOINT set, it
-// sends a trace for each job to that OpenTelemetry collector.
+// address, it serves pprof there.
+// With OTEL_EXPORTER_OTLP_ENDPOINT set, it sends a trace for each job to
+// that OpenTelemetry collector.
 
 // region: imports
 package main
@@ -72,12 +73,13 @@ func main() {
 			slog.Error("tracing shutdown", "err", err)
 		}
 	}()
+	// region: health
 	// A job takes up to -timeout, and an idle goroutine looks again after
 	// -poll. Three of those in a row with no beat means every goroutine is stuck.
 	health := obs.NewHealth(3 * (*timeout + *poll))
 	if *debugAddr != "" {
-		// Prometheus and the kubelet reach this address from outside the
-		// container: it serves /metrics and /healthz and nothing else.
+		// Prometheus scrapes /metrics on this address from another
+		// container, and the kubelet probes /healthz. pprof stays off it.
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", promhttp.Handler())
 		mux.Handle("GET /healthz", health)
@@ -85,6 +87,7 @@ func main() {
 			slog.Error("debug server stopped", "err", obs.NewServer(*debugAddr, mux).ListenAndServe())
 		}()
 	}
+	// endregion: health
 	if *pprofAddr != "" {
 		srv, err := obs.NewPprofServer(*pprofAddr)
 		if err != nil {

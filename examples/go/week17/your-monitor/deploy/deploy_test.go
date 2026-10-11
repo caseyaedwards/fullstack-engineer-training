@@ -3,13 +3,15 @@
 // their parts agree with each other and with the api: every HPA scales a
 // Deployment that has a CPU request and no replicas field, the Ingress
 // names Middlewares that exist, the api settings parse the way the api
-// parses them, each CronJob runs a script that the ConfigMap holds, and
-// the CI Role of Week 16 can apply every kind the prod overlay holds.
+// parses them, the backup CronJob runs the backup image, and every new
+// pod passes the restricted Pod Security Standard. The CI Role check
+// lives with the Week 16 tests in k8s/manifests_test.go.
 package deploy
 
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -205,8 +207,8 @@ func TestIngressNamesTheMiddleware(t *testing.T) {
 // endregion: middleware-test
 
 // TestAPIPatch: the settings parse the way cmd/api parses them, and the
-// preStop pause fits inside the grace period with time to spare for the
-// 5-second shutdown of serve.
+// preStop pause that prestop.yaml adds to api and web fits inside the
+// grace period, with time to spare for the 5-second shutdown of serve.
 func TestAPIPatch(t *testing.T) {
 	d := load(t, filepath.Join(prod, "api.yaml"))[0]
 	env := map[string]string{}
@@ -222,57 +224,88 @@ func TestAPIPatch(t *testing.T) {
 	if err1 != nil || err2 != nil || limit <= 0 || burst < 1 {
 		t.Errorf("RATE_LIMIT %q, RATE_BURST %q", env["RATE_LIMIT"], env["RATE_BURST"])
 	}
-	pause := get(d, "spec", "template", "spec", "containers", 0, "lifecycle", "preStop", "sleep", "seconds").(int)
-	grace := get(d, "spec", "template", "spec", "terminationGracePeriodSeconds").(int)
-	if pause+5 >= grace {
+	// prestop.yaml is a JSON patch: a list of operations, not an object.
+	b, err := os.ReadFile(filepath.Join(prod, "prestop.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ops []map[string]any
+	if err := yaml.Unmarshal(b, &ops); err != nil || len(ops) != 1 {
+		t.Fatalf("prestop.yaml: want one JSON patch operation, got %d (%v)", len(ops), err)
+	}
+	pause, _ := get(doc(ops[0]), "value", "preStop", "sleep", "seconds").(int)
+	grace, _ := get(d, "spec", "template", "spec", "terminationGracePeriodSeconds").(int)
+	if pause < 1 || pause+5 >= grace {
 		t.Errorf("preStop %d s plus 5 s of shutdown must stay under the grace period of %d s", pause, grace)
+	}
+	kust := load(t, filepath.Join(prod, "kustomization.yaml"))[0]
+	var targets string
+	for _, p := range get(kust, "patches").([]any) {
+		if get(p, "path") == "prestop.yaml" {
+			targets, _ = get(p, "target", "name").(string)
+		}
+	}
+	if targets != "api|web" {
+		t.Errorf("prestop.yaml patches %q, want api|web: Traefik sends to web, kube-proxy to api", targets)
 	}
 }
 
 // region: cronjob-test
 
-// TestCronJobsRunTheirScripts: each CronJob runs a script from the
-// backup-scripts ConfigMap, and the script is one the generator holds.
-func TestCronJobsRunTheirScripts(t *testing.T) {
-	kust := load(t, filepath.Join(prod, "kustomization.yaml"))[0]
-	files := map[string]bool{}
-	for _, g := range get(kust, "configMapGenerator").([]any) {
-		if get(g, "name") != "backup-scripts" {
-			continue
-		}
-		for _, f := range get(g, "files").([]any) {
-			if _, err := os.Stat(filepath.Join(prod, f.(string))); err != nil {
-				t.Error(err)
-			}
-			files[filepath.Base(f.(string))] = true
-		}
+// TestBackupCronJob: the CronJob runs backup.sh from the backup image,
+// which the Dockerfile builds and CI pushes and deploy.yml names like the
+// other five. It reaches Postgres with the settings the programs of Week
+// 15 use, and reads the age public key, the remote and the upload key.
+func TestBackupCronJob(t *testing.T) {
+	cj := find(t, load(t, filepath.Join(prod, "backup.yaml")), "CronJob", "pg-backup")
+	if get(cj, "spec", "concurrencyPolicy") != "Forbid" {
+		t.Errorf("concurrencyPolicy %v, want Forbid", get(cj, "spec", "concurrencyPolicy"))
 	}
-	// The CronJobs reach Postgres with the user, database and password the
-	// programs of Week 15 use.
+	pod := get(cj, "spec", "jobTemplate", "spec", "template", "spec")
+	c := get(pod, "containers", 0)
+	if get(c, "image") != "your-monitor-backup" || fmt.Sprint(get(c, "command")) != "[backup.sh]" {
+		t.Errorf("container runs %v from %v, want backup.sh from your-monitor-backup", get(c, "command"), get(c, "image"))
+	}
+	if fmt.Sprint(get(pod, "imagePullSecrets")) != "[map[name:ghcr-pull]]" {
+		t.Errorf("imagePullSecrets %v, want ghcr-pull: the backup image lives on GHCR", get(pod, "imagePullSecrets"))
+	}
+
 	apiEnv := envFrom(get(find(t, load(t, filepath.Join(base, "api.yaml")), "Deployment", "api"),
 		"spec", "template", "spec", "containers", 0))
-	for _, name := range []string{"pg-backup", "restore-drill"} {
-		cj := find(t, load(t, filepath.Join(prod, "backup.yaml")), "CronJob", name)
-		if get(cj, "spec", "concurrencyPolicy") != "Forbid" {
-			t.Errorf("CronJob %s: concurrencyPolicy %v, want Forbid", name, get(cj, "spec", "concurrencyPolicy"))
+	if got, want := envFrom(c), apiEnv+", configMap backup-config, secret offsite"; got != want {
+		t.Errorf("envFrom %s, want %s", got, want)
+	}
+	kust := load(t, filepath.Join(prod, "kustomization.yaml"))[0]
+	var literals string
+	for _, g := range get(kust, "configMapGenerator").([]any) {
+		if get(g, "name") == "backup-config" {
+			literals = fmt.Sprint(get(g, "literals"))
 		}
-		pod := get(cj, "spec", "jobTemplate", "spec", "template", "spec")
-		cmd := get(pod, "containers", 0, "command").([]any)
-		script := strings.TrimPrefix(cmd[len(cmd)-1].(string), "/scripts/")
-		if !files[script] {
-			t.Errorf("CronJob %s runs %s, which backup-scripts does not hold", name, script)
+	}
+	for _, key := range []string{"AGE_RECIPIENT=age1", "BACKUP_REMOTE="} {
+		if !strings.Contains(literals, key) {
+			t.Errorf("backup-config %s has no %s", literals, key)
 		}
-		var mounted bool
-		for _, v := range get(pod, "volumes").([]any) {
-			if get(v, "configMap", "name") == "backup-scripts" {
-				mounted = true
+	}
+
+	// The image: the scripts it copies exist, CI builds it and installs
+	// the tools the backup tests need, deploy.yml points
+	// your-monitor-backup at GHCR.
+	for file, wants := range map[string][]string{
+		"../Dockerfile":                   {"AS backup"},
+		"../.github/workflows/ci.yml":     {"web, backup]", "install -y age rclone"},
+		"../.github/workflows/deploy.yml": {"alerter web backup; do"},
+	} {
+		b, err := os.ReadFile(file)
+		for _, want := range wants {
+			if err != nil || !strings.Contains(string(b), want) {
+				t.Errorf("%s does not contain %q (%v)", file, want, err)
 			}
 		}
-		if !mounted {
-			t.Errorf("CronJob %s does not mount backup-scripts", name)
-		}
-		if got := envFrom(get(pod, "containers", 0)); got != apiEnv {
-			t.Errorf("CronJob %s reads %s, the api reads %s", name, got, apiEnv)
+	}
+	for _, f := range []string{"backup/backup.sh", "backup/restore-drill.sh"} {
+		if _, err := os.Stat(f); err != nil {
+			t.Error(err)
 		}
 	}
 }
@@ -295,94 +328,11 @@ func envFrom(container any) string {
 
 // endregion: cronjob-test
 
-// region: rbac-test
-
-// resources maps each kind the prod overlay may hold to the API group and
-// resource name that a Role rule names.
-var resources = map[string][2]string{
-	"ConfigMap":               {"", "configmaps"},
-	"Service":                 {"", "services"},
-	"PersistentVolumeClaim":   {"", "persistentvolumeclaims"},
-	"Deployment":              {"apps", "deployments"},
-	"StatefulSet":             {"apps", "statefulsets"},
-	"Ingress":                 {"networking.k8s.io", "ingresses"},
-	"Middleware":              {"traefik.io", "middlewares"},
-	"HorizontalPodAutoscaler": {"autoscaling", "horizontalpodautoscalers"},
-	"CronJob":                 {"batch", "cronjobs"},
-}
-
-// kinds returns the kind of every object that the Kustomization in dir
-// holds, through its resources, its bases and its generators.
-func kinds(t *testing.T, dir string) map[string]bool {
-	t.Helper()
-	out := map[string]bool{}
-	k := load(t, filepath.Join(dir, "kustomization.yaml"))[0]
-	res, _ := get(k, "resources").([]any)
-	for _, r := range res {
-		p := filepath.Join(dir, r.(string))
-		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-			for kind := range kinds(t, p) {
-				out[kind] = true
-			}
-			continue
-		}
-		for _, d := range load(t, p) {
-			out[d["kind"].(string)] = true
-		}
-	}
-	if k["configMapGenerator"] != nil {
-		out["ConfigMap"] = true
-	}
-	if k["secretGenerator"] != nil {
-		out["Secret"] = true
-	}
-	return out
-}
-
-// TestDeployerCanApplyTheProdOverlay: deploy.yml applies the prod overlay
-// as the deployer ServiceAccount of Week 16, whose Role names each kind it
-// may touch. kubectl apply reads each object, then creates or patches it;
-// kubectl rollout status lists and watches the Deployments. A kind that
-// the Role does not grant fails the deploy halfway, with Forbidden.
-func TestDeployerCanApplyTheProdOverlay(t *testing.T) {
-	role := find(t, load(t, "k8s/cluster/ci-deployer.yaml"), "Role", "deployer")
-	allows := func(group, resource, verb string) bool {
-		for _, r := range get(role, "rules").([]any) {
-			has := func(field, want string) bool {
-				l, _ := get(r, field).([]any)
-				return slices.Contains(l, any(want))
-			}
-			if has("apiGroups", group) && has("resources", resource) && has("verbs", verb) {
-				return true
-			}
-		}
-		return false
-	}
-	for kind := range kinds(t, prod) {
-		gr, ok := resources[kind]
-		if !ok {
-			t.Errorf("the prod overlay holds a %s: add it to the resources map and to the deployer Role", kind)
-			continue
-		}
-		verbs := []string{"get", "create", "patch"}
-		if kind == "Deployment" {
-			verbs = append(verbs, "list", "watch")
-		}
-		for _, verb := range verbs {
-			if !allows(gr[0], gr[1], verb) {
-				t.Errorf("the deployer Role cannot %s %s, which the prod overlay holds", verb, gr[1])
-			}
-		}
-	}
-}
-
-// endregion: rbac-test
-
 // region: restricted-test
 
 // TestNewPodsPassRestricted: the namespace enforces the restricted Pod
 // Security Standard, and the API server refuses a pod that breaks it. The
-// Job pods of both CronJobs and the load-drill pod must not run as root,
+// Job pod of the backup CronJob and the load-drill pod must not run as root,
 // must not gain privileges, must drop every capability, must use the
 // default seccomp profile, and may mount only volumes that come from the
 // cluster, never from the node.
