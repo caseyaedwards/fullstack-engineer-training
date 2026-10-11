@@ -30,7 +30,7 @@ func NewServer(addr string, h http.Handler) *http.Server {
 
 // NewPprofServer returns a server for the pprof profiling pages, on a
 // mux of its own. The pages show the heap, every goroutine and the
-// command line, and /debug/pprof/profile keeps a CPU busy for 30 seconds:
+// command line, and /debug/pprof/profile starts a 30-second CPU profile:
 // no one outside the machine gets to read them. addr must name a loopback
 // host, such as 127.0.0.1:6061, or NewPprofServer returns an error.
 //
