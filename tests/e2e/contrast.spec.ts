@@ -8,7 +8,6 @@ import { test, expect, type Page } from '@playwright/test';
 const WEEK = 'weeks/04-networking/';
 const HOME = '';
 const AA = 4.5;
-const DIM = 3;
 
 type RGBA = [number, number, number, number];
 
@@ -126,6 +125,9 @@ async function load(page: Page, path: string, theme: 'dark' | 'light') {
   await page.evaluate(pageHelpers);
 }
 
+const variable = (page: Page, name: string) =>
+  page.evaluate((n) => (window as unknown as { __contrast: { variable(n: string): RGBA } }).__contrast.variable(n), name);
+
 type Measured = { name: string; ratio: number; fg: RGBA; bg: RGBA };
 
 async function measure(page: Page, name: string, selector: string): Promise<Measured[]> {
@@ -142,7 +144,7 @@ const fmt = (m: Measured) => `${m.name}: ${m.ratio.toFixed(2)}:1 (fg ${m.fg.slic
 
 function expectAtLeast(ms: Measured[], min: number) {
   const m = worst(ms);
-  console.log(`  ${fmt(m)}`);
+  test.info().annotations.push({ type: 'contrast', description: fmt(m) });
   expect.soft(m.ratio, fmt(m)).toBeGreaterThanOrEqual(min);
 }
 
@@ -150,19 +152,18 @@ for (const theme of ['dark', 'light'] as const) {
   test.describe(`${theme} theme`, () => {
     test(`accent is green`, async ({ page }) => {
       await load(page, HOME, theme);
-      const accent = await page.evaluate(() =>
-        (window as unknown as { __contrast: { variable(n: string): RGBA } }).__contrast.variable('--sl-color-accent'),
-      );
-      const h = hue(accent);
-      expect(h, `--sl-color-accent hue ${h.toFixed(0)}`).toBeGreaterThanOrEqual(90);
-      expect(h, `--sl-color-accent hue ${h.toFixed(0)}`).toBeLessThanOrEqual(160);
+      // The blue tokens are remapped to the accent, so asides, badges and cards are green too.
+      for (const name of ['--sl-color-accent-low', '--sl-color-accent', '--sl-color-accent-high', '--sl-color-blue']) {
+        const h = hue(await variable(page, name));
+        expect(h, `${name} hue ${h.toFixed(0)}`).toBeGreaterThanOrEqual(90);
+        expect(h, `${name} hue ${h.toFixed(0)}`).toBeLessThanOrEqual(160);
+      }
     });
 
     test(`week 4: text meets WCAG AA`, async ({ page }) => {
       await load(page, WEEK, theme);
       const fig = 'figure.dg#dns-lookup';
       await expect(page.locator(`${fig} .dg-nav [aria-live]`)).toContainText('1/');
-      console.log(`${theme} ${WEEK}`);
 
       const checks: [string, string][] = [
         ['body text', '.sl-markdown-content > p'],
@@ -182,7 +183,7 @@ for (const theme of ['dark', 'light'] as const) {
       for (const [name, sel] of checks) expectAtLeast(await measure(page, name, sel), AA);
 
       const dimmed = await measure(page, 'dimmed diagram label', `${fig} .dg-dim text`);
-      expectAtLeast(dimmed, DIM);
+      expectAtLeast(dimmed, AA);
 
       // A highlighted label reads clearly ahead of the dimmed ones.
       const lit = await measure(page, 'highlighted diagram label', `${fig} .dg-hl text`);
@@ -194,7 +195,6 @@ for (const theme of ['dark', 'light'] as const) {
       await load(page, HOME, theme);
       // Mark one week complete so the timeline's complete state is measured too.
       await page.locator('.week-timeline li[data-week]').first().evaluate((li) => li.setAttribute('data-complete', ''));
-      console.log(`${theme} home`);
 
       const checks: [string, string][] = [
         ['body text', '.sl-markdown-content > p'],
@@ -209,3 +209,24 @@ for (const theme of ['dark', 'light'] as const) {
     });
   });
 }
+
+// Printers drop backgrounds, so printed text sits on white paper whatever theme the
+// reader picked on screen.
+test(`print from dark mode: text meets WCAG AA on white`, async ({ page }) => {
+  await page.emulateMedia({ media: 'print' });
+  await load(page, WEEK, 'dark');
+  const white: RGBA = [255, 255, 255, 1];
+  for (const [name, sel] of [
+    ['body text', '.sl-markdown-content > p'],
+    ['link', '.sl-markdown-content p a'],
+    ['heading', '.sl-markdown-content h2'],
+  ]) {
+    const fg = await page.locator(sel).first().evaluate((el) => getComputedStyle(el).color);
+    const c = await page.evaluate((css) => (window as unknown as { __contrast: { parse(s: string): RGBA } }).__contrast.parse(css), fg);
+    const r = ratio(c, white);
+    expect.soft(r, `${name}: ${r.toFixed(2)}:1 (${fg})`).toBeGreaterThanOrEqual(AA);
+  }
+  const h = hue(await variable(page, '--sl-color-accent'));
+  expect(h, `print --sl-color-accent hue ${h.toFixed(0)}`).toBeGreaterThanOrEqual(90);
+  expect(h, `print --sl-color-accent hue ${h.toFixed(0)}`).toBeLessThanOrEqual(160);
+});

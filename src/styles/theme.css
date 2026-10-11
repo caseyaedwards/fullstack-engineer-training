@@ -20,26 +20,34 @@
  * current sidebar item.
  */
 
-/* Dark mode (Starlight's default). */
-:root {
-  --sl-color-accent-low: #1d4527;
-  --sl-color-accent: #4caf5f;
-  --sl-color-accent-high: #8fd69b;
+/*
+ * Dark mode (Starlight's default). Screen only: Starlight forces light colours when
+ * printing, and an unconditional :root here would override that and print pale
+ * text on white paper.
+ */
+@media not print {
+  :root,
+  ::backdrop {
+    --sl-color-accent-low: #1d4527;
+    --sl-color-accent: #4caf5f;
+    --sl-color-accent-high: #8fd69b;
 
-  --sl-color-white: #f4f9f1;
-  --sl-color-gray-1: #e3ecdf;
-  --sl-color-gray-2: #d5e1cf;
-  --sl-color-gray-3: #adc0a6;
-  --sl-color-gray-4: #6e8467;
-  --sl-color-gray-5: #3d4f37;
-  --sl-color-gray-6: #2b3a26;
-  --sl-color-black: #1f2a1c;
+    --sl-color-white: #f4f9f1;
+    --sl-color-gray-1: #e3ecdf;
+    --sl-color-gray-2: #d5e1cf;
+    --sl-color-gray-3: #adc0a6;
+    --sl-color-gray-4: #6e8467;
+    --sl-color-gray-5: #3d4f37;
+    --sl-color-gray-6: #2b3a26;
+    --sl-color-black: #1f2a1c;
 
-  --sl-color-backdrop-overlay: rgb(17 24 15 / 0.7);
+    --sl-color-backdrop-overlay: rgb(17 24 15 / 0.7);
+  }
 }
 
 /* Light mode. */
-:root[data-theme='light'] {
+:root[data-theme='light'],
+[data-theme='light'] ::backdrop {
   --sl-color-accent-low: #dcefdf;
   --sl-color-accent: #22693a;
   --sl-color-accent-high: #144421;
@@ -57,9 +65,23 @@
   --sl-color-backdrop-overlay: rgb(52 66 48 / 0.6);
 }
 
-/* Starlight's note aside is blue: give it the accent green. */
-.starlight-aside--note {
-  --sl-color-asides-text-accent: var(--sl-color-accent-high);
-  --sl-color-asides-border: var(--sl-color-accent);
-  background-color: var(--sl-color-accent-low);
+/* Printing uses Starlight's light greys; give it the light-mode greens. */
+@media print {
+  :root {
+    --sl-color-accent-low: #dcefdf;
+    --sl-color-accent: #22693a;
+    --sl-color-accent-high: #144421;
+  }
+}
+
+/*
+ * Starlight's note asides, badges and cards read its blue tokens. Point them at
+ * the accent so no blue is left in either mode.
+ */
+:root,
+:root[data-theme='light'],
+::backdrop {
+  --sl-color-blue-low: var(--sl-color-accent-low);
+  --sl-color-blue: var(--sl-color-accent);
+  --sl-color-blue-high: var(--sl-color-accent-high);
 }

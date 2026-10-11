@@ -22,7 +22,7 @@
   --d2-N6: var(--sl-color-gray-6);
   --d2-N7: var(--sl-color-bg);
   --d2-B1: var(--sl-color-accent);
-  --d2-B2: color-mix(in srgb, var(--sl-color-accent) 40%, var(--sl-color-bg));
+  --d2-B2: color-mix(in srgb, var(--sl-color-accent) 60%, var(--sl-color-bg));
   --d2-B3: var(--sl-color-gray-5);
   --d2-B4: var(--sl-color-gray-5);
   --d2-B5: var(--sl-color-gray-6);
@@ -72,7 +72,7 @@
 /*
  * Walkthrough (src/scripts/walkthrough.ts). A step lights some elements and dims
  * the rest. Dimmed elements are context, so they fade (opacity) and lose the
- * accent (neutral strokes), but their labels keep at least 3:1 against the page:
+ * accent (neutral strokes), but their labels keep 4.5:1 against the page:
  * full-strength text at 65% opacity. Lit elements keep full opacity, a thicker
  * accent stroke, an accent-tinted shape fill and the brightest text colour.
  */
@@ -81,11 +81,11 @@
 }
 
 .dg .dg-dim text {
-  fill: var(--sl-color-gray-2);
+  fill: var(--sl-color-white);
 }
 
 .dg .dg-dim :is(rect, path, ellipse, polygon, circle) {
-  stroke: var(--sl-color-gray-4);
+  stroke: var(--sl-color-gray-3);
 }
 
 /*
