@@ -16,7 +16,7 @@ done:
   - id: explain-errors
     text: Without notes, you can explain how a Go function returns an error as a value, and how that differs from throw and catch in TypeScript.
   - id: week-01-pull-request
-    text: Your main.go is committed on its own branch and open as a pull request in your-monitor.
+    text: Your main.go is committed on its own branch, reviewed in a pull request and merged into main in your-monitor.
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -54,7 +54,7 @@ Go code lives in packages. A **package** is a folder of `.go` files that all sta
 
 Go ships with a large **standard library**: packages such as `fmt` for printing, `os` for talking to the operating system, `flag` for command-line flags, `net/http` for HTTP and `time` for clocks and durations. You import them by path, and nothing needs installing. Every line of code this week uses only the standard library.
 
-When a program ends, it hands the operating system a small number, its **exit code**. `0` means success. Anything else means failure, and the program picks the number. Your shell stores the exit code of the last command in `$?`. Scripts, CI jobs and Kubernetes health checks read the exit code, not the text a program prints, to decide whether it worked. The convention for command-line tools: `1` for a failure, `2` for a usage mistake such as a missing argument.
+When a program ends, it hands the operating system a small number, its **exit code**. `0` means success. Anything else means failure, and the program picks the number. Your shell stores the exit code of the last command in `$?`. Scripts, CI jobs and Kubernetes exec probes read the exit code, not the text a program prints, to decide whether it worked. The convention for command-line tools: `1` for a failure, `2` for a usage mistake such as a missing argument.
 
 <Diagram
   id="build-run-exit"
@@ -107,7 +107,7 @@ The types you meet this week:
 | `time.Duration` | a length of time, counted in nanoseconds | a `number` of milliseconds, by convention |
 | `error` | what went wrong, or `nil` | an `Error` that you throw |
 
-Go converts nothing on its own. Adding an `int` variable to a `time.Duration`, or assigning `"three"` to an `int`, stops the build. A number written straight into the code, such as the `5` in `5 * time.Second`, is the exception: it takes on the type it needs. The build error names the line and the mismatch:
+Go converts nothing on its own. Adding an `int` variable to a `time.Duration`, or assigning `"three"` to an `int`, stops the build. A number written straight into the code, such as the `5` in `5 * time.Second`, is the exception: it takes on the type it needs. With `var count int = "three"` on line 6, the error points at column 18, where `"three"` starts:
 
 ```txt
 ./main.go:6:18: cannot use "three" (untyped string constant) as int value in variable declaration
@@ -138,9 +138,8 @@ Go has no exceptions for expected failures such as an unreachable site. A functi
 ```go
 resp, err := client.Get(url)
 if err != nil {
-	return 0, latency, err // hand the error to whoever called this function
+	return 0, latency, err // hand the error to the caller; resp is nil
 }
-// from here on, resp is safe to use
 ```
 
 Compare the TypeScript version with `fetch`:
@@ -154,7 +153,7 @@ try {
 }
 ```
 
-The two draw the same line. `fetch` rejects only when no response arrives at all: a `500` response resolves, with `res.status` set to `500`. In Go, `client.Get` returns an error only when no response arrives: a `500` comes back as a response with `StatusCode` set to `500`. A server error is an answer, and your monitor reads it as a status.
+The two draw the same line. `fetch` rejects only when no response arrives at all: a `500` response resolves, with `res.status` set to `500`. In Go, `client.Get` returns an error only when no response arrives: a `500` comes back as a response with `StatusCode` set to `500`. A server error is an answer, and your monitor reads it as a status. One more case returns an error: `client.Get` follows redirects on its own, and after 10 of them in a row it gives up with `stopped after 10 redirects`.
 
 <Diagram
   id="error-flow"
@@ -179,7 +178,7 @@ main -> sh: exit code 1
   ]}
 />
 
-To add context as an error moves up, wrap it: `fmt.Errorf("check of %s: %w", url, err)` builds a new error whose message starts with your text and ends with the original message. The `%w` keeps the original error inside, where code higher up can still inspect it. The loop in [Slices, Maps and Loops](#slices-maps-and-loops) wraps an error this way.
+To add context as an error moves up, wrap it: `fmt.Errorf("check of %s: %w", url, err)` builds a new error whose message starts with your text and ends with the original message. The `%w` keeps the original error inside, where code higher up can still inspect it: `errors.Is(err, target)` reports whether a given error sits anywhere in the chain, and `errors.As` pulls out an error of a given type, such as a timeout. The loop in [Slices, Maps and Loops](#slices-maps-and-loops) wraps an error this way.
 
 Go does have a crash for bugs: a **panic**. Reading past the end of a list or following a `nil` pointer panics. The program prints the problem and a stack trace, then exits with code `2`. Treat a panic as a bug to fix, never as a way to report a site that is down.
 
@@ -318,7 +317,7 @@ os.Args[1] = https://example.com
 checking https://example.com
 ```
 
-`os.Args[0]` shows the temporary folder where `go run` builds the binary. Run it without a URL, and the `len` check prints the usage line and calls `os.Exit(2)`:
+`os.Args[0]` shows the temporary folder where `go run` builds the binary, here under `/tmp` on Linux. macOS puts it in a different temporary folder. Run it without a URL, and the `len` check prints the usage line and calls `os.Exit(2)`:
 
 ```txt
 $ go run .
@@ -340,7 +339,7 @@ Steps 4 and 5 together replace `main.go`. Start with the package line, the impor
 
 <CodeFrom file="go/week01/your-monitor/main.go" region="check" lang="go" title="main.go" />
 
-Line by line:
+When you save now, the VS Code Go extension deletes `flag`, `fmt` and `os`, because nothing uses them yet. Once you add `main` in Step 5 and save again, it adds them back. Line by line:
 
 - The signature names all three results, which documents which value is which. Week 2 tests this function on its own.
 - `start := time.Now()` reads the clock before the request.
@@ -348,8 +347,6 @@ Line by line:
 - `latency = time.Since(start)` uses `=`, not `:=`, because `latency` already exists too.
 - When `err` is not `nil`, there is no response: the function returns status `0`, the latency so far and the error. The latency still tells you something here: a refused connection fails within a millisecond, and a server that never answers fails at the full timeout.
 - `defer resp.Body.Close()` closes the body as the function returns.
-
-The program does not compile yet: the imports wait for `main`, in Step 5.
 
 ### Step 5: Read Command-Line Flags and Report the Result
 
@@ -458,7 +455,7 @@ User-Agent: Go-http-client/1.1
 Accept-Encoding: gzip
 ```
 
-Now see why the timeout matters. Start `nc -l 8080` again, change the client line in `main.go` to `client := &http.Client{}`, and run the check with `go run`. It waits with no end. Press **Ctrl+C** to stop it, and put the timeout back. A monitor without a timeout reports nothing at all about the one site that hangs.
+Now see why the timeout matters. Start `nc -l 8080` again and run `./your-monitor -url http://127.0.0.1:8080 -timeout 0`. A zero `time.Duration` means no limit, the same as `http.DefaultClient`, and the check waits with no end. Press **Ctrl+C** to stop it. A monitor without a timeout reports nothing at all about the one site that hangs.
 
 **A server that answers with an error.** Hand `nc` a canned response to send. The `\r\n` pairs end each line, as HTTP requires:
 
@@ -511,7 +508,7 @@ One failure does not show up in a single run: a missing `resp.Body.Close()`. Eac
 
 Stage 1, explain only: ask an assistant to explain errors, concepts and documentation, and to give hints. Do not paste code it writes into your project.
 
-**Do:** paste a compiler error you hit, such as `declared and not used: url`, and ask why Go treats it as an error when TypeScript only warns. Or paste your finished `checkURL` and ask the assistant to compare its error handling with `try` and `catch` around `fetch`. Then fix the code or answer the question yourself.
+**Do:** paste a compiler error you hit, such as `declared and not used: url`, and ask why Go treats it as an error when TypeScript leaves it to a lint rule or the `noUnusedLocals` option. Or paste your finished `checkURL` and ask the assistant to compare its error handling with `try` and `catch` around `fetch`. Then fix the code or answer the question yourself.
 
 **Do not:** ask it to write `checkURL` or `main`. Typing the `if err != nil` checks yourself, and fixing the compiler errors that come back, is how the Go rules stick. When you are stuck, ask which standard library function does the job, then read its documentation with `go doc net/http.Client`.
 
@@ -540,9 +537,7 @@ your-monitor-linux: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statica
 
 ELF is the Linux format for binaries. **cgo** is the part of Go that calls C code, and `CGO_ENABLED=0` turns it off. With cgo on, a binary built on Linux links to the C library of the build machine, and `file` reports `dynamically linked`. With cgo off, the binary is **statically linked**: it carries everything it needs and runs on any Linux machine with that processor type.
 
-**3. Run it where it does not fit.** On macOS, `./your-monitor-linux` fails with `exec format error`: macOS does not run Linux binaries.
-
-**4. Run it in Linux.** Docker runs a small Linux system for you. Mount the binary into an Alpine Linux container and run it there:
+**3. Run it in Linux.** On macOS, `./your-monitor-linux` fails with `exec format error`: macOS does not run Linux binaries. This step needs Docker, which you installed in Week 0. Docker runs a small Linux system for you. With Docker running, mount the binary into an Alpine Linux container and run it there:
 
 ```sh
 docker run --rm -v "$PWD/your-monitor-linux:/your-monitor" alpine /your-monitor -url https://example.com
