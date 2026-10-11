@@ -152,13 +152,13 @@ The tests use a fresh registry each, which starts every count at zero, and compa
 
 <CodeFrom file="go/tracks/observability/observability_test.go" region="test" lang="go" title="observability_test.go" />
 
-`testutil.GatherAndCompare` gathers the named metric from the registry, renders it in the text format and diffs it against the expected lines, `HELP` and `TYPE` included. `testutil.GatherAndCount` counts series: it counts a histogram as one series per label set, even though Prometheus stores 14. The region calls three helpers from the top of the test file: `serve` sends one `GET` through a handler into an `httptest.NewRecorder`, and `ok` and `broken` are handlers that answer `200` and `500`. Two more tests check that `103 Early Hints` before a `202` counts as `202`, and that two handlers on one registry each get their own series without a panic.
+`testutil.GatherAndCompare` gathers the named metric from the registry, renders it in the text format and diffs it against the expected lines, `HELP` and `TYPE` included. `testutil.GatherAndCount` counts series: it counts a histogram as one series per label set, even though Prometheus stores 14. The region calls three helpers from the top of the test file: `serve` sends one `GET` through a handler into an `httptest.NewRecorder`, and `ok` and `broken` are handlers that answer `200` and `500`. Three more tests check that `103 Early Hints` before a `202` counts as `202`, that `101 Switching Protocols` counts as `101`, and that two handlers on one registry each get their own series without a panic.
 
 ## In the Uptime Monitor
 
 The monitor gains its signals in three steps.
 
-<WeekLink n={12} anchor="observe-it">Week 12, Observe It</WeekLink>: you debug with `curl`, DevTools, `pprof` and Delve on your own machine. The worker serves `pprof` on its debug server at port `6060`, and you keep a baseline CPU profile of the idle worker to compare later profiles against. The habits in that section, such as logging the settings a program starts with, become the metrics of the next week.
+<WeekLink n={12} anchor="observe-it">Week 12, Observe It</WeekLink>: you debug with `curl`, DevTools, `pprof` and Delve on your own machine. The worker serves `pprof` on its debug server at port `6060`, and you keep a baseline CPU profile of the idle worker to compare later profiles against. Week 14 moves `pprof` to its own loopback server, `-pprof-addr 127.0.0.1:6061`, and leaves `/metrics` on the debug server. The habits in that section, such as logging the settings a program starts with, become the metrics of the next week.
 
 <WeekLink n={13} anchor="three-signals">Week 13, Three Signals</WeekLink>: every program writes JSON logs with `log/slog`, the api counts and times each request with the same metric names as the example above, the worker counts checks by result, and the scheduler keeps the queue depth in gauges. OpenTelemetry traces follow each request and each job through Postgres to Jaeger, and Grafana draws a dashboard of seven panels from Prometheus. <WeekLink n={13} anchor="step-3-count-and-time-every-api-request">Step 3</WeekLink> holds the api middleware.
 
@@ -180,6 +180,7 @@ The monitor gains its signals in three steps.
 - **Exemplars.** Attaching the trace ID to histogram observations links a spike on a graph straight to one slow trace.
 - **Native histograms.** Prometheus can choose high-resolution buckets itself, which removes the guesswork of fixed bounds and the cost of one series per bucket.
 - **Tail-based sampling.** The collector can wait until a trace ends and keep every slow or failed trace plus a share of the rest, instead of deciding at the first span.
+- **Log aggregation.** Grafana Loki and the log viewers of cloud providers keep the JSON lines of every program and filter them on any field, such as `monitor_id`, across days and containers, which `docker compose logs` cannot do.
 - **Long-term storage.** One Prometheus keeps its data on one disk for a limited time. Thanos and Grafana Mimir store metrics in object storage for months and query across many Prometheus servers.
 
 ## Further Reading

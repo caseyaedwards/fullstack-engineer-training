@@ -165,7 +165,7 @@ function parse(t) {
     const sec = s.find((x) => x.heading === heading);
     return sec ? flat.slice(sec.start, sec.end) : '';
   };
-  return { src, tags, sections: s, tagsIn, flatIn };
+  return { src, flat, tags, sections: s, tagsIn, flatIn };
 }
 
 test('every track page is written', () => {
@@ -177,7 +177,7 @@ for (const t of written) {
   const name = `${t.group}/${t.slug}.mdx`;
 
   test(`track ${name}: frontmatter, sections and components`, () => {
-    const { src, tags, sections: s } = parse(t);
+    const { flat, tags, sections: s } = parse(t);
     const fm = frontmatter(join(tracksDir, t.group, `${t.slug}.mdx`));
     assert.equal(typeof fm.description, 'string', `${name}: description is required`);
     assert.ok(
@@ -190,14 +190,20 @@ for (const t of written) {
     const duplicates = headings.filter((h, k) => headings.indexOf(h) !== k);
     assert.deepEqual(duplicates, [], `${name}: duplicate ## sections: ${duplicates.join(', ')}`);
     assert.deepEqual(headings, SECTIONS, `${name}: the ## sections must be exactly these, in order`);
-    for (const x of s) assert.ok(src.slice(x.start, x.end).trim().length > 0, `${name}: ${x.heading} is empty`);
+    // Visible prose or a component tag counts; a comment, an import line or a code-only fence does not.
+    for (const x of s) {
+      assert.ok(
+        flat.slice(x.start, x.end).trim().length > 0 || tags.some((g) => g.start >= x.start && g.start < x.end),
+        `${name}: ${x.heading} is empty`,
+      );
+    }
 
     const named = (n) => tags.filter((g) => g.name === n);
     assert.ok(named('UsedInWeeks').length > 0, `${name}: <UsedInWeeks /> is missing`);
     const diagrams = named('Diagram');
     assert.ok(diagrams.length >= 2, `${name}: needs at least two diagrams, has ${diagrams.length}`);
     assert.ok(
-      diagrams.some((d) => typeof d.attrs.get('steps') === 'string' && d.attrs.get('steps').startsWith('{')),
+      diagrams.some((d) => /^\{\s*\[\s*\{/.test(d.attrs.get('steps') ?? '')),
       `${name}: at least one diagram needs a walkthrough, steps={[…]}`,
     );
     assert.ok(
@@ -231,6 +237,9 @@ for (const t of written) {
     const main = html.slice(open, close);
     const hrefs = [...new Set([...main.matchAll(/\shref="([^"]+)"/g)].map((m) => m[1]))];
     const internal = hrefs.filter((h) => h.startsWith(`${base}weeks/`) || h.startsWith(`${base}tracks/`));
+    if (base !== '/') {
+      assert.deepEqual(hrefs.filter((h) => /^\/(weeks|tracks)\//.test(h)), [], `${name}: links without the site base ${base}`);
+    }
     assert.ok(
       internal.length > 0,
       `${name}: no link to a week or track page under ${base} in <main>; every written page links its weeks. Was dist/ built with BASE_PATH=${base}?`,

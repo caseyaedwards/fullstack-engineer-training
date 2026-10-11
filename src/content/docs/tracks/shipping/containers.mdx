@@ -18,7 +18,7 @@ A container packages a program with every file it needs and runs it as an ordina
 
 ### Images and Layers
 
-An **image** is a stack of read-only **layers** plus a small JSON **configuration**: the user to run as, the environment variables, the working directory and the program to start. Each layer is a compressed archive of the files that one build instruction adds, changes or deletes. A **manifest** lists the layers and the configuration by their SHA-256 digests, which makes an image content-addressed: change one byte in one layer, and its digest, the manifest digest and the image ID all change.
+An **image** is a stack of read-only **layers** plus a small JSON **configuration**: the user to run as, the environment variables, the working directory and the program to start. Each layer is a compressed archive of the files that one build instruction adds, changes or deletes. A **manifest** lists the layers and the configuration by their SHA-256 digests, hashes from the Secure Hash Algorithm, which makes an image content-addressed: change one byte in one layer, and its digest, the manifest digest and the image ID all change.
 
 The Open Container Initiative (OCI) defines both formats: the **image specification** for what an image is, and the **runtime specification** for how to start a container from one. Docker, Podman, containerd and every Kubernetes node read the same images.
 
@@ -165,7 +165,7 @@ Docker does not run in the site tests, and Docker Hub limits anonymous pulls. `d
 - `problems`: wants exactly two stages, a `go build` with `CGO_ENABLED=0`, and a runtime stage that runs as a user other than root, through a `USER` line or the `nonroot` tag.
 - `tagProblems`: refuses an image with no tag, which means `latest`, and an image tagged `latest`. A digest passes.
 
-The second test builds `hello` the way the build stage does, runs it, and on Linux opens the binary with `debug/elf`:
+The second test builds `hello` the way the build stage does, runs it, and on Linux opens the binary with `debug/elf`, the Go package that reads ELF, the Executable and Linkable Format of Linux programs:
 
 <CodeFrom file="go/tracks/containers/dockerfile_test.go" region="hello-test" lang="go" title="dockerfile_test.go" />
 

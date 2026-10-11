@@ -156,7 +156,7 @@ The build job sits under `jobs:` after `test`:
 
 <CodeFrom file="go/tracks/cicd/ci.yml" region="build" lang="yaml" title=".github/workflows/ci.yml" />
 
-`needs: test` makes the build wait for the tests, and skips it when they fail. `CGO_ENABLED=0` builds static binaries, as the <TrackLink slug="containers">Containers track</TrackLink> explains, and `-o bin/` with `./cmd/...` writes one binary per program into `bin/`. `actions/upload-artifact` stores the folder with the run for seven days, where a reviewer can download what the pull request builds.
+`needs: test` makes the build wait for the tests, and skips it when they fail. `CGO_ENABLED=0` builds static binaries, as the <TrackLink slug="containers">Containers track</TrackLink> explains, and `-o bin/` with `./cmd/...` writes one binary per program into `bin/`, and `-trimpath` removes the folder paths of the runner from the binaries. `actions/upload-artifact` stores the folder with the run for seven days, where a reviewer can download what the pull request builds.
 
 GitHub Actions does not run on your laptop, and a typo in a workflow shows up only after a push. The test in `ci_test.go` reads the file as YAML with `go.yaml.in/yaml/v3` and checks the rules this page names:
 

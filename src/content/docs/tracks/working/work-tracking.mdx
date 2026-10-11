@@ -145,7 +145,7 @@ The last row records a limit of the pattern, not a bug to fix: `UTF-8` and `SHA-
 
 <WeekLink n={0} anchor="step-10-practice-the-weekly-rhythm">Week 0</WeekLink> sets up the smallest working version of this track. Each week is one unit of work: one branch, `week-00` to `week-18`, one pull request, and the Done When items of the week in the description as a task list, where GitHub turns each `- [ ] item` line into a checkbox. The merged pull request is the record that the week is done, and the <WeekLink n={0} anchor="the-weekly-rhythm-one-branch-and-one-pull-request">weekly rhythm</WeekLink> repeats it for every week of the course.
 
-When a week grows beyond one pull request, or a bug turns up in the code from an earlier week, open a GitHub issue for it in your `your-monitor` repository, name the branch after it, and close it from the pull request with `Closes #N`. <WeekLink n={18} anchor="pages-tickets-and-the-watchdog">Week 18</WeekLink> routes alerts the same way: a page needs action now, while a **ticket alert** needs action within a working day, and a slow burn of the **error budget**, the share of requests your reliability target allows to fail over 30 days, opens one. The <TrackLink slug="git">Git track</TrackLink> covers branches and merges, and the <TrackLink slug="ci-cd">CI/CD track</TrackLink>, short for continuous integration and continuous delivery, covers the images tagged with the commit SHA.
+When a week grows beyond one pull request, or a bug turns up in the code from an earlier week, open a GitHub issue for it in your `your-monitor` repository, name the branch after it, and close it from the pull request with `Closes #N`. <WeekLink n={18} anchor="pages-tickets-and-the-watchdog">Week 18</WeekLink> routes alerts the same way: a page needs action now, while a **ticket alert** needs action within a working day. A burn rate of 1 held over three days of the **error budget**, the share of requests your reliability target allows to fail over 30 days, opens one: the `ErrorBudgetTicket` alert. The <TrackLink slug="git">Git track</TrackLink> covers branches and merges, and the <TrackLink slug="ci-cd">CI/CD track</TrackLink>, short for continuous integration and continuous delivery, covers the images tagged with the commit SHA.
 
 ## Common Mistakes
 
@@ -163,7 +163,7 @@ When a week grows beyond one pull request, or a bug turns up in the code from an
 - **Flow metrics**: cycle time, the time from In progress to Done, and throughput, the tickets finished per week. They measure a team better than estimates do.
 - **GitHub Projects**: boards, tables and custom fields on top of GitHub Issues, enough for a small team without a separate tool.
 - **Autolinked references**: GitHub turns `MON-42` in issues, pull requests and commit messages into a link to your tracker once you configure the prefix in the repository settings.
-- **Incident tickets and postmortem actions**: every action item from a postmortem becomes a ticket with an owner and a date. The <TrackLink slug="sre">site reliability engineering (SRE) track</TrackLink> covers postmortems.
+- **Incident tickets and postmortem actions**: every action item from a postmortem becomes a ticket with an owner and a date. Site reliability engineering (SRE) covers postmortems in the <TrackLink slug="sre">SRE and Incident Response track</TrackLink>.
 
 ## Further Reading
 

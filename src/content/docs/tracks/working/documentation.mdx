@@ -59,7 +59,7 @@ The same idea runs this site: every code block that a week shows through `CodeFr
 
 ### Architecture Decision Records
 
-An **architecture decision record**, or ADR, is a short file that records one significant decision: why the job queue lives in Postgres, why the status page has no login, why the server runs k3s, the small Kubernetes distribution of Week 16. Michael Nygard proposed the format in 2011: a numbered title, then four sections.
+An **architecture decision record**, or ADR, is a short file that records one significant decision: why the job queue lives in Postgres, why the status page has no login, why the server runs K3s, the small Kubernetes distribution of Week 16. Michael Nygard proposed the format in 2011: a numbered title, then four sections.
 
 - **Status**: proposed, accepted, deprecated or superseded by a later record. Many teams add rejected, to keep the proposals they turned down.
 - **Context**: the forces at the time of the decision, with numbers: the load, the deadline, the options.
@@ -72,7 +72,7 @@ The records live in the repository, in `docs/adr/`, numbered in order, and the t
 
 Keep documentation in the repository, in Markdown, next to the code it describes, and change it in the same pull request as the code. A reviewer then sees a new environment variable in the diff and asks where the README mentions it. Documents in a separate wiki drift, because nothing ties them to the change that makes them wrong.
 
-Two more documents complete the set for a service. A **runbook** tells the person on call what to do for each alert, and the <TrackLink slug="sre">site reliability engineering (SRE) track</TrackLink> covers it with the postmortem. An **API contract**, such as an OpenAPI file, describes every route, request and response, and tools check it against the code.
+Two more documents complete the set for a service. A **runbook** tells the person on call what to do for each alert, and site reliability engineering (SRE) covers it with the postmortem in the <TrackLink slug="sre">SRE and Incident Response track</TrackLink>. An **API contract**, such as an OpenAPI file, describes every route, request and response, and tools check it against the code.
 
 ## Diagrams
 
@@ -209,7 +209,7 @@ The decision in the example ADR, the queue in Postgres, is the one that Week 9 e
 
 - **Diátaxis in full**: the framework has a page for each kind and a compass for sorting an existing page. Read it before you restructure a documentation set.
 - **OpenAPI and generated reference**: generate API reference pages from `api/openapi.yaml`, which keeps the reference and the contract the same file.
-- **Runbooks and postmortems**: the documents that matter most at three in the morning. The <TrackLink slug="sre">SRE track</TrackLink> covers both.
+- **Runbooks and postmortems**: the documents that matter most at three in the morning. The <TrackLink slug="sre">SRE and Incident Response track</TrackLink> covers both.
 - **Docs linting**: tools such as Vale check prose against a style guide in CI, the way this site checks its own pages with a prose lint.
 - **Changelogs and release notes**: a file that tells users what changed in each version, written for them and not as a list of commits.
 

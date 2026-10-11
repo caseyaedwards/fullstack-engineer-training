@@ -149,7 +149,7 @@ The example is a retry function with exponential backoff and full jitter. `Perma
 <CodeFrom file="go/tracks/systemdesign/retry.go" region="retry" lang="go" title="retry.go" />
 
 - `sleep` is a package variable holding a function. The real one waits on a timer or on the context, whichever comes first. The tests swap in a version that records each duration and returns at once, which keeps them fast and free of wall-clock timing.
-- The loop checks `ctx.Err()` before every attempt, and `sleep` returns the context error when the budget runs out mid-wait. A cancelled caller gets `context.Canceled` back, and no further attempt starts.
+- The loop checks `ctx.Err()` before every attempt, and `sleep` returns the context error when the budget runs out mid-wait. A canceled caller gets `context.Canceled` back, and no further attempt starts.
 - `backoff` doubles the ceiling from `base`, caps it at `max`, and draws a uniform random duration up to it with `rand.N` from `math/rand/v2`. The check for a ceiling of zero or less catches a doubling that overflows `time.Duration`, and a ceiling equal to the largest `time.Duration` draws without the `+ 1`, which overflows too.
 - After the last attempt, `Retry` wraps the last error with `%w`, which keeps `errors.Is(err, errUnavailable)` true for the caller.
 

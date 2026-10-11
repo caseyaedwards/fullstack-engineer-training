@@ -134,7 +134,7 @@ With `set failures = failures + 1`, the read and the write happen inside one sta
 
 ## Example
 
-The example records one check: it inserts a row into `checks` and sets `monitors.last_status`, in one transaction. The schema is a trimmed version of the monitor schema, with a status column on `monitors` and a check constraint on the duration:
+The example records one check: it inserts a row into `checks` and sets `monitors.last_status`, in one transaction. The schema is a trimmed version of the monitor schema: `checks` stands in for `check_results` with two columns, and `monitors` gains a status column. The duration has a check constraint:
 
 <CodeFrom file="go/tracks/databases/databases.go" region="schema" lang="go" title="databases.go" />
 
@@ -148,7 +148,7 @@ Three details carry the design:
 - `RowsAffected` tells an unknown monitor from a known one. An `UPDATE` that matches no row is not an error in SQL, and the explicit check turns it into `ErrUnknownMonitor`, which a caller tests with `errors.Is`. The foreign key on `checks.monitor_id` refuses the insert anyway: the `RowsAffected` test gives the error a name.
 - The `UPDATE` comes first. It takes the row lock on the monitor, and two checks of the same monitor recorded at once take turns instead of interleaving.
 
-The tests run against a real Postgres. Each one creates an empty schema in the database that `DATABASE_URL` names, creates the two tables there and drops the schema at the end, as the Week 8 helper `dbtest.URL` does. Without `DATABASE_URL`, they skip on your machine and fail in continuous integration (CI), where `CI=true`:
+The tests run against a real Postgres. Each one creates an empty **schema**, a namespace for tables inside one database, in the database that `DATABASE_URL` names, creates the two tables there and drops the schema at the end, as the Week 8 helper `dbtest.URL` does. Without `DATABASE_URL`, they skip on your machine and fail in continuous integration (CI), where `CI=true`:
 
 <CodeFrom file="go/tracks/databases/databases_test.go" region="tests" lang="go" title="databases_test.go" />
 

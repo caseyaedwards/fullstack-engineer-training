@@ -134,13 +134,13 @@ The tests start real processes with `sh` and `sleep`, which every Linux and macO
 
 <CodeFrom file="go/tracks/operatingsystems/run_test.go" region="test" lang="go" title="run_test.go" />
 
-The second test checks three things: `Run` returns well within two seconds of a 100 ms timeout, the error wraps `context.DeadlineExceeded`, and the message holds `signal: terminated`, which proves the child got `SIGTERM` and not the default `SIGKILL`. The other tests in the file cover a child that ignores `SIGTERM` and dies from `SIGKILL` once the second of grace runs out, a child that ends itself with `SIGKILL`, a parent context cancelled from outside, and a program that does not exist, which returns `exec.ErrNotFound`.
+The second test checks three things: `Run` returns well within two seconds of a 100 ms timeout, the error wraps `context.DeadlineExceeded`, and the message holds `signal: terminated`, which proves the child got `SIGTERM` and not the default `SIGKILL`. The other tests in the file cover a child that ignores `SIGTERM` and dies from `SIGKILL` once the second of grace runs out, a child that ends itself with `SIGKILL`, a parent context canceled from outside, and a program that does not exist, which returns `exec.ErrNotFound`.
 
 ## In the Uptime Monitor
 
 <WeekLink n={3} anchor="processes-pids-and-parents">Week 3</WeekLink> turns the monitor into a service. It covers PIDs, parents, `/proc`, file descriptors and signals, then runs the monitor under systemd, which stops it with `SIGTERM`. <WeekLink n={3} anchor="step-5-test-the-shutdown-end-to-end">Step 5 of that week</WeekLink> starts the monitor binary from a test with `exec.CommandContext`, the same function as in the Example, and sends it real signals.
 
-<WeekLink n={5} anchor="the-scheduler">Week 5</WeekLink> runs 100 checks at once on a few kernel threads. The Go scheduler parks a goroutine that waits on a socket and hands its thread to another, and each open connection holds one file descriptor, which is why the pool has a fixed size.
+<WeekLink n={5} anchor="the-scheduler">Week 5</WeekLink> checks 100 URLs on a pool of goroutines, ten by default, that the Go runtime runs on a few kernel threads. The Go scheduler parks a goroutine that waits on a socket and hands its thread to another, and each open connection holds one file descriptor, which is why the pool has a fixed size.
 
 <WeekLink n={12} anchor="how-delve-stops-a-program">Week 12</WeekLink> debugs the monitor at the operating system level. Delve stops a program through the `ptrace` system call on Linux, and the CPU profile counts a `SIGPROF` signal after every 10 ms of CPU time. The same week reads CPU use from `ps` to find a worker that spins with nothing to do.
 
