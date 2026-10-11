@@ -1,17 +1,22 @@
 ---
 title: "Week 1: Go Basics"
+description: Write your first Go program, a command-line tool that checks one URL, prints its status code and latency, and exits with a non-zero code when the site is down.
 week: 1
 phase: foundations
-hours: [5, 8]
+hours: [5, 7]
 aiStage: 1
 tracks: [programming]
 done:
-  - id: item-1
-    text: "Placeholder item 1: this week is not written yet"
-  - id: item-2
-    text: "Placeholder item 2: this week is not written yet"
-  - id: item-3
-    text: "Placeholder item 3: this week is not written yet"
+  - id: cli-checks-url
+    text: Your CLI, run with -url https://example.com, prints up, the status code and the latency in milliseconds.
+  - id: exit-codes
+    text: Your CLI exits with 0 when the site is up, 1 when it is down and 2 without a URL. You have checked all three with echo $? on the built binary.
+  - id: timeout-fires
+    text: You have pointed your CLI at a server that never answers and watched the client timeout end the check with an error instead of a hang.
+  - id: explain-errors
+    text: Without notes, you can explain how a Go function returns an error as a value, and how that differs from throw and catch in TypeScript.
+  - id: week-01-pull-request
+    text: Your main.go is committed on its own branch and open as a pull request in your-monitor.
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -21,43 +26,532 @@ import AiThisWeek from '../../../components/AiThisWeek.astro';
 import SideLab from '../../../components/SideLab.astro';
 import ReadWith from '../../../components/ReadWith.astro';
 import DoneWhen from '../../../components/DoneWhen.astro';
+import Diagram from '../../../components/Diagram.astro';
+import CodeFrom from '../../../components/CodeFrom.astro';
+import { weekHref, trackHref } from '../../../lib/links';
 
 <WeekHeader />
 
+In <a href={weekHref(0)}>Week 0</a>, you created the `your-monitor` repository with a `go.mod` and no code. This week, you write its first Go code: a command-line program, or CLI, that checks one URL and tells you whether the site answers, with which status code and how fast.
+
+You already know TypeScript. Go shares many of its ideas, and this page compares the two wherever the comparison saves you time. Go differs in three places that matter this week: it compiles to a program your computer runs directly, its types are strict, and it reports errors as ordinary return values instead of throwing them. The <a href={trackHref('programming')}>Core Programming Concepts track</a> covers the ideas behind types, functions and errors in any language.
+
 ## Goals
 
-This section is not written yet.
+- Write, run and build a Go program, and say what `package main`, `go run` and `go build` each do.
+- Use Go variables, types, functions with several return values, structs, slices, maps and `for` loops.
+- Handle errors the Go way, with `if err != nil`, and explain how that differs from `try` and `catch`.
+- Send an HTTP request with a timeout and measure how long the answer takes.
+- Finish with a CLI that takes a `-url` command-line flag, prints the status code and latency, and exits with a non-zero code when the check fails.
 
 ## Concepts
 
-This section is not written yet.
+### How Go Runs Your Code
+
+TypeScript needs two programs before your code runs: `tsc` turns TypeScript into JavaScript, and Node.js runs the JavaScript. Go needs one step. The Go **compiler** turns your source code into a **binary**: a file of machine code that your operating system runs directly. The computer that runs the binary needs no Go installation and no runtime such as Node.js.
+
+Go code lives in packages. A **package** is a folder of `.go` files that all start with the same `package` line. A package named `main` is special: it builds into a program, and the program starts at its `func main()`. Every other package is a library that programs import. Your folder of packages is a **module**, named by the first line of `go.mod`, the way `package.json` names a Node.js project. Week 0 created yours as `github.com/<user>/your-monitor`.
+
+Go ships with a large **standard library**: packages such as `fmt` for printing, `os` for talking to the operating system, `flag` for command-line flags, `net/http` for HTTP and `time` for clocks and durations. You import them by path, and nothing needs installing. Every line of code this week uses only the standard library.
+
+When a program ends, it hands the operating system a small number, its **exit code**. `0` means success. Anything else means failure, and the program picks the number. Your shell stores the exit code of the last command in `$?`. Scripts, CI jobs and Kubernetes health checks read the exit code, not the text a program prints, to decide whether it worked. The convention for command-line tools: `1` for a failure, `2` for a usage mistake such as a missing argument.
+
+<Diagram
+  id="build-run-exit"
+  title="From main.go to an exit code"
+  code={`direction: down
+src: "main.go\\ngo.mod"
+build: go build
+bin: "your-monitor\\n(binary)"
+proc: "running\\nprocess"
+sh: your shell
+gorun: go run .
+
+src -> build
+build -> bin
+sh -> bin: ./your-monitor -url ...
+bin -> proc: starts
+proc -> sh: exit code 0, 1 or 2
+src -> gorun
+gorun -> proc: builds, then runs
+`}
+  steps={[
+    { hl: ['src', 'build', 'bin', 'src->build', 'build->bin'], caption: 'go build compiles package main, and every package it imports, into one binary file named after the module: your-monitor.' },
+    { hl: ['sh', 'bin', 'proc', 'sh->bin', 'bin->proc'], caption: 'Your shell starts the binary as a process: a running copy of the program. The words you type after the program name become its arguments.' },
+    { hl: ['proc', 'sh', 'proc->sh'], caption: 'When main returns, the exit code is 0. A call to os.Exit(1) ends the process at once with exit code 1. The shell stores the code in $?.' },
+    { hl: ['src', 'gorun', 'proc', 'src->gorun', 'gorun->proc'], caption: 'go run . does both steps at once: it builds the binary into a temporary folder and starts it. Use it while you write code, and go build when you want a file to keep or ship.' },
+  ]}
+/>
+
+### Variables and Types
+
+Every Go variable has a type, fixed when you compile. There are two ways to declare one:
+
+```go
+var timeout time.Duration = 5 * time.Second // type written out
+url := "https://example.com"                // type worked out: string
+var status int                              // no value given: status is 0
+```
+
+`:=` declares a variable and gives it a value in one statement, like `let` in TypeScript with an inferred type. It works only inside functions. `var` works everywhere, and you can leave off the value.
+
+A variable you declare without a value holds the **zero value** of its type: `0` for numbers, `""` for strings, `false` for booleans, and `nil`, meaning no value, for pointers, slices, maps and errors. Go has no `undefined`: a variable always holds a value of its type.
+
+The types you meet this week:
+
+| Go | Holds | Closest TypeScript |
+| --- | --- | --- |
+| `int` | a whole number | `number` |
+| `string` | text | `string` |
+| `bool` | `true` or `false` | `boolean` |
+| `time.Duration` | a length of time, counted in nanoseconds | a `number` of milliseconds, by convention |
+| `error` | what went wrong, or `nil` | an `Error` that you throw |
+
+Go converts nothing on its own. Adding an `int` variable to a `time.Duration`, or assigning `"three"` to an `int`, stops the build. A number written straight into the code, such as the `5` in `5 * time.Second`, is the exception: it takes on the type it needs. The build error names the line and the mismatch:
+
+```txt
+./main.go:6:18: cannot use "three" (untyped string constant) as int value in variable declaration
+```
+
+Go is also strict about clutter. A variable you declare and never use, or a package you import and never use, is a compile error, not a lint warning. Each time you save, the VS Code Go extension removes unused imports and formats your file with `gofmt`, the standard Go formatter.
+
+One more rule replaces the TypeScript `export` keyword. A name that starts with a capital letter, such as `http.Get` or `resp.StatusCode`, is **exported**: other packages can use it. A name that starts with a lowercase letter, such as `checkURL`, is visible only inside its own package.
+
+### Functions and Multiple Return Values
+
+A Go function can return more than one value. This one turns an HTTP status code into `up` or `down`, and returns an error for a number that is not a status code at all:
+
+<CodeFrom file="go/week01/basics.go" region="classify" lang="go" title="basics.go" />
+
+Read the first line from left to right: the function name, the parameter `status` of type `int`, then the two result types in parentheses. Go writes the type after the name, where TypeScript writes `status: number`.
+
+The caller receives both values at once: `state, err := classify(404)` sets `state` to `"down"` and `err` to `nil`. In TypeScript, you return an object or a tuple to get the same effect. When you do not need one of the values, assign it to `_`, the **blank identifier**: `state, _ := classify(404)`. Go refuses an unused variable, and `_` tells it that you skip the value on purpose.
+
+A function can also name its results, as `checkURL` does later this week: `(status int, latency time.Duration, err error)`. The names document what each value means, and each one starts at its zero value.
+
+### Errors Are Values
+
+In TypeScript, a failure throws an exception. The exception skips every function between the `throw` and the nearest `catch`, and nothing in a function signature tells you which calls throw.
+
+Go has no exceptions for expected failures such as an unreachable site. A function that can fail returns an `error` as its last result. `nil` means it worked. Anything else is a value that describes what went wrong, and its `Error()` method returns the message. The caller checks it straight away:
+
+```go
+resp, err := client.Get(url)
+if err != nil {
+	return 0, latency, err // hand the error to whoever called this function
+}
+// from here on, resp is safe to use
+```
+
+Compare the TypeScript version with `fetch`:
+
+```ts
+try {
+  const res = await fetch(url);
+  console.log(res.status);
+} catch (err) {
+  console.error("check failed:", err);
+}
+```
+
+The two draw the same line. `fetch` rejects only when no response arrives at all: a `500` response resolves, with `res.status` set to `500`. In Go, `client.Get` returns an error only when no response arrives: a `500` comes back as a response with `StatusCode` set to `500`. A server error is an answer, and your monitor reads it as a status.
+
+<Diagram
+  id="error-flow"
+  title="An error travels back up as a return value"
+  code={`shape: sequence_diagram
+main: main
+check: checkURL
+get: client.Get
+sh: your shell
+
+main -> check: checkURL(client, url)
+check -> get: Get(url)
+get -> check: nil, err
+check -> main: 0, latency, err
+main -> sh: exit code 1
+`}
+  steps={[
+    { hl: ['main', 'check', 'main->check'], caption: 'main calls checkURL, the function you write this week, with a client and the URL to check.' },
+    { hl: ['check', 'get', 'check->get', 'get->check'], caption: 'checkURL calls client.Get. Nothing listens on the port. Get returns a nil response and an error with the message dial tcp 127.0.0.1:1: connect: connection refused. That is an ordinary return, not a jump.' },
+    { hl: ['check', 'main', 'check->main'], caption: 'checkURL tests if err != nil and returns the error to main, together with the latency it measured. In TypeScript, the exception skips this function entirely.' },
+    { hl: ['main', 'sh', 'main->sh'], caption: 'main tests the error too. It prints a down line and calls os.Exit(1). At every level, the code decides in plain sight what an error means.' },
+  ]}
+/>
+
+To add context as an error moves up, wrap it: `fmt.Errorf("check of %s: %w", url, err)` builds a new error whose message starts with your text and ends with the original message. The `%w` keeps the original error inside, where code higher up can still inspect it. The loop in [Slices, Maps and Loops](#slices-maps-and-loops) wraps an error this way.
+
+Go does have a crash for bugs: a **panic**. Reading past the end of a list or following a `nil` pointer panics. The program prints the problem and a stack trace, then exits with code `2`. Treat a panic as a bug to fix, never as a way to report a site that is down.
+
+### Structs and Pointers
+
+A **struct** groups named fields into one type, much like a TypeScript object type:
+
+<CodeFrom file="go/week01/basics.go" region="result" lang="go" title="basics.go" />
+
+`r := Result{URL: "https://example.com", Status: 200}` creates a `Result`, and `r.Status` reads its field. A struct has exactly the fields its type lists: there are no optional fields and no extra ones. A field you leave out of the literal holds its zero value.
+
+A **pointer** holds the memory address of a value instead of the value itself. `&` takes the address, and a `*` in front of a type means a pointer to that type. The difference matters because Go copies a struct each time you assign it or pass it to a function. A pointer shares one value instead. `client := &http.Client{Timeout: 5 * time.Second}` creates one client, and passing `client` around hands out its address, the way a TypeScript object reference works. That is why `checkURL` takes a `*http.Client`.
+
+Go reads fields through a pointer for you: with `resp` of type `*http.Response`, write `resp.StatusCode`. To read the value behind a pointer to a plain type, put `*` in front: the `flag` package hands you a `*string`, and `*url` is the string.
+
+### Slices, Maps and Loops
+
+A **slice** is a list of values of one type, written `[]Result` or `[]string`. It is the Go version of a TypeScript array. `len(s)` gives its length, `s[0]` its first element, and `s = append(s, r)` adds one element. Reading past the end panics. The arguments of your program arrive as a slice: `os.Args`, of type `[]string`.
+
+A **map** stores values by key, like a TypeScript `Map` or `Record`. `map[string]int` maps strings to integers. Reading a missing key gives the zero value, not an error. To tell a missing key from a stored zero, ask for a second value: `n, ok := counts["down"]` sets `ok` to `false` when the key is missing.
+
+Go has one loop keyword, `for`, in three forms:
+
+```go
+for i := 0; i < 3; i++ { }      // counting, as in TypeScript
+for status == 0 { }             // while the condition holds
+for i, arg := range os.Args { } // each index and element of a slice
+```
+
+This function uses all three ideas. It loops over a slice of results and counts the states in a map:
+
+<CodeFrom file="go/week01/basics.go" region="count" lang="go" title="basics.go" />
+
+`range` gives the index and the element. The index goes to `_` because the loop needs only the element. `counts[state]++` works on the first `up`, because the missing key reads as `0`. When `classify` fails, the function stops and wraps the error with the URL. A result with status `0` gives this message: `check of https://bad.example: 0 is not an HTTP status code`.
+
+### Printing Text
+
+The `fmt` package prints text. `fmt.Println` prints its arguments with spaces between them and a newline at the end. `fmt.Printf` takes a format string with **verbs**, placeholders that start with `%`:
+
+| Verb | Prints | Example output |
+| --- | --- | --- |
+| `%s` | a string | `https://example.com` |
+| `%d` | a whole number | `200` |
+| `%q` | a string in double quotes, with the quotes inside escaped | `"Get \"http://...\": ..."` |
+
+A program has two output streams. **Standard output**, or stdout, carries the results: `fmt.Println` and `fmt.Printf` write there. **Standard error**, or stderr, carries messages about the program itself, such as usage mistakes: write there with `fmt.Fprintln(os.Stderr, ...)`. Your terminal shows both, but a shell redirect such as `> results.txt` captures only stdout. <a href={weekHref(3)}>Week 3</a> builds on this split when your monitor logs to stdout.
+
+### HTTP Requests and Time
+
+An `http.Client` sends HTTP requests. Its `Timeout` field sets the longest a request can take, from the moment you send it until the response body is read. The zero value means no limit at all. `http.Get`, the shortcut you find in most tutorials, uses `http.DefaultClient`, which has no timeout. A server that accepts the connection and never answers holds the request forever. Your monitor always makes its own client with a timeout.
+
+`client.Get(url)` returns once the status line and headers arrive. The **response body**, the page content itself, streams in after that, through `resp.Body`. You must close the body when you are done with it, even when you never read it, because an open body holds the network connection open. `defer resp.Body.Close()` schedules the close to run when the surrounding function returns, whichever `return` it leaves through.
+
+To time something, read the clock before and after. `time.Now()` returns the current time, and `time.Since(start)` returns a `time.Duration`: the time that has passed since `start`. **Latency** is that delay between asking and getting an answer.
+
+<Diagram
+  id="one-check"
+  title="What the latency of one check covers"
+  code={`shape: sequence_diagram
+cli: checkURL
+srv: server
+
+cli -> cli: "start := time.Now()"
+cli -> srv: GET /
+srv -> cli: status line and headers
+cli -> cli: "latency = time.Since(start)"
+srv -> cli: body
+cli -> srv: resp.Body.Close()
+`}
+  steps={[
+    { hl: ['cli', 'cli->cli'], caption: 'checkURL reads the clock just before it sends the request.' },
+    { hl: ['cli', 'srv', 'cli->srv', 'srv->cli'], caption: 'client.Get sends the GET request and waits. It returns when the status line and headers arrive. When they do not arrive before the client Timeout, Get returns an error instead.' },
+    { hl: ['cli', 'cli->cli#1'], caption: 'checkURL reads the clock again. The latency covers the whole wait for the headers: finding the server, connecting, and the time the server takes to answer. Week 4 splits it into those parts.' },
+    { hl: ['cli', 'srv', 'srv->cli#1', 'cli->srv#1'], caption: 'The body is not part of the latency. checkURL does not need it, and the deferred resp.Body.Close() releases the connection as the function returns.' },
+  ]}
+/>
 
 ## Build
 
-This section is not written yet.
+By the end of this section, `main.go` in `your-monitor` checks the URL you pass with `-url`, prints the status code and latency, and exits with `1` when the site is down. <a href={weekHref(2)}>Week 2</a> moves the check into a package of its own and tests it.
+
+The code on this page comes from the site examples, which the site tests on every change. The final program is `examples/go/week01/your-monitor/main.go`, and its snippets below are your `main.go`, line for line.
+
+### Step 1: Start a Branch
+
+Work on a branch, as set up in Week 0. In your `your-monitor` folder, run `git switch main` and `git pull`, then `git switch -c week-01`.
+
+### Step 2: Write, Run and Build a First Program
+
+Replace the contents of `main.go`, or create it, with:
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("your-monitor: starting")
+}
+```
+
+Run it from the folder that holds `go.mod`, where `.` means the package in the current folder. Then build a binary and run that instead:
+
+```txt
+$ go run .
+your-monitor: starting
+$ go build
+$ ./your-monitor
+your-monitor: starting
+```
+
+`go build` writes a file named `your-monitor`, after the last part of the module name. It is about 2 MB: the Go runtime and every package the program uses, in one file. Add a line `/your-monitor` to `.gitignore` when it is not there yet, because build output does not belong in Git.
+
+Now meet the strict compiler. Add `url := "https://example.com"` as the first line of `main`, and run it again:
+
+```txt
+$ go run .
+# github.com/your-user/your-monitor
+./main.go:6:2: declared and not used: url
+```
+
+The `#` line names your module, and the error names the file, line and column. Nothing builds until you use `url` or delete it. An unused import fails the same way, with `"os" imported and not used`, but the VS Code Go extension deletes unused imports each time you save, before the compiler sees them.
+
+### Step 3: Read the URL from os.Args
+
+A program receives its command-line arguments in `os.Args`, a slice of strings. `os.Args[0]` is the program path, and the arguments you type start at `os.Args[1]`. Replace `main.go` with:
+
+<CodeFrom file="go/week01/args/main.go" region="main" lang="go" title="main.go" />
+
+Run it with a URL:
+
+```txt
+$ go run . https://example.com
+os.Args[0] = /tmp/go-build3902916139/b001/exe/your-monitor
+os.Args[1] = https://example.com
+checking https://example.com
+```
+
+`os.Args[0]` shows the temporary folder where `go run` builds the binary. Run it without a URL, and the `len` check prints the usage line and calls `os.Exit(2)`:
+
+```txt
+$ go run .
+usage: your-monitor URL
+exit status 2
+```
+
+The last line comes from `go run`, not from your program: it reports the exit code of the binary it started, then exits with `1` itself. To see the real exit code in `$?`, run the built binary, as in Step 6.
+
+Delete the `len` check and run it once more without a URL. Reading `os.Args[1]` from a slice of length one panics: `panic: runtime error: index out of range [1] with length 1`.
+
+Put the check back. `os.Args` works, but every rule is yours to write: argument order, defaults, help text, and turning `5s` into a duration. The `flag` package does all of that, and the next two steps switch to it.
+
+### Step 4: Write checkURL
+
+Steps 4 and 5 together replace `main.go`. Start with the package line, the imports and the check:
+
+<CodeFrom file="go/week01/your-monitor/main.go" region="imports" lang="go" title="main.go" />
+
+<CodeFrom file="go/week01/your-monitor/main.go" region="check" lang="go" title="main.go" />
+
+Line by line:
+
+- The signature names all three results, which documents which value is which. Week 2 tests this function on its own.
+- `start := time.Now()` reads the clock before the request.
+- `resp, err := client.Get(url)` sends the GET request. `err` already exists as a named result: `:=` declares the new `resp` and reuses `err`.
+- `latency = time.Since(start)` uses `=`, not `:=`, because `latency` already exists too.
+- When `err` is not `nil`, there is no response: the function returns status `0`, the latency so far and the error. The latency still tells you something here: a refused connection fails within a millisecond, and a server that never answers fails at the full timeout.
+- `defer resp.Body.Close()` closes the body as the function returns.
+
+The program does not compile yet: the imports wait for `main`, in Step 5.
+
+### Step 5: Read Command-Line Flags and Report the Result
+
+Add `main` below `checkURL`:
+
+<CodeFrom file="go/week01/your-monitor/main.go" region="main" lang="go" title="main.go" />
+
+A **command-line flag** is a named argument such as `-url https://example.com`. In TypeScript, you read `process.argv` and install a package such as `commander` to parse it. Go has the `flag` package in its standard library:
+
+- `flag.String("url", "", "...")` defines a `-url` command-line flag with an empty default and a help text. It returns a `*string`, a pointer that `flag.Parse` fills in. Read the value with `*url`.
+- `flag.Duration` defines `-timeout`. It accepts values such as `500ms`, `2s` or `1m`, and turns them into a `time.Duration`.
+- `flag.Parse()` reads `os.Args`. On an unknown or malformed command-line flag, it prints the problem and the usage text, then exits with `2`. On `-h`, it prints the usage text and exits with `0`.
+- A missing `-url` is not a parse error, which is why `main` checks for an empty value and exits with `2` itself.
+- `&http.Client{Timeout: *timeout}` creates the one client the program uses.
+- Each outcome prints one line to stdout in `key=value` form: easy to read, and easy to search with `grep` once Week 3 runs the monitor for hours. `latency.Milliseconds()` turns the duration into a whole number of milliseconds. `%q` wraps the error message in quotes, which keeps it one value.
+- `os.Exit(1)` ends the program with exit code `1` when no response arrives, or when the status code is `400` or above: a `4xx` code means the server rejects the request, as `404 Not Found` does, and a `5xx` code means the server failed. When `main` reaches its end and returns, the exit code is `0`.
+
+### Step 6: Run It and Check the Exit Code
+
+Build the binary and check a site. Your numbers differ from this example:
+
+```txt
+$ go build
+$ ./your-monitor -url https://example.com
+up url=https://example.com status=200 latency_ms=118
+$ echo $?
+0
+```
+
+Run it without a URL and read the exit code:
+
+```txt
+$ ./your-monitor
+missing -url
+Usage of ./your-monitor:
+  -timeout duration
+    	how long to wait for a response (default 5s)
+  -url string
+    	URL to check, for example https://example.com
+$ echo $?
+2
+```
+
+The `flag` package stops reading at the first argument that does not start with `-`. Command-line flags go first: `./your-monitor https://example.com` prints the same `missing -url` message and exits with `2`.
+
+Try `./your-monitor -h` for the help text alone. Then try `./your-monitor -url https://example.com -timeout 5` to see a malformed value: `invalid value "5" for flag -timeout: parse error`. A duration needs a unit.
+
+### Step 7: Commit and Open a Pull Request
+
+Commit the program and the `.gitignore` change, then push the branch:
+
+```sh
+git add main.go .gitignore
+git commit -m "Check one URL and print status and latency"
+git push -u origin week-01
+```
+
+Open a pull request from `week-01` into `main` on GitHub, read your own diff once more, then merge it. Week 2 starts from this `main.go`.
 
 ## Observe It
 
 <ObserveIt>
-This section is not written yet.
+
+Your CLI already prints the number this week is about: `latency_ms`. One number on its own tells you little. Run the binary nine times in a row:
+
+```sh
+for i in 1 2 3 4 5 6 7 8 9; do ./your-monitor -url https://example.com; done
+```
+
+The nine `latency_ms` values differ. Each run is a new process that finds the server and connects to it from scratch, and the network delay changes from one run to the next. Write down three numbers: the lowest, the highest and the middle one, the fifth in sorted order, called the **median**. Describe latency as a spread like this, never as a single run. <a href={weekHref(4)}>Week 4</a> splits each check into its parts, to show which part varies.
+
+Then compare what your program measures with what the whole command costs. The shell `time` command reports how long a command takes from start to finish. In bash, read the `real` line. In zsh, the default shell on macOS, read the number just before the word `total`:
+
+```sh
+time ./your-monitor -url https://example.com
+time go run . -url https://example.com
+```
+
+`latency_ms` stays about the same in both. The total time does not. In a test run for this page, against a server on the same machine, the binary took 5 ms from start to finish, and `go run` took 122 ms, because it builds the program before it runs it. Your latency number covers the request alone: process start-up never leaks into it.
+
+Last, try a URL that redirects: `./your-monitor -url http://github.com`. GitHub answers `http://` with a `301` redirect to `https://`. `http.Client` follows up to ten redirects on its own and reports the final status, `200`. The latency is higher than for `https://github.com`, because it covers both requests.
+
 </ObserveIt>
 
 ## Operate It
 
 <OperateIt>
-This section is not written yet.
+
+A monitor earns its keep on the days a site breaks. Break things on purpose and read what your CLI says. Each case below runs against your own machine, and the outputs come from real runs.
+
+**A server that never answers.** `nc`, short for netcat, is a small tool that opens network connections. It ships with macOS and Ubuntu. `nc -l 8080` listens on port `8080`, accepts one connection and prints what arrives, but never answers. Run `nc -l 8080` in one terminal. In a second terminal, check it with a short timeout:
+
+```txt
+$ ./your-monitor -url http://127.0.0.1:8080 -timeout 2s
+down url=http://127.0.0.1:8080 latency_ms=2001 error="Get \"http://127.0.0.1:8080\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"
+$ echo $?
+1
+```
+
+The latency equals the timeout, and the error says why: the headers never arrive. Back in the first terminal, `nc` shows the request that Go sends, which is plain text:
+
+```txt
+GET / HTTP/1.1
+Host: 127.0.0.1:8080
+User-Agent: Go-http-client/1.1
+Accept-Encoding: gzip
+```
+
+Now see why the timeout matters. Start `nc -l 8080` again, change the client line in `main.go` to `client := &http.Client{}`, and run the check with `go run`. It waits with no end. Press **Ctrl+C** to stop it, and put the timeout back. A monitor without a timeout reports nothing at all about the one site that hangs.
+
+**A server that answers with an error.** Hand `nc` a canned response to send. The `\r\n` pairs end each line, as HTTP requires:
+
+```sh
+printf 'HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n' | nc -l 8080
+```
+
+```txt
+$ ./your-monitor -url http://127.0.0.1:8080
+down url=http://127.0.0.1:8080 status=500 latency_ms=0
+```
+
+No error this time: the request works, and the server says it is broken. The exit code is `1` because the status is `400` or above.
+
+**Nothing listening.** On a default macOS or Ubuntu install, no program listens on port `1`:
+
+```txt
+$ ./your-monitor -url http://127.0.0.1:1/
+down url=http://127.0.0.1:1/ latency_ms=0 error="Get \"http://127.0.0.1:1/\": dial tcp 127.0.0.1:1: connect: connection refused"
+```
+
+The machine answers at once that nothing listens there, which is why the latency is `0`. Compare it with the `nc` case: a fast failure points to a refused connection, and a failure at exactly the timeout points to a server that does not answer.
+
+**A URL without a scheme.** Leave off the `https://`:
+
+```txt
+$ ./your-monitor -url example.com
+down url=example.com latency_ms=0 error="Get \"example.com\": unsupported protocol scheme \"\""
+```
+
+Go needs the scheme to pick a protocol, and the empty string between the escaped quotes is the scheme it finds.
+
+| What you see | What it means | Exit code |
+| --- | --- | --- |
+| `up` and a status below `400` | The site answers | `0` |
+| `down` and a status of `400` or above | The site answers with an error | `1` |
+| `down`, an error, and `latency_ms` equal to the timeout | No answer arrives in time | `1` |
+| `down`, `connection refused` and a small latency | The host is up, but nothing listens on that port | `1` |
+| `missing -url` and the usage text | The command is wrong, not the site | `2` |
+
+Scripts act on the exit code. In the shell, `||` runs the second command only when the first one fails: `./your-monitor -url https://example.com || echo "example.com is down"` prints the warning only for a site that is down.
+
+One failure does not show up in a single run: a missing `resp.Body.Close()`. Each unclosed body holds a network connection open. In Week 3, your monitor checks URLs in a loop for days, and the open connections pile up until the process runs out of the files it is allowed to open. Keep the `defer`.
+
 </OperateIt>
 
 ## AI This Week
 
 <AiThisWeek>
-This section is not written yet.
+
+Stage 1, explain only: ask an assistant to explain errors, concepts and documentation, and to give hints. Do not paste code it writes into your project.
+
+**Do:** paste a compiler error you hit, such as `declared and not used: url`, and ask why Go treats it as an error when TypeScript only warns. Or paste your finished `checkURL` and ask the assistant to compare its error handling with `try` and `catch` around `fetch`. Then fix the code or answer the question yourself.
+
+**Do not:** ask it to write `checkURL` or `main`. Typing the `if err != nil` checks yourself, and fixing the compiler errors that come back, is how the Go rules stick. When you are stuck, ask which standard library function does the job, then read its documentation with `go doc net/http.Client`.
+
 </AiThisWeek>
 
 ## Side Lab
 
-<SideLab title="Optional lab: not written yet">
-This section is not written yet.
+<SideLab title="Build your-monitor for another operating system and run it in a Linux container">
+
+One Go installation builds binaries for many operating systems and processors. This is **cross-compiling**, and it is how your monitor reaches the Linux servers of the later weeks.
+
+**1. See your own platform.** Go calls the operating system `GOOS` and the processor architecture `GOARCH`. Run `go env GOOS GOARCH`. On a Mac with Apple silicon, this prints `darwin` and `arm64`. On an Ubuntu laptop with an Intel or AMD processor, it prints `linux` and `amd64`. `go tool dist list` lists every pair Go supports: 48 in Go 1.24.
+
+**2. Build for Linux.** Set the variables for one command. `$(go env GOARCH)` keeps your own processor type, which is the type Docker on your laptop runs:
+
+```sh
+CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) go build -o your-monitor-linux .
+file your-monitor-linux
+```
+
+`file` names the format of a file. Built on an Intel or AMD laptop, the output starts like this:
+
+```txt
+your-monitor-linux: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked
+```
+
+ELF is the Linux format for binaries. **cgo** is the part of Go that calls C code, and `CGO_ENABLED=0` turns it off. With cgo on, a binary built on Linux links to the C library of the build machine, and `file` reports `dynamically linked`. With cgo off, the binary is **statically linked**: it carries everything it needs and runs on any Linux machine with that processor type.
+
+**3. Run it where it does not fit.** On macOS, `./your-monitor-linux` fails with `exec format error`: macOS does not run Linux binaries.
+
+**4. Run it in Linux.** Docker runs a small Linux system for you. Mount the binary into an Alpine Linux container and run it there:
+
+```sh
+docker run --rm -v "$PWD/your-monitor-linux:/your-monitor" alpine /your-monitor -url https://example.com
+```
+
+The container has no Go installed, and the check works. Week 6 runs your monitor in containers with Docker Compose.
+
+Delete the extra binaries when you are done, or add them to `.gitignore`.
+
 </SideLab>
 
 ## Done When
