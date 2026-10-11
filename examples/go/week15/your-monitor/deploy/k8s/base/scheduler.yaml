@@ -1,0 +1,67 @@
+# The scheduler: one pod adds a check job for every monitor that is due.
+# Recreate stops the old pod before the new one starts, which keeps the
+# copies at one during a rollout.
+# region: scheduler
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scheduler
+  labels:
+    app.kubernetes.io/name: scheduler
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: scheduler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: scheduler
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: scheduler
+          image: your-monitor-scheduler
+          args: ["-metrics-addr", ":2112"]
+          ports:
+            - name: metrics
+              containerPort: 2112
+          envFrom:
+            - configMapRef:
+                name: monitor-config
+            - secretRef:
+                name: postgres
+          env:
+            - name: DATABASE_URL
+              value: postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)?sslmode=disable
+          # /healthz answers 503 once the loop has run no round for 15 seconds.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+# endregion: scheduler
