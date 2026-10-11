@@ -210,3 +210,9 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
+
+/* Code blocks keep tab characters (tabWidth: 0 in astro.config.mjs), so a
+   copied Makefile recipe still starts with a tab. Draw each tab four columns wide. */
+.expressive-code pre {
+  tab-size: 4;
+}
