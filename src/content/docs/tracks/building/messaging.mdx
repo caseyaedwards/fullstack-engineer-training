@@ -1,36 +1,205 @@
 ---
 title: "Messaging and Streaming"
+description: How queues and logs move work and events between programs, what at-least-once delivery promises, and how an idempotent consumer turns a redelivered message into a no-op.
 track: messaging
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+Messaging moves work and events between programs that do not call each other directly. One program writes a message, another reads it later, and neither waits for the other. A full-stack engineer meets it in every background job, every webhook and every event pipeline, and the bugs it causes are duplicates and losses that no single request shows.
+
 ## What It Is
 
-This section is not written yet.
+### Producers, Consumers and Brokers
+
+A **message** is a small record that one program sends for another: a job to run, or an event that happened, such as monitor 42 failing a check. The program that sends it is the **producer**. The program that reads it is the **consumer**. A **broker** is the server in between that stores messages until a consumer takes them.
+
+A direct HTTP call couples the two sides in time: the caller waits, and when the callee is down, the call fails. A broker removes that coupling. The producer hands the message to the broker and moves on. The consumer reads at its own pace, and when it is down, messages wait. The price is a new piece of infrastructure, and a new set of failures between the two sides.
+
+Brokers come in two shapes, queues and logs. The [first diagram](#queue-vs-log) on this page puts them side by side.
+
+### Queues
+
+A **queue** hands each message to one consumer. Several consumers read from one queue, and each message goes to whichever consumer asks next: the name for this pattern is **competing consumers**, and it spreads work over many workers. When a consumer finishes a message, it sends an **acknowledgement**, or **ack**, and the broker deletes the message.
+
+Until the ack arrives, the broker keeps the message. If the consumer disconnects, or does not ack within a set time, the broker hands the message to another consumer. That time has several names: a **lease**, or the **visibility timeout** in Amazon Simple Queue Service (SQS), 30 seconds by default. RabbitMQ redelivers an unacknowledged message when the connection of the consumer closes.
+
+The uptime monitor keeps its job queue in a Postgres table. A worker locks a row with `SELECT ... FOR UPDATE SKIP LOCKED`, and the delete of the row, committed together with the check result, is its ack.
+
+### Logs and Streams
+
+A **log** is an append-only list of messages that the broker keeps after consumers read them. Each message gets an **offset**, its position in the log: 0, 1, 2 and up. A consumer does not delete what it reads. It remembers the offset of the next message it wants, and it **commits** that offset to the broker to survive a restart. Apache Kafka, Redis Streams and NATS JetStream are logs. People call systems built on logs **streaming** systems, because consumers read a continuous stream of events in order.
+
+Three properties follow from keeping messages:
+
+- **Many readers.** Each **consumer group** keeps its own offset. The alerter and a reporting job read the same events independently, and adding a third reader changes nothing for the first two.
+- **Replay.** A consumer with a bug can reset its offset and read last week again, as long as the log still holds it. Kafka keeps messages for seven days by default, then deletes the oldest.
+- **Ordering per partition.** A Kafka topic splits into **partitions**, each its own log, and the producer picks the partition from a **key**, such as the monitor ID. Messages with the same key stay in order. Messages across partitions have no order.
+
+A queue fits work that someone needs to do once. A log fits events that several readers care about, or that you want to read again.
+
+### Brokers Compared
+
+Week 9 builds its queue as a Postgres table instead of running a broker. The table below sets that choice next to the brokers you meet most:
+
+| Broker | Shape | After a consumer finishes | Pick it when |
+| --- | --- | --- | --- |
+| Postgres table | Queue | The worker deletes the row in the transaction that stores the result | The jobs live next to your data, and hundreds of jobs a second are enough |
+| RabbitMQ | Queue, with streams as a second type | The ack deletes the message from the queue | Messages need routing rules that copy them into several queues |
+| NATS JetStream | Stream, readable as a log or as a work queue | The stream keeps it until a limit on age, size or count, or deletes it on ack in work-queue mode | You want one small server for both queues and fan-out to several readers |
+| Redis Streams | Log with consumer groups | The stream keeps it until a trim, such as `XADD` with `MAXLEN` | You already run Redis, and its persistence settings cover what a restart loses |
+| Apache Kafka | Partitioned log | The log keeps it for seven days by default | Many groups read the same events at thousands of messages a second, or replay them |
+
+Every row except Postgres adds a server to run, monitor and back up, and a gap between the database write and the send, which [Going Deeper](#going-deeper) comes back to.
+
+### Delivery Guarantees
+
+A crash can happen at any point between receiving a message and acknowledging it. Where the consumer puts the ack decides what a crash costs:
+
+- **At-most-once**: ack first, then process. A crash after the ack loses the message.
+- **At-least-once**: process first, then ack. A crash before the ack makes the broker deliver the message again, and the work runs twice.
+- **Exactly-once**: no broker delivers to a consumer exactly once over a network, because the consumer can always crash after doing the work and before the ack reaches the broker. What systems offer as exactly-once is at-least-once delivery plus an effect that lands once: a deduplicated write, or a write that commits in the same transaction as the ack.
+
+Production systems pick at-least-once whenever a lost message costs more than a repeated one: for a monitor, a lost alert is worse than an alert sent twice. The [second diagram](#at-least-once) walks through a crash before the ack.
+
+### Idempotent Consumers
+
+An operation is **idempotent** when running it twice leaves the same result as running it once. Setting `last_status = 'down'` is idempotent. Adding one to a counter is not, and neither is sending an email. Under at-least-once delivery, every consumer either does idempotent work or makes its work idempotent.
+
+The standard tool is **deduplication** by message ID. The producer gives each message an ID once, and every redelivery carries the same ID. The consumer keeps a record of the IDs it has finished, and skips a message whose ID it has seen. The name for that record is an **inbox**. Two rules make it correct:
+
+- Record the ID only after the work succeeds. An ID recorded before a failed attempt turns the redelivery into a skip, and the work never happens.
+- Record the ID in the same transaction as the effect, when the effect is a database write. Otherwise a crash between the effect and the record runs the work twice anyway.
+
+When the effect leaves your system, such as a webhook, no shared transaction exists. The receiver then deduplicates, by an ID that the sender includes in each request.
+
+### Retries and Dead Letters
+
+A message whose handler fails goes back to the broker and comes round again. A message that fails on every attempt, for example because its body does not parse, is a **poison message**. Retrying it forever wastes workers and, on a log, blocks every message behind it in the same partition. Cap the attempts, wait longer between them with **backoff**, and move a message that runs out of attempts to a **dead-letter queue**: a separate queue that a person inspects. The <TrackLink slug="system-design" anchor="example">System and Software Design track</TrackLink> shows a retry loop with backoff and jitter.
 
 ## Diagrams
 
-This section is not written yet.
+The first diagram puts the two broker shapes side by side. In the queue, an ack deletes each message. In the log, every message stays, and each consumer group moves its own offset forward.
+
+<Diagram
+  id="queue-vs-log"
+  title="A queue hands each message to one worker; a log keeps every message for every group"
+  code={`direction: down
+queue: "Queue" {
+  direction: right
+  p: producer
+  q: "queue\\nmsg 5, msg 6, msg 7"
+  w1: worker 1
+  w2: worker 2
+  p -> q: send
+  q -> w1: "msg 5, deleted on ack"
+  q -> w2: "msg 6, deleted on ack"
+}
+log: "Log" {
+  direction: right
+  p: producer
+  l: "partition 0\\noffsets 0 to 7"
+  a: "alerter group\\nnext offset 8"
+  r: "report group\\nnext offset 3"
+  p -> l: append
+  l -> a: "reads 7, commits 8"
+  l -> r: "reads 2, commits 3"
+}
+`}
+/>
+
+The second diagram follows one message through at-least-once delivery when the first worker crashes after its work and before its ack. The message tells a worker to send the notification for incident 12.
+
+<Diagram
+  id="at-least-once"
+  title="A crash before the ack delivers the message twice"
+  code={`shape: sequence_diagram
+br: broker
+a: worker A
+b: worker B
+hook: webhook receiver
+
+br -> a: "deliver msg 7"
+a -> hook: "POST incident 12 opened"
+hook -> a: "200 OK"
+a -> a: "crash before the ack"
+br -> b: "lease runs out: deliver msg 7 again"
+b -> hook: "POST incident 12 opened"
+hook -> b: "200 OK, repeat ignored"
+b -> br: "ack msg 7"
+`}
+  steps={[
+    { hl: ['br', 'a', 'br->a'], caption: 'The broker delivers message 7 to worker A and starts a lease. Until the lease runs out, no other worker gets message 7.' },
+    { hl: ['a', 'hook', 'a->hook', 'hook->a'], caption: 'Worker A does the work: it posts the incident to the webhook, and the receiver answers 200. The effect has happened.' },
+    { hl: ['a', 'a->a'], caption: 'Worker A crashes before it sends the ack. The broker cannot tell a crashed worker from a slow one: it waits for the lease.' },
+    { hl: ['br', 'b', 'br->b'], caption: 'The lease runs out, and the broker delivers message 7 again, to worker B. The redelivery carries the same message ID.' },
+    { hl: ['b', 'hook', 'b->hook', 'hook->b'], caption: 'Worker B posts the same incident again. The receiver has already seen incident 12 opened, ignores the repeat and answers 200. Without that check, people get the alert twice.' },
+    { hl: ['b', 'br', 'b->br'], caption: 'Worker B acks message 7, and the broker deletes it. The work runs twice. The effect lands once, because the receiver is idempotent.' },
+  ]}
+/>
 
 ## Example
 
-This section is not written yet.
+The example is an in-memory inbox: it runs a handler for each new message ID and skips a redelivery of an ID that already succeeded. `Process` returns `duplicate` to tell the caller which of the two happened:
+
+<CodeFrom file="go/tracks/messaging/messaging.go" region="inbox" lang="go" title="messaging.go" />
+
+`seen` is a Go map from message ID to `true`, and the `sync.Mutex` guards it, because a consumer runs several goroutines at once. The lock stays held while the handler runs. Without that, two deliveries of the same message that arrive together both find the ID missing, and both run the handler. The cost is that one `Inbox` handles one message at a time. A version for many workers locks per ID instead, or leaves the job to a unique constraint in the database.
+
+The order of the last lines carries the rule from [Idempotent Consumers](#idempotent-consumers): the ID goes into `seen` only after `handle` returns nil. A handler that fails leaves the ID out, and the next delivery runs the handler again.
+
+The tests cover a redelivery, a failure followed by a redelivery, and ten deliveries of one message at the same moment:
+
+<CodeFrom file="go/tracks/messaging/messaging_test.go" region="tests" lang="go" title="messaging_test.go" />
+
+Move `in.seen[m.ID] = true` above the handler call, and `TestHandlerErrorLeavesMessageUnseen` fails: the redelivery after the error comes back as a duplicate, and the work never happens. Release the lock around the handler, and `TestConcurrentDeliveriesRunHandlerOnce` fails with the handler running twice. The first delivery in that test holds the handler open until nine more deliveries have arrived, which makes the overlap happen on every run.
+
+The example keeps `seen` in memory, which a restart empties, and which grows with every message. A real consumer keeps the IDs in the same database as its effect, and deletes the ones older than the longest redelivery window. In Postgres, a primary key on the ID does the check and the record in one statement:
+
+```sql
+insert into processed_messages (id) values ($1)
+on conflict (id) do nothing;
+-- 0 rows inserted: a duplicate. Commit and ack.
+-- 1 row inserted: new. Do the database work in this transaction, then commit and ack.
+```
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={9} anchor="background-jobs-and-queues">Week 9</WeekLink> splits the monitor into a scheduler that produces check jobs, workers that consume them, and an alerter. The section on <WeekLink n={9} anchor="postgres-as-the-queue">Postgres as the queue</WeekLink> explains why the queue is a table instead of a broker such as NATS, RabbitMQ or Redis Streams: one database to back up, and one transaction around the job and its result. <WeekLink n={9} anchor="row-locks-and-skip-locked">Row locks and SKIP LOCKED</WeekLink> make the table behave as a queue with competing consumers.
+
+<WeekLink n={9} anchor="at-least-once-delivery">At-least-once delivery in Week 9</WeekLink> is the same guarantee as the second diagram above. A worker that dies before its commit leaves the job to the next worker, and the result lands once because the insert of the result and the delete of the job commit together. <WeekLink n={9} anchor="step-4-retry-a-failing-job">Step 4 of Week 9</WeekLink> adds backoff and drops a poison job after `MaxAttempts`.
+
+The alerter sends webhooks, and <WeekLink n={9} anchor="from-results-to-incidents">From Results to Incidents</WeekLink> shows the webhook side of the same problem: a crash between the webhook and the commit sends the same notification twice, and the receiver spots the repeat by the `incident_id` and the `kind` of each event.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **Acking before the work.** A crash after the ack loses the message, and nothing retries it. Ack after the work succeeds, and make the work safe to repeat.
+- **Assuming exactly-once.** A handler that sends an email or adds to a counter runs twice after a redelivery. Make the handler idempotent, or deduplicate by message ID.
+- **Recording the ID before the work.** The ID lands, the work fails, and every redelivery skips it: the message disappears without an error. Record the ID after success, in the same transaction as the effect.
+- **Creating the ID in the consumer.** A random ID generated on each delivery, or on each send retry in the producer, gives the same message a new ID every time, and deduplication never matches. The producer sets the ID once and every retry reuses it.
+- **Retrying a poison message forever.** One message that never succeeds keeps a worker busy, and on a log it blocks its whole partition. Cap the attempts and move the message to a dead-letter queue.
+- **Running longer than the lease.** A handler that takes 45 seconds under a 30-second visibility timeout gets its message delivered to a second worker while it still runs. Keep handlers shorter than the lease, or extend the lease while the work runs.
+- **Expecting order across consumers.** With several competing consumers, message 6 can finish before message 5. Put the messages that need order on one partition, by key, and give each partition one consumer.
 
 ## Going Deeper
 
-This section is not written yet.
+- **The transactional outbox**: a producer writes the message to an outbox table in the same transaction as its own change, and a relay publishes it, which closes the gap between a database write and a send.
+- **Kafka consumer groups and rebalancing**: when a consumer joins or leaves, the group moves partitions between members, and the offsets it commits decide what gets read twice.
+- **Consumer lag**: the distance between the newest offset and the committed one is the backlog of a log consumer, and it belongs on a dashboard next to queue depth.
+- **Backpressure**: a consumer that cannot keep up needs a way to slow the producer down, or the backlog grows without limit.
+- **Message schemas**: producers and consumers deploy at different times, and a schema format such as Protocol Buffers with compatibility rules keeps old consumers reading new messages.
+- **Event sourcing**: storing every change as an event in a log, and building the current state from it, turns replay into the main way to read data.
 
 ## Further Reading
 
-This section is not written yet.
+- [Consumer Acknowledgements and Publisher Confirms](https://www.rabbitmq.com/docs/confirms): the RabbitMQ guide to when a message counts as delivered, manual acks and redelivery.
+- [Reliability Guide](https://www.rabbitmq.com/docs/reliability): the RabbitMQ overview of every failure between producer, broker and consumer, and which feature covers each one.
+- [Apache Kafka Introduction](https://kafka.apache.org/intro/): topics, partitions, offsets and consumer groups, from the Kafka project.
+- [JetStream](https://docs.nats.io/nats-concepts/jetstream): the persistence layer of NATS, with streams, consumers, acks and redelivery.
+- [SELECT: The Locking Clause](https://www.postgresql.org/docs/17/sql-select.html#SQL-FOR-UPDATE-SHARE): the Postgres 17 reference for `FOR UPDATE` and `SKIP LOCKED`, the two clauses behind the Week 9 queue.
