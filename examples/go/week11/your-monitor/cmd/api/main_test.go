@@ -24,7 +24,10 @@ import (
 // region: memhandler
 
 // memHandler is the api over in-memory stores, for the tests that need a
-// running api but no database.
+// running api but no database. It passes a nil Auth: those tests request
+// only /healthz and the server's start and stop, and no route they reach
+// reads the session. A request with a session cookie to a route behind
+// requireUser panics: the nil Auth has no User method to call.
 func memHandler() http.Handler {
 	return api.NewHandler(monitor.NewMemStore(), noResults{}, nil, nil)
 }

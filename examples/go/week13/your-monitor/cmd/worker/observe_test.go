@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -74,6 +75,59 @@ func histogramCount(t *testing.T, reg *prometheus.Registry, name string) uint64 
 	}
 	t.Fatalf("no metric %s", name)
 	return 0
+}
+
+// TestCheckLine pins the fields of the check line: the job and monitor IDs,
+// the trace ID of the check span, and err for a site that does not answer.
+func TestCheckLine(t *testing.T) {
+	logs := captureLog(t)
+	spans := obstest.RecordSpans(t)
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer broken.Close()
+	gone := httptest.NewServer(nil)
+	gone.Close() // connection refused
+
+	check := newCheckFunc(2*time.Second, newCheckMetrics(prometheus.NewRegistry()))
+	check(context.Background(), queue.Job{ID: 7, MonitorID: 3, URL: broken.URL})
+	check(context.Background(), queue.Job{ID: 8, MonitorID: 4, URL: gone.URL})
+
+	var lines []map[string]any
+	dec := json.NewDecoder(logs)
+	for dec.More() {
+		var line map[string]any
+		if err := dec.Decode(&line); err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, line)
+	}
+	got := spans.GetSpans()
+	if len(lines) != 2 || len(got) != 2 {
+		t.Fatalf("%d check lines and %d spans, want 2 of each:\n%s", len(lines), len(got), logs)
+	}
+	// Spans end in call order, and JSON numbers decode as float64.
+	for i, want := range []struct {
+		job, monitor float64
+		status       float64
+		up, hasErr   bool
+	}{
+		{7, 3, 503, false, false},
+		{8, 4, 0, false, true},
+	} {
+		line := lines[i]
+		if line["msg"] != "check" || line["job_id"] != want.job || line["monitor_id"] != want.monitor ||
+			line["status"] != want.status || line["up"] != want.up {
+			t.Errorf("line %d = %v, want job_id %v, monitor_id %v, status %v, up %v", i, line, want.job, want.monitor, want.status, want.up)
+		}
+		if id := got[i].SpanContext.TraceID().String(); line["trace_id"] != id {
+			t.Errorf("line %d trace_id = %v, want %s, the trace of its check span", i, line["trace_id"], id)
+		}
+		msg, hasErr := line["err"].(string)
+		if hasErr != want.hasErr || (hasErr && msg == "") {
+			t.Errorf("line %d err = %v, want an error text: %v", i, line["err"], want.hasErr)
+		}
+	}
 }
 
 // region: trace-test

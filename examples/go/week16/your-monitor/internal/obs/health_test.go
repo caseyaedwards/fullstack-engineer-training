@@ -17,8 +17,8 @@ import (
 // while the loop beats, 503 once it stops for longer than maxAge, and ok
 // again after the next beat.
 func TestHealthGoesStaleWithoutBeats(t *testing.T) {
-	// maxAge is a full second: a slow runner can pause a test for a
-	// good part of 100 ms, and the fresh probe must not see a stale beat.
+	// maxAge is a full second: a runner that pauses for 100 ms must not
+	// make the fresh probe see a stale beat.
 	h := obs.NewHealth(time.Second)
 	probe := func() (int, string) {
 		rec := httptest.NewRecorder()
