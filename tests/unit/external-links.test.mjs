@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { extractLinks } from '../../scripts/check-external-links.mjs';
+import { classify, errorCode, extractLinks, isTimeout } from '../../scripts/check-external-links.mjs';
 
 test('finds links in prose and in list items', () => {
   const source = [
@@ -85,4 +85,42 @@ test('keeps balanced parentheses and drops link titles', () => {
     'https://en.wikipedia.org/wiki/Function_(mathematics)',
     'https://example.com/t',
   ]);
+});
+
+// undici reports network errors as `TypeError: fetch failed` with the real error on `cause`.
+const fetchFailed = (code, message = code) =>
+  new TypeError('fetch failed', { cause: Object.assign(new Error(message), { code }) });
+const level = (err) => classify({ error: errorCode(err), timeout: isTimeout(err) });
+
+test('timeouts are warnings, wherever they come from', () => {
+  for (const code of ['UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'ETIMEDOUT']) {
+    const err = fetchFailed(code);
+    assert.equal(errorCode(err), code);
+    assert.equal(isTimeout(err), true, code);
+    assert.equal(level(err), 'warn', code);
+  }
+  // Our own AbortSignal.timeout rejects with a DOMException named TimeoutError.
+  const abort = new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+  assert.equal(errorCode(abort), 'TimeoutError');
+  assert.equal(level(abort), 'warn');
+  // A timeout two causes deep still counts.
+  const deep = new TypeError('fetch failed', { cause: new Error('connect', { cause: Object.assign(new Error('t'), { code: 'ETIMEDOUT' }) }) });
+  assert.equal(level(deep), 'warn');
+});
+
+test('DNS, refused, reset and TLS errors fail', () => {
+  for (const code of ['ENOTFOUND', 'ECONNREFUSED', 'ECONNRESET', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID']) {
+    const err = fetchFailed(code);
+    assert.equal(errorCode(err), code);
+    assert.equal(isTimeout(err), false, code);
+    assert.equal(level(err), 'fail', code);
+  }
+  assert.equal(level(new TypeError('fetch failed')), 'fail');
+});
+
+test('status codes: 404 and 410 fail, other 4xx and 5xx warn', () => {
+  assert.equal(classify({ status: 200 }), 'ok');
+  assert.equal(classify({ status: 404 }), 'fail');
+  assert.equal(classify({ status: 410 }), 'fail');
+  for (const status of [401, 403, 429, 500, 503]) assert.equal(classify({ status }), 'warn', String(status));
 });

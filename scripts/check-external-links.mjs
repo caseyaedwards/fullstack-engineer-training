@@ -6,9 +6,11 @@
 //
 //   node scripts/check-external-links.mjs
 //
-// Exit 1 when a URL answers 404 or 410, or fails DNS or connection after the
-// retries. 401, 403, 429 and other 5xx answers are warnings only: bot
-// protection returns them for pages that are live.
+// Exit 1 when a URL answers 404 or 410, or fails DNS, connection or TLS after
+// the retries. 401, 403, 429 and other 5xx answers are warnings only: bot
+// protection returns them for pages that are live. Timeouts are warnings too,
+// whether ours (20 s) or undici's (a 10 s connect timeout, a headers or body
+// timeout) or the kernel's (ETIMEDOUT): a slow host is not a dead link.
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -107,6 +109,35 @@ async function collectLinks() {
   return links;
 }
 
+// Error codes that mean the host was slow, not gone. undici reports its own
+// timeouts as `TypeError: fetch failed` with the code on `err.cause`.
+const TIMEOUT_CODES = new Set([
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'ETIMEDOUT',
+]);
+
+/** The errors on the chain err, err.cause, err.cause.cause, ... */
+function* causes(err) {
+  for (let e = err, depth = 0; e != null && depth < 5; e = e.cause, depth++) yield e;
+}
+
+/** The most specific code on a fetch error: the deepest `code`, else the name. */
+export function errorCode(err) {
+  let code;
+  for (const e of causes(err)) if (typeof e.code === 'string') code = e.code;
+  return code ?? err?.name ?? 'ERROR';
+}
+
+/** True when a fetch error is a timeout: our AbortSignal, or a timeout code anywhere on the cause chain. */
+export function isTimeout(err) {
+  for (const e of causes(err)) {
+    if (e.name === 'TimeoutError' || TIMEOUT_CODES.has(e.code)) return true;
+  }
+  return false;
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // One request. Resolves { status } or { error }; never throws.
@@ -126,8 +157,7 @@ async function fetchOnce(url) {
     await response.body?.cancel().catch(() => {});
     return { status: response.status };
   } catch (err) {
-    const code = err?.cause?.code ?? err?.code ?? err?.name ?? 'ERROR';
-    return { error: String(code), timeout: err?.name === 'TimeoutError' };
+    return { error: String(errorCode(err)), timeout: isTimeout(err) };
   }
 }
 
@@ -135,14 +165,15 @@ async function checkUrl(url) {
   let result;
   for (let attempt = 0; ; attempt++) {
     result = await fetchOnce(url);
-    const retryable = result.error !== undefined || result.status >= 500;
+    const retryable = result.error !== undefined || result.status === 429 || result.status >= 500;
     if (!retryable || attempt >= RETRY_WAITS_MS.length) break;
     await sleep(RETRY_WAITS_MS[attempt]);
   }
   return { ...result, level: classify(result) };
 }
 
-function classify({ status, error, timeout }) {
+/** ok, warn or fail for one result: { status } or { error, timeout }. */
+export function classify({ status, error, timeout }) {
   if (error !== undefined) {
     // A slow host is not a dead link: report timeouts, but do not fail.
     return timeout ? 'warn' : 'fail';
