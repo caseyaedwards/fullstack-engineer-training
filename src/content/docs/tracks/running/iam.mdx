@@ -1,36 +1,180 @@
 ---
 title: "IAM"
+description: How a system decides who a caller is and what that caller can do, from a login in the api to a Kubernetes Role and a cloud policy with an explicit deny.
 track: iam
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+Identity and access management (IAM) answers two questions for every request: who sent it, and is that sender allowed to do this. Every system you deploy to asks both, in its own words: the api of your monitor, the Kubernetes API server, GitHub and every cloud provider. Once you know the shared model underneath, a Kubernetes Role and a cloud policy read as two spellings of the same idea.
+
 ## What It Is
 
-This section is not written yet.
+### Authentication and Authorization
+
+**Authentication** proves who the caller is. The caller shows a credential: a password, a session cookie, a signed token, an SSH key. The system checks it and names a **principal**: the identity that the rest of the request acts as. A principal is a person, such as `you@example.com`, or a program, such as the continuous integration (CI) job that deploys your monitor.
+
+**Authorization** decides what that principal can do. The system takes the principal, the action it asks for and the resource it names, and answers yes or no. Authorization always runs after authentication: without a principal, there is nobody to look up.
+
+HTTP gives each failure its own status code, and the names mislead. `401 Unauthorized` means the caller is not authenticated: no credential, or a bad one. `403 Forbidden` means the caller is authenticated and not allowed. A client that gets `401` logs in again. A client that gets `403` stops: a new login with the same identity changes nothing.
+
+<Diagram
+  id="authn-authz"
+  title="Authentication names the caller, then authorization decides"
+  code={`direction: right
+client: "browser or CI job"
+authn: "authentication\\nwho are you?"
+authz: "authorization\\nwhat can you do?"
+handler: "handler runs"
+r401: "401 Unauthorized"
+r403: "403 Forbidden"
+client -> authn: "cookie, token or key"
+authn -> authz: "principal"
+authz -> handler: "allowed"
+authn -> r401: "no proof, bad proof"
+authz -> r403: "not allowed"
+`}
+/>
+
+### Principals, Actions and Resources
+
+Every authorization system asks the same three-part question: can this **principal** perform this **action** on this **resource**? The vocabulary changes between systems. The parts stay the same:
+
+| System | Principal | Action | Resource |
+| --- | --- | --- | --- |
+| Your api, Week 11 | a logged-in user | `POST`, `DELETE` | `/api/monitors` |
+| Kubernetes | a user, or a ServiceAccount: the identity of a program | a verb, such as `get` or `patch` | a resource type in a namespace, such as `deployments` in `your-monitor` |
+| Amazon Web Services (AWS) IAM | a user or a role | `s3:GetObject` | an ARN, such as `arn:aws:s3:::backups/*` |
+
+An ARN, short for Amazon Resource Name, is the string AWS uses to name any resource. Many systems add a fourth part, a **condition**: allow this only from one network, only before a date, only with a second factor.
+
+### Policies and Statements
+
+A **policy** is a document that lists what principals can and cannot do. It holds **statements**. Each statement names an effect, `Allow` or `Deny`, a set of actions and a set of resources. AWS, Google Cloud and this page all use this shape.
+
+Three rules decide the answer, and AWS documents them as its policy evaluation logic:
+
+1. **Deny by default.** The system refuses a request that no statement matches. This is the **implicit deny**.
+2. **An allow grants.** A statement with `Allow` whose actions and resources both match the request turns the answer to yes.
+3. **An explicit deny wins.** A matching statement with `Deny` refuses the request, whatever any allow says, in any order.
+
+The third rule exists for guardrails. A team grants broad rights with one statement, such as every action on every monitor, and fences off one dangerous corner with another: never delete the self-check monitor of Week 18, here `monitor/1`. Nobody needs to rewrite the broad grant, and no later allow undoes the fence.
+
+**Wildcards** keep policies short. A pattern that ends in `*` matches every value that starts with the rest: `monitors:*` matches `monitors:read` and `monitors:delete`. AWS also accepts `*` and `?` in the middle of an action, and treats action names without regard to case. The example on this page keeps one rule: only a trailing `*` is a wildcard, and matching is exact.
+
+### Roles and Groups
+
+Granting rights to people one at a time does not scale past a handful. **Role-based access control** (RBAC) grants rights to a **role**, such as viewer or editor, and assigns people or programs to roles. When someone changes teams, you change one assignment, not 20 policies. A **group** collects people, and a grant to the group reaches every member.
+
+The word role means different things in different systems. In Kubernetes, a Role is a list of allowed verbs on resources in one namespace, and a RoleBinding grants it to a subject. In AWS, a role is an identity with no password of its own: a person or a program **assumes** it and receives temporary credentials that expire, one hour by default.
+
+**Kubernetes RBAC has no deny.** Its documentation says it plainly: permissions are purely additive. A ServiceAccount can do the union of everything its bindings grant, and the only way to take a right away is to remove the grant. AWS supports explicit deny statements. Google Cloud keeps deny rules in separate deny policies and checks them before its allow policies.
+
+### Least Privilege
+
+**Least privilege** means each principal gets the rights its job needs and nothing more. The test is concrete: list what the principal runs, list the actions each command needs, and grant exactly those. A CI token that can only patch Deployments in one namespace limits what a stolen copy does. A CI token bound to `cluster-admin`, the built-in ClusterRole that allows every verb on every resource, hands a thief the whole cluster.
+
+Least privilege also covers time. A credential that lives 90 days is a 90-day window for a thief. Short-lived credentials, issued per job and expiring within the hour, shrink that window to the job itself. The <TrackLink slug="security">Security track</TrackLink> covers what a thief does with a credential once inside.
 
 ## Diagrams
 
-This section is not written yet.
+A request meets a policy. The evaluation walks every statement, starts from no and stops at the first matching deny:
+
+<Diagram
+  id="policy-evaluation"
+  title="Evaluating monitors:delete on monitor/1 against a two-statement policy"
+  code={`direction: right
+req: "request\\nmonitors:delete\\nmonitor/1"
+start: "implicit deny"
+s1: "statement 1\\nAllow monitors:*\\non monitor/*"
+s2: "statement 2\\nDeny monitors:delete\\non monitor/1"
+out: "answer: 403"
+req -> start
+start -> s1: "check"
+s1 -> s2: "allowed so far"
+s2 -> out: "explicit deny"
+`}
+  steps={[
+    { hl: ['req', 'start', 'req->start'], caption: 'The api authenticates the caller and builds the question: can this principal perform monitors:delete on monitor/1? Before any statement runs, the answer is no.' },
+    { hl: ['start', 's1', 'start->s1'], caption: 'Statement 1 allows monitors:* on monitor/*. Both patterns end in a star, and both match. The answer turns to yes, and the evaluation goes on: a later deny can still refuse.' },
+    { hl: ['s1', 's2', 's1->s2'], caption: 'Statement 2 denies monitors:delete on monitor/1. The action and the resource both match exactly. An explicit deny beats every allow, and the evaluation stops here.' },
+    { hl: ['s2', 'out', 's2->out'], caption: 'The api answers 403 Forbidden. The same caller asking to delete monitor/2 gets yes: the deny covers one resource, and statement 1 covers the rest.' },
+  ]}
+/>
+
+In Kubernetes, the same three parts sit in three objects. The ServiceAccount is the principal. The Role holds the actions and resources. The RoleBinding joins the two inside one namespace:
+
+<Diagram
+  id="k8s-rbac"
+  title="The deployer ServiceAccount of Week 16, its Role and the RoleBinding between them"
+  code={`direction: right
+sa: "ServiceAccount\\ndeployer"
+rb: "RoleBinding\\ndeployer"
+role: "Role\\ndeployer"
+res: "the kinds of the prod\\noverlay in your-monitor"
+other: "Secrets, other namespaces"
+rb -> sa: "subject"
+rb -> role: "roleRef"
+role -> res: "get, create, patch"
+role -> other: "no rule: refused"
+`}
+/>
 
 ## Example
 
-This section is not written yet.
+The example evaluates a policy with the three rules above. The types mirror a cloud policy statement:
+
+<CodeFrom file="go/tracks/iam/iam.go" region="types" lang="go" title="iam.go" />
+
+`Allowed` starts from `false`, the implicit deny. It skips every statement that does not match both the action and the resource. A matching `Deny` returns `false` at once. A matching `Allow` sets the answer to `true` and keeps looking, because a later statement can still deny:
+
+<CodeFrom file="go/tracks/iam/iam.go" region="allowed" lang="go" title="iam.go" />
+
+An effect that is neither `Allow` nor `Deny`, such as a lowercase `allow` typed by hand, matches no case of the `switch` and grants nothing. A typo fails closed. `matchAny` holds the wildcard rule: `strings.CutSuffix` removes a trailing `*` and reports whether it found one, and the rest becomes a prefix:
+
+<CodeFrom file="go/tracks/iam/iam.go" region="match" lang="go" title="iam.go" />
+
+The table test covers each rule, and the cases that break first when someone edits the code: a deny placed before the allow, a star in the middle of a pattern, an action that matches with a resource that does not:
+
+<CodeFrom file="go/tracks/iam/iam_test.go" region="tests" lang="go" title="iam_test.go" />
+
+Change the `Deny` case to set `allowed = false` instead of returning, and `a deny wins in any order` fails: the allow after it turns the answer back to yes. The Go example doubles as documentation, and `go test` checks its output:
+
+<CodeFrom file="go/tracks/iam/iam_test.go" region="example" lang="go" title="iam_test.go" />
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+In <WeekLink n={11} anchor="who-are-you-and-what-can-you-do">Week 11</WeekLink>, the api learns both halves. Authentication is a bcrypt check of the password, then a session cookie that names the user on every later request. Authorization is one rule: anyone reads, and any logged-in user writes. `requireUser` in <WeekLink n={11} anchor="step-7-guard-the-routes">Step 7</WeekLink> enforces it and answers `401` when no valid session exists. The monitor needs no roles yet: every user can do everything. The day a second person joins as a read-only viewer, a policy like the example on this page replaces the one rule, and `requireUser` passes the principal to `Allowed`.
+
+In <WeekLink n={16} anchor="who-can-reach-what">Week 16</WeekLink>, IAM moves to the cluster. Your own kubeconfig holds administrator rights, which you use by hand for the setup. CI gets its own identity, the `deployer` ServiceAccount, and a Role built from what `deploy.yml` runs: `get`, `create` and `patch` on the kinds of the prod overlay, plus `list` and `watch` on Deployments for `kubectl rollout status`. <WeekLink n={16} anchor="step-8-apply-the-cluster-setup">Step 8</WeekLink> also names what the Role cannot stop: `create` on Deployments runs any image, and that pod reads the Secrets of the namespace. Least privilege narrows the damage. It does not remove it. <WeekLink n={16} anchor="step-11-give-ci-a-way-in">Step 11</WeekLink> issues the token for 90 days, confines the SSH user `tunnel` to one forwarded port, and runs `kubectl auth can-i` before every deploy, which asks the API server the authorization question without changing anything.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **Returning `403` for a missing login, or `401` for a missing right.** The client logs in again in a loop, or gives up on a session that works. Answer `401` when authentication fails and `403` when authorization fails.
+- **Checking authorization in the frontend only.** A hidden **Delete** button stops nobody with `curl`. Check every request on the server, where the caller cannot change the code.
+- **Checking the route and not the object.** The api confirms that a user can delete monitors, then deletes monitor `42` for a user who does not own it. The Open Worldwide Application Security Project (OWASP) files this under Broken Access Control, first in its Top 10. Pass the resource to the check, not only the action.
+- **Starting from allow.** A check that refuses only what a deny list names passes every new route until someone remembers to list it. Start from no, as `Allowed` does.
+- **Granting `*` to make an error go away.** A deploy fails with `forbidden`, someone grants every verb, and the error never returns. Read the error instead: Kubernetes names the verb, the resource and the namespace it refused. Grant that one.
+- **Long-lived credentials in CI.** A token that lasts a year sits in logs, forks and laptops. Issue the shortest lifetime the job allows, and write the expiry date down, as Week 16 does.
+- **Sharing one identity between people or programs.** Every action in the audit log names the same principal, and revoking it for one leaver locks out everyone. Give each person and each program its own.
 
 ## Going Deeper
 
-This section is not written yet.
+- **OpenID Connect for CI.** GitHub Actions issues a signed token per job, and a cloud provider exchanges it for credentials that last one hour by default on AWS, which removes the stored 90-day token.
+- **Attribute-based access control.** Attribute-based access control (ABAC) decides on attributes of the principal and the resource, such as a team tag that must match on both, which scales better than one role per team.
+- **Relationship-based access control.** Google Zanzibar and its open source descendants, such as OpenFGA and SpiceDB, answer questions like can this user edit this document through a graph of who owns what.
+- **Policy engines.** Open Policy Agent and Cedar keep policies as code outside the application, with tests, and answer the authorization question through an API.
+- **Kubernetes admission control.** Week 16 already uses a ValidatingAdmissionPolicy: RBAC decides who can create a Service, and admission decides what that Service can contain.
 
 ## Further Reading
 
-This section is not written yet.
+- [AWS IAM policy evaluation logic](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_evaluation-logic.html): the full decision order of AWS, with implicit deny, explicit deny and every policy type that takes part.
+- [Kubernetes: Using RBAC Authorization](https://kubernetes.io/docs/reference/access-authn-authz/rbac/): Roles, ClusterRoles, bindings and the default roles, with the statement that permissions are purely additive.
+- [OWASP Authorization Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html): least privilege, deny by default and checks on every request, as rules for web applications.
+- [Google Cloud deny policies](https://docs.cloud.google.com/iam/docs/deny-overview): how Google Cloud adds explicit deny to an allow-only model, and the order it checks them in.
