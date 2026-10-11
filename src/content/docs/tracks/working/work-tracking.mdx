@@ -1,36 +1,172 @@
 ---
 title: "Ticket and Work Tracking"
+description: How teams track work with tickets, boards and backlogs, how to write a ticket someone else can finish, and how a ticket key ties a branch, a pull request and a deploy together.
 track: work-tracking
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+A team tracks its work in **tickets**: one record per piece of work, with a title, a description, an owner and a status, kept in a tool such as Jira, Linear or GitHub Issues. You know tickets from QA, short for quality assurance, as the bug reports you write. As a full-stack engineer, you also write them, split them, pick them up and close them, and the ticket becomes the thread that ties a request to the code, the review and the deploy that answer it.
+
 ## What It Is
 
-This section is not written yet.
+### Tickets and Their Types
+
+A **ticket**, also called an issue or a work item, describes one piece of work small enough for one person to finish in a few days. Most trackers sort tickets by type:
+
+- A **bug**: the system does something wrong. It needs the steps to reproduce, what you expect and what happens instead, the version or commit, and any log lines or screenshots.
+- A **feature** or **story**: a new behavior someone needs. A **user story** phrases it from the point of view of the person who benefits: as an on-call engineer, I get one notification per incident, not one per failed check.
+- A **task** or **chore**: work with no visible behavior change, such as upgrading Go or rotating a certificate.
+- An **epic**: a large goal that groups many tickets, such as alerting. Jira calls it an epic, and Linear calls it a project.
+
+Each ticket gets a **key** that names it everywhere. Jira and Linear write the key as a project prefix, a hyphen and a number: `MON-42` in the project `MON`. GitHub Issues numbers issues per repository and writes `#42`. The key is what you type into branch names, commit messages and pull request titles.
+
+### Writing a Ticket Someone Else Can Finish
+
+A good ticket answers four questions before anyone starts:
+
+- **Why**: the problem, from the point of view of the person who has it. With a second worker running, the monitor checks every site twice: that is a problem. Adding a queue is a solution, and it belongs in the ticket only once the team agrees on it.
+- **What done means**: the **acceptance criteria**, a list of observable facts that must hold when the work is complete. Write them the way you write test cases: given four workers and 200 jobs, no job runs twice.
+- **What is out of scope**: the related work that this ticket does not cover, which keeps it small.
+- **Where to start**: links to the code, the log line, the dashboard or the decision record that the work touches.
+
+A team also agrees on a **definition of done**: the checks every ticket passes on top of its own criteria, such as tests written, continuous integration (CI) green, documentation updated and the change deployed. The **Done When** list on each week of this course is a definition of done for that week.
+
+Split a ticket that takes longer than a few days. Split it by behavior, not by layer: one ticket for creating a monitor through the api, page included, beats one ticket for the database and one for the page, because each split ticket delivers something a person can use and test on its own.
+
+### Backlogs and Boards
+
+The **backlog** is the ordered list of tickets nobody has started. The order is the priority: the top ticket is the next one to pick up. **Refinement**, also called grooming, is the regular meeting where the team rewrites the top tickets until each one has clear acceptance criteria and a size.
+
+A **board** shows the tickets in flight as cards in columns, one column per **status**: Backlog, Ready, In progress, In review and Done is a common set. A card moves right as the work moves. A card stuck in one column for days is a signal: the work is blocked, too large, or waiting for a review nobody gives.
+
+Two ways to run a board dominate:
+
+- **Scrum** works in **sprints**, fixed periods of one month or less, two weeks on many teams. At the start, the team commits to a set of tickets from the top of the backlog. At the end, it reviews what shipped and how it worked.
+- **Kanban** has no sprints. Work flows continuously, and each column has a **work-in-progress limit**, or WIP limit: a maximum number of cards. When In review holds its limit, nobody starts a new ticket. Everyone reviews instead. The limit keeps work from piling up half-finished.
+
+### Status Is a Promise
+
+The status on a ticket tells the team what to expect. Move the card when the work moves, not at the end of the week. When you are blocked, say on the ticket what blocks you and who can unblock it. When you stop working on a ticket, unassign yourself and write down how far you got. A ticket that says In progress for two weeks with no comment costs the team more than a ticket that says blocked.
+
+### Linking Work End to End
+
+The value of a ticket key grows with every place it appears:
+
+- **The branch**: name it after the ticket, such as `MON-42-retry-once`. GitHub can also create the branch from the issue page.
+- **The commits**: start the subject with the key: `MON-42: Retry a failed check once`.
+- **The pull request**: put the key in the title. On GitHub, a closing keyword in the description, such as `Closes #42`, links the pull request to the issue and closes the issue when the pull request merges into the default branch. GitHub accepts `close`, `fix` and `resolve` in all their forms.
+- **The deploy**: the image carries the commit SHA, short for Secure Hash Algorithm, the hash that names the commit. The commit carries the key.
+
+With the links in place, you walk from any end to any other. During an incident, the deploy names the commit, the commit names the ticket, and the ticket explains why the change exists and who asked for it.
 
 ## Diagrams
 
-This section is not written yet.
+One ticket crosses the board from left to right. Each move has a cause that someone can see.
+
+<Diagram
+  id="ticket-board"
+  title="A ticket from backlog to done on a board"
+  code={`direction: right
+backlog: Backlog
+ready: Ready
+doing: In progress
+review: In review
+done: Done
+backlog -> ready: refined
+ready -> doing: picked up
+doing -> review: pull request opened
+review -> doing: changes requested
+review -> done: merged and deployed
+`}
+  steps={[
+    { hl: ['backlog'], caption: 'MON-42 enters the backlog: retry a failed check once before recording the site as down. The team orders it near the top.' },
+    { hl: ['backlog', 'ready', 'backlog->ready'], caption: 'In refinement, the team adds acceptance criteria: one retry after 2 seconds, a retried check logs retry=1, and a second failure records down. The ticket is ready: anyone can start it without asking a question.' },
+    { hl: ['ready', 'doing', 'ready->doing'], caption: 'You assign yourself, create the branch MON-42-retry-once and move the card. Now the team knows who works on it.' },
+    { hl: ['doing', 'review', 'doing->review'], caption: 'You push and open a pull request titled MON-42: Retry a failed check once. The card moves to In review, and a reviewer picks it up.' },
+    { hl: ['review', 'doing', 'review->doing'], caption: 'The reviewer asks for a test of the retry timeout. The card goes back to In progress until you push the fix.' },
+    { hl: ['review', 'done', 'review->done'], caption: 'The pull request merges and the new image deploys. Only then does the card reach Done, because the definition of done includes the deploy.' },
+  ]}
+/>
+
+The ticket key links four records that live in different tools. Each arrow is a reference that someone typed or a tool wrote.
+
+<Diagram
+  id="ticket-links"
+  title="A ticket linked to a branch, a pull request and a deploy"
+  code={`direction: left
+ticket: "MON-42\\nRetry a failed check once"
+branch: "branch\\nMON-42-retry-once"
+pr: "pull request #57\\nMON-42: Retry a failed check once"
+commit: "merge commit 3f1c2ab"
+deploy: "deploy\\nimage tagged 3f1c2ab…"
+branch -> ticket: key in the name
+pr -> branch: from
+pr -> ticket: key in the title
+commit -> pr: merges
+deploy -> commit: SHA tag
+`}
+  steps={[
+    { hl: ['branch', 'ticket', 'branch->ticket'], caption: 'The branch name starts with the key. Once you connect them to GitHub, trackers such as Jira and Linear list the branch on the ticket as soon as you push it.' },
+    { hl: ['pr', 'branch', 'ticket', 'pr->branch', 'pr->ticket'], caption: 'The pull request comes from the branch and carries the key in its title. The ticket shows the review status next to the description.' },
+    { hl: ['commit', 'pr', 'commit->pr'], caption: 'Merging writes a commit on main. Its message names the pull request number, as GitHub writes it: Merge pull request #57.' },
+    { hl: ['deploy', 'commit', 'deploy->commit'], caption: 'The images job tags every image with the commit SHA, as in Week 14. A running pod names its image, the image names the commit, and the trail leads back to MON-42.' },
+  ]}
+/>
 
 ## Example
 
-This section is not written yet.
+Tools find ticket keys in text with a regular expression, and you write the same function the first time you build a check that every pull request title names a ticket, or a script that lists the tickets in a release. `TicketRefs` returns every key in a piece of text, in order, each once:
+
+<CodeFrom file="go/tracks/worktracking/refs.go" region="refs" lang="go" title="refs.go" />
+
+The pattern reads from left to right: `[A-Z]` is one uppercase letter, `[A-Z0-9]+` one or more uppercase letters or digits, then a literal hyphen and `[0-9]+`, one or more digits. That shape rules out a one-letter prefix such as `A-1`, and allows a digit inside the prefix, as in `K8S-14`. `\b` is a **word boundary**: the point between a letter, digit or underscore and anything else, or the start or end of the text. With one on each side, `MON-42` inside `XMON-42a` does not count, while `MON-42` inside `feature/MON-42-retry-once` does, because `/` and `-` are not word characters.
+
+`regexp.MustCompile` compiles the pattern once, when the package loads, and panics on a bad pattern: a typo fails at startup instead of at the first call. `FindAllString` with `-1` returns every match. The map remembers which keys the loop has already appended.
+
+The function starts from `[]string{}`, not from a nil slice. Both have length zero in Go, but `encoding/json` writes a nil slice as `null` and an empty one as `[]`, and a TypeScript client that calls `.map` on `null` throws.
+
+The test table covers the shapes that show up in real text:
+
+<CodeFrom file="go/tracks/worktracking/refs_test.go" region="test" lang="go" title="refs_test.go" />
+
+The last row records a limit of the pattern, not a bug to fix: `UTF-8` and `SHA-256` have exactly the shape of a key. Text alone cannot tell them apart from a ticket. A tool that needs certainty checks each match against the list of project keys the tracker knows, such as `MON` and `OPS`, and drops the rest.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={0} anchor="step-10-practice-the-weekly-rhythm">Week 0</WeekLink> sets up the smallest working version of this track. Each week is one unit of work: one branch, `week-00` to `week-18`, one pull request, and the Done When items of the week in the description as a task list, where GitHub turns each `- [ ] item` line into a checkbox. The merged pull request is the record that the week is done, and the <WeekLink n={0} anchor="the-weekly-rhythm-one-branch-and-one-pull-request">weekly rhythm</WeekLink> repeats it for every week of the course.
+
+When a week grows beyond one pull request, or a bug turns up in the code from an earlier week, open a GitHub issue for it in your `your-monitor` repository, name the branch after it, and close it from the pull request with `Closes #N`. <WeekLink n={18} anchor="pages-tickets-and-the-watchdog">Week 18</WeekLink> routes alerts the same way: a page needs action now, while a **ticket alert** needs action within a working day, and a slow burn of the error budget opens one. The <TrackLink slug="git">Git track</TrackLink> covers branches and merges, and the <TrackLink slug="ci-cd">CI/CD track</TrackLink>, short for continuous integration and continuous delivery, covers the images tagged with the commit SHA.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **A ticket with a title and nothing else.** The person who picks it up guesses what done means, and the review turns into an argument about scope. Write the why and the acceptance criteria before the ticket leaves the backlog.
+- **A solution disguised as a problem.** Add Redis tells the engineer what to build and hides why. The engineer cannot find a simpler fix, such as a table in the existing Postgres. Describe the problem and let the solution come in refinement.
+- **A ticket that takes three weeks.** Nobody can tell whether it is on track, and the pull request at the end is too big to review well. Split it by behavior into tickets of a few days each.
+- **A board that nobody updates.** The status lies, and the team asks in chat instead of reading the board, which defeats the point of having one. Move the card when the work moves, and write a comment when you are blocked.
+- **Starting new work while reviews pile up.** Five tickets sit in review, none ships, and every branch drifts further from `main`. Finish before you start: review first, as a WIP limit enforces.
+- **No key in the branch, the commits or the pull request.** Six months later, `git blame` shows a line and nobody knows why it exists. Put the key in the branch name and the pull request title every time.
+- **Closing keywords on a pull request into a non-default branch.** GitHub ignores the keywords there, and the issue stays open after the merge. Close the issue by hand, or merge into `main`.
 
 ## Going Deeper
 
-This section is not written yet.
+- **Estimation**: story points, t-shirt sizes and why many teams count tickets instead. Read about it before your first sprint planning.
+- **Flow metrics**: cycle time, the time from In progress to Done, and throughput, the tickets finished per week. They measure a team better than estimates do.
+- **GitHub Projects**: boards, tables and custom fields on top of GitHub Issues, enough for a small team without a separate tool.
+- **Autolinked references**: GitHub turns `MON-42` in issues, pull requests and commit messages into a link to your tracker once you configure the prefix in the repository settings.
+- **Incident tickets and postmortem actions**: every action item from a postmortem becomes a ticket with an owner and a date. The <TrackLink slug="sre">site reliability engineering (SRE) track</TrackLink> covers postmortems.
 
 ## Further Reading
 
-This section is not written yet.
+- [About issues](https://raw.githubusercontent.com/github/docs/main/content/issues/tracking-your-work-with-issues/learning-about-issues/about-issues.md): the source of the GitHub documentation page on issues, sub-issues and how teams use them.
+- [Linking a pull request to an issue](https://raw.githubusercontent.com/github/docs/main/content/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue.md): every closing keyword GitHub accepts, and the default-branch rule.
+- [Creating a branch for an issue](https://raw.githubusercontent.com/github/docs/main/content/issues/tracking-your-work-with-issues/using-issues/creating-a-branch-for-an-issue.md): how GitHub creates a branch from an issue and keeps the two linked.
+- [About Projects](https://raw.githubusercontent.com/github/docs/main/content/issues/planning-and-tracking-with-projects/learning-about-projects/about-projects.md): boards, tables and roadmaps on top of GitHub Issues.
+- [Configuring autolinks](https://raw.githubusercontent.com/github/docs/main/content/repositories/managing-your-repositorys-settings-and-features/managing-repository-settings/configuring-autolinks-to-reference-external-resources.md): turning keys such as `MON-42` into links to an external tracker.
+- [regexp](https://pkg.go.dev/regexp): the Go package the example uses, with its full syntax, including `\b`.
