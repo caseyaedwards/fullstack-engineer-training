@@ -249,7 +249,13 @@ Test it with four checks a minute apart, which you can work out on paper. The x 
 
 <CodeFrom file="web/src/week10/web/src/status.test.ts" region="plot-test" lang="ts" title="web/src/status.test.ts" />
 
-The tests build results with `result()` and `down()` from `web/src/testdata.ts`. Each builder returns a valid value and takes the fields a test changes, such as `result({ total_ms: 50 })`. Copy the file from the examples. The example `status.test.ts` also tests `currentStatus`.
+The tests build results with `result()` and `down()`. Each builder returns a valid value and takes the fields a test changes, such as `result({ total_ms: 50 })`. Create `web/src/testdata.ts`:
+
+<CodeFrom file="web/src/week10/web/src/testdata.ts" region="builders" lang="ts" title="web/src/testdata.ts" />
+
+Add the tests of `currentStatus` above the `plot` tests, and import `describe`, `expect` and `test` from `vitest`, `currentStatus` and `plot` from `./status`, and `down` and `result` from `./testdata`:
+
+<CodeFrom file="web/src/week10/web/src/status.test.ts" region="status-test" lang="ts" title="web/src/status.test.ts" />
 
 ### Step 4: Draw the Chart
 
@@ -266,7 +272,7 @@ A **hook** is a function whose name starts with `use` and that calls other hooks
 <CodeFrom file="web/src/week10/web/src/usePolling.ts" region="hook" lang="ts" title="web/src/usePolling.ts" />
 
 - The effect lists `load` in its dependencies. A caller that passes a new arrow function on every render restarts the effect on every render: a request, a render, a new function, another request, without end. `useCallback` in Step 6 keeps each `load` the same between renders.
-- The two `if (controller.signal.aborted) return` lines stop a cancelled run before it stores an answer or sets the next timer.
+- The two `if (controller.signal.aborted) return` lines stop a canceled run before it stores an answer or sets the next timer.
 - A failed refresh keeps `data` and adds `error`. The page shows the old data with a warning, rather than an empty page.
 
 ### Step 6: Build the Page
@@ -283,7 +289,7 @@ Create `web/src/StatusPage.tsx`. The page itself:
 
 <CodeFrom file="web/src/week10/web/src/StatusPage.tsx" region="incidents" lang="tsx" title="web/src/StatusPage.tsx" />
 
-The browser shows each time in its own time zone. The `dateTime` attribute holds the exact moment in UTC, which a test can compare. Replace `web/src/App.tsx`:
+The browser shows each time in its own time zone, and an incident shows its date too, because it can be days old. The `dateTime` attribute holds the exact moment in UTC, which a test can compare. Replace `web/src/App.tsx`:
 
 <CodeFrom file="web/src/week10/web/src/App.tsx" region="app" lang="tsx" title="web/src/App.tsx" />
 
@@ -309,9 +315,9 @@ The tests for failures:
 
 <CodeFrom file="web/src/week10/web/src/StatusPage.test.tsx" region="failure-tests" lang="tsx" title="web/src/StatusPage.test.tsx" />
 
-`vi.useFakeTimers` replaces `setTimeout` with a clock the test moves. `shouldAdvanceTime: true` keeps that clock moving with real time too, which the `findBy` retries need. `vi.advanceTimersByTimeAsync(30_000)` runs the 30-second timer at once. `act` tells React that the test caused the updates, which makes React finish rendering before the next line checks the page. The last test proves the cleanup works: remove the first `aborted` check from `usePolling`, and the late answer sets a new timer, which sends a second request, and the test fails.
+`vi.useFakeTimers` replaces `setTimeout` with a clock the test moves. `shouldAdvanceTime: true` keeps that clock moving with real time too, which the `findBy` retries need. `vi.advanceTimersByTimeAsync(30_000)` runs the 30-second timer at once. `act` tells React that the test caused the updates, which makes React finish rendering before the next line checks the page. The last two tests prove the cleanup works. Remove `clearTimeout(timer)` from `usePolling`, and the timer fires after the unmount and sends a second request. Remove the first `aborted` check, and a late answer sets a new timer, with the same result. Either way, a test fails.
 
-Run `make test`. The Go tests run, then Vitest reports `20 passed` for the three test files.
+Run `make test`. The Go tests run, then Vitest reports `23 passed` for the three test files.
 
 ### Step 8: Run It Against the Real API
 
@@ -350,7 +356,7 @@ Create `web/e2e/status.spec.ts`. First, the mocked api. Playwright tries the rou
 
 <CodeFrom file="web/src/week10/web/e2e/status.spec.ts" region="mock" lang="ts" title="web/e2e/status.spec.ts" />
 
-The flow: a site is up, it fails three times, and the next refresh shows it. `page.clock.install` replaces the clock of the page, timers included, and `page.clock.runFor(30_000)` moves it 30 seconds in one step instead of waiting:
+The flow: a site is up, it fails three times, and the next refresh shows it. `page.clock.install` replaces the clock of the page, timers included. The installed clock runs on in real time, and `pauseAt` stops it, which pins the **Updated** time to `14:03:00.000`. `page.clock.runFor(30_000)` then moves it 30 seconds in one step, and fires the refresh timer on the way:
 
 <CodeFrom file="web/src/week10/web/e2e/status.spec.ts" region="flow" lang="ts" title="web/e2e/status.spec.ts" />
 
@@ -370,7 +376,7 @@ Create `web/nginx.conf`:
 
 <CodeFrom file="go/week10/your-monitor/Dockerfile" region="web" lang="dockerfile" title="Dockerfile" />
 
-`node:22-alpine` builds the page, and only `dist/` reaches the final image. `npm run build` runs `tsc -b`, which type-checks your tests too, then `vite build`. The final image comes from `nginxinc/nginx-unprivileged`, the variant of the official nginx image that runs as user `101` and listens on port `8080`, the way your Go images run as `65532`. The plain `nginx` image starts as `root`.
+`node:22-alpine` builds the page, and only `dist/` reaches the final image. The build stage from Week 6 still runs `COPY . .`, which now copies `web/` too: a change to the page reruns `go build` when you next build the api and worker images. To avoid that, replace `COPY . .` in that stage with one `COPY` per folder the Go build needs, such as `cmd` and `internal`. `npm run build` runs `tsc -b`, which type-checks your tests too, then `vite build`. The final image comes from `nginxinc/nginx-unprivileged`, the variant of the official nginx image that runs as user `101` and listens on port `8080`, the way your Go images run as `65532`. The plain `nginx` image starts as `root`.
 
 The build context must now hold `web/`, which Week 6 kept out. In `.dockerignore`, replace the line `web` with the folders that `npm` and Playwright create:
 
@@ -418,16 +424,15 @@ Open a pull request from `week-10` into `main`, read the diff once more, and mer
 
 Three places show what the page does: the browser, the logs and the page itself. The outputs are examples.
 
-**The Network panel.** Open the browser developer tools, select **Network**, and type `/api/` into the filter box. With two monitors, each refresh adds four requests: monitors, incidents and two results. The **Waterfall** column shows the order: the results requests start only after the monitors answer, because each `MonitorRow` exists only then. On the first load in development, each request shows twice, the first one with the status `(canceled)`: StrictMode runs each effect, its cleanup, then the effect again. The api still receives the cancelled request, because the browser sent it before the cleanup ran. The api log shows each route twice at page load:
+**The Network panel.** Open the browser developer tools, select **Network**, and type `/api/` into the filter box. With two monitors, each refresh adds four requests: monitors, incidents and two results. The **Waterfall** column shows the order: the results requests start only after the monitors answer, because each `MonitorRow` exists only then. On the first load in development, each request shows twice, the first one with the status `(canceled)`: StrictMode runs each effect, its cleanup, then the effect again. The api still receives the canceled request, because the browser sent it before the cleanup ran. Filter the api log for one route, and it shows that route twice at page load:
 
 ```txt
+$ docker compose logs --no-log-prefix api | grep 'path=/api/monitors '
 2026/10/11 07:08:04 request method=GET path=/api/monitors status=200 bytes=104 duration_ms=0.2
-2026/10/11 07:08:04 request method=GET path=/api/incidents status=404 bytes=22 duration_ms=0.4
 2026/10/11 07:08:04 request method=GET path=/api/monitors status=200 bytes=104 duration_ms=0.1
-2026/10/11 07:08:04 request method=GET path=/api/incidents status=404 bytes=22 duration_ms=0.1
 ```
 
-These lines come from a Week 7 api, which has no incidents route: the page shows **Cannot load incidents** for the `404`. Your Week 9 api answers `200`. In the `web` container, nginx writes one access line per request: `docker compose logs web` shows the path, the status and the size of each answer, assets and api calls alike.
+The incidents route and each results route show up twice in the same way. In the `web` container, nginx writes one access line per request: `docker compose logs web` shows the path, the status and the size of each answer, assets and api calls alike.
 
 **Freshness.** The page ends with **Updated** and the time of the last good answer. When that time stops moving while the page stays open, the refresh fails, and the alert at the top says why.
 

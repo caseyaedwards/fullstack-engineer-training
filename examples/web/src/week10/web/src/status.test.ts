@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import { currentStatus, plot } from './status'
 import { down, result } from './testdata'
 
+// region: status-test
 describe('currentStatus', () => {
   test('reads the newest result, which comes first', () => {
     expect(currentStatus([result(), down()])).toBe('up')
@@ -12,6 +13,7 @@ describe('currentStatus', () => {
     expect(currentStatus([])).toBe('unknown')
   })
 })
+// endregion: status-test
 
 // region: plot-test
 describe('plot', () => {

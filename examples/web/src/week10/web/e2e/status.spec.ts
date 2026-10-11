@@ -29,8 +29,9 @@ async function mockApi(page: Page, api: Api) {
 
 // region: flow
 test('a site goes down: the page shows it at the next refresh', async ({ page }) => {
-  // The page clock starts at 14:03 and moves only when the test says so.
+  // The page clock starts at 14:03 and stands still: only runFor moves it.
   await page.clock.install({ time: new Date('2026-10-11T14:03:00Z') })
+  await page.clock.pauseAt(new Date('2026-10-11T14:03:00Z'))
   const api: Api = {
     monitors: [{ id: 1, url: 'https://example.com', interval_seconds: 60, created_at: '2026-10-11T09:00:00Z' }],
     results: { 1: [up('2026-10-11T14:02:00Z', 50), up('2026-10-11T14:01:00Z', 200), up('2026-10-11T14:00:00Z', 100)] },
@@ -43,11 +44,14 @@ test('a site goes down: the page shows it at the next refresh', async ({ page })
   await expect(row.getByText('Up', { exact: true })).toBeVisible()
   await expect(row.getByRole('img')).toHaveAccessibleName('Total time of the last 3 checks: 50 to 200 ms, 0 failed')
   await expect(page.getByRole('region', { name: 'Open incidents' })).toHaveCount(0)
+  const updated = page.locator('.updated time')
+  await expect(updated).toHaveAttribute('datetime', '2026-10-11T14:03:00.000Z')
 
   // The worker records three failures; the alerter opens an incident.
   api.results[1] = [down('2026-10-11T14:05:00Z'), down('2026-10-11T14:04:00Z'), down('2026-10-11T14:03:00Z'), ...api.results[1]]
   api.incidents = [{ id: 9, monitor_id: 1, started_at: '2026-10-11T14:05:00Z', resolved_at: null, cause: 'context deadline exceeded' }]
   await page.clock.runFor(30_000)
+  await expect(updated).toHaveAttribute('datetime', '2026-10-11T14:03:30.000Z')
 
   await expect(row.getByText('Down', { exact: true })).toBeVisible()
   await expect(row.getByRole('img')).toHaveAccessibleName('Total time of the last 6 checks: 50 to 200 ms, 3 failed')

@@ -57,6 +57,17 @@ describe('StatusPage', () => {
     expect(calls.map((c) => c.what)).toContain('results 1 limit=50')
   })
 
+  test('gives the status code when the site answered with an error', async () => {
+    const { client } = fakeClient({
+      monitors: [monitor()],
+      results: { 1: [down({ status_code: 503, error: null, total_ms: 40 })] },
+    })
+    render(<StatusPage client={client} />)
+
+    const item = await screen.findByRole('listitem', { name: 'https://example.com' })
+    expect(await within(item).findByText(/^Checked .*: status 503$/)).toBeVisible()
+  })
+
   test('lists open incidents with the URL of their monitor', async () => {
     const { client } = fakeClient({
       monitors: [monitor({ id: 3, url: 'https://example.net' })],
@@ -66,7 +77,19 @@ describe('StatusPage', () => {
 
     const section = await screen.findByRole('region', { name: 'Open incidents' })
     expect(section).toHaveTextContent(/https:\/\/example\.net is down since .*: status 503/)
-    expect(within(section).getByText(/:/, { selector: 'time' })).toHaveAttribute('datetime', '2026-10-11T13:58:00.000Z')
+    const time = within(section).getByText(/:/, { selector: 'time' })
+    expect(time).toHaveAttribute('datetime', '2026-10-11T13:58:00.000Z')
+    // An incident can be days old: the text holds the date, not only the time.
+    expect(time).toHaveTextContent(new Date('2026-10-11T13:58:00Z').toLocaleString())
+  })
+
+  test('says it is loading until the monitors arrive', () => {
+    const { client } = fakeClient({ monitors: [] })
+    client.listMonitors = () => new Promise(() => {}) // never answers
+    render(<StatusPage client={client} />)
+
+    expect(screen.getByText('Loading monitors…')).toBeVisible()
+    expect(screen.queryByRole('list')).not.toBeInTheDocument()
   })
 
   test('says so when there are no monitors and no incidents', async () => {
@@ -136,6 +159,17 @@ describe('StatusPage when the api fails', () => {
     unmount()
     expect(calls.length).toBeGreaterThanOrEqual(3)
     for (const c of calls) expect(c.signal?.aborted).toBe(true)
+  })
+
+  test('clears its timer when it leaves the page', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const { client, calls } = fakeClient({ monitors: [] })
+    const { unmount } = render(<StatusPage client={client} />)
+    await screen.findByText('No monitors yet. Add one with POST /api/monitors.')
+
+    unmount()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(calls.filter((c) => c.what === 'monitors')).toHaveLength(1)
   })
 
   test('stops asking when it leaves the page, even when an answer arrives late', async () => {

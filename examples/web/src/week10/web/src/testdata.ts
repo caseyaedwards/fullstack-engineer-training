@@ -1,3 +1,4 @@
+// region: builders
 import type { Incident, Monitor, Result } from './api'
 
 // Builders for test data: each returns a valid value, and a test names
@@ -38,3 +39,4 @@ export function down(over: Partial<Result> = {}): Result {
 export function incident(over: Partial<Incident> = {}): Incident {
   return { id: 1, monitor_id: 1, started_at: '2026-10-11T13:58:00Z', resolved_at: null, cause: 'context deadline exceeded', ...over }
 }
+// endregion: builders

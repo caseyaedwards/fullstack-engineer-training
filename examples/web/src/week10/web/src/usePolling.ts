@@ -27,7 +27,7 @@ export function usePolling<T>(load: (signal: AbortSignal) => Promise<T>, everyMs
         if (controller.signal.aborted) return // the answer came too late
         setState({ data, updatedAt: new Date() })
       } catch (err) {
-        if (controller.signal.aborted) return // cancelled on purpose
+        if (controller.signal.aborted) return // canceled on purpose
         setState((prev) => ({ ...prev, error: err as Error }))
       }
       // The next request starts after this one ends, never on top of it.

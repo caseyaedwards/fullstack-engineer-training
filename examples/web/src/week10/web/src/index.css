@@ -4,7 +4,14 @@
   color-scheme: light dark;
   --up: #1a7f37;
   --down: #cf222e;
-  --muted: #6e7781;
+  --muted: #6e7781; /* text: 4.5:1 on white */
+  --badge-muted: #6e7781; /* behind white text in both themes */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --muted: #9198a1; /* 6.4:1 on the dark background of Chrome */
+  }
 }
 
 main {
@@ -36,7 +43,7 @@ main {
 }
 .badge.up { background: var(--up); }
 .badge.down { background: var(--down); }
-.badge.unknown { background: var(--muted); }
+.badge.unknown { background: var(--badge-muted); }
 
 .chart {
   display: block;

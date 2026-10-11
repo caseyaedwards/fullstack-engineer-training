@@ -81,7 +81,9 @@ function MonitorRow({ monitor, client, refreshMs }: { monitor: Monitor; client: 
       {newest && (
         <p>
           Checked <Time date={new Date(newest.checked_at)} />:{' '}
-          {newest.up ? `${newest.total_ms} ms, status ${newest.status_code}` : newest.error}
+          {newest.up
+            ? `${newest.total_ms} ms, status ${newest.status_code}`
+            : (newest.error ?? `status ${newest.status_code}`)}
         </p>
       )}
       {results.error && <p role="alert">Cannot load results: {results.error.message}</p>}
@@ -103,7 +105,7 @@ function IncidentList({ incidents, monitors }: { incidents: Incident[]; monitors
         {incidents.map((i) => (
           <li key={i.id}>
             {urls.get(i.monitor_id) ?? `monitor ${i.monitor_id}`} is down since{' '}
-            <Time date={new Date(i.started_at)} />: {i.cause ?? 'no cause recorded'}
+            <Time date={new Date(i.started_at)} withDate />: {i.cause}
           </li>
         ))}
       </ul>
@@ -111,10 +113,12 @@ function IncidentList({ incidents, monitors }: { incidents: Incident[]; monitors
   )
 }
 
-// Time shows a moment in the local time of the browser. The dateTime
+// Time shows a moment in the local time of the browser, with the date
+// when withDate is set: an incident can be days old. The dateTime
 // attribute keeps the exact value for tests and for screen readers.
-function Time({ date }: { date?: Date }) {
+function Time({ date, withDate = false }: { date?: Date; withDate?: boolean }) {
   if (!date) return null
-  return <time dateTime={date.toISOString()}>{date.toLocaleTimeString()}</time>
+  const text = withDate ? date.toLocaleString() : date.toLocaleTimeString()
+  return <time dateTime={date.toISOString()}>{text}</time>
 }
 // endregion: incidents

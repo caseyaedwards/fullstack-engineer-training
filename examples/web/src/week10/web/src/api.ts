@@ -31,7 +31,7 @@ export type Incident = {
   monitor_id: number
   started_at: string
   resolved_at: string | null
-  cause: string | null
+  cause: string
 }
 
 // The body of GET /healthz, from Week 6.
