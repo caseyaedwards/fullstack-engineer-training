@@ -51,6 +51,9 @@ done
 
 echo "backup: $name.dump.age, $(($(stat -c %s "$work/$name.dump.age") / 1024)) KiB," \
   "counts $(cat "$work/$name.counts"), in $(($(date +%s) - start)) s"
-# Last: the check goes green only after both uploads.
-curl -fsS -m 10 --retry 3 -o /dev/null "$ping"
+# Last: the check goes green only after both uploads. A failed ping does
+# not fail the Job: the backup is safe, a retry would take a second one,
+# and the missing ping makes healthchecks.io alert anyway.
+curl -fsS -m 10 --retry 3 -o /dev/null "$ping" ||
+  echo "backup: the success ping failed; healthchecks.io will alert"
 # endregion: backup-script
