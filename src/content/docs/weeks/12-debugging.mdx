@@ -255,17 +255,17 @@ Lines that start with `>` go out, and lines that start with `<` come back, as in
 
 Here is how Go sends headers. A handler sets them in the map that `w.Header()` returns. The first call to `w.WriteHeader` or `w.Write` sends the status line and that map, and from then on, the map no longer matters. A change after that point edits a map nobody reads. `secureHeaders` calls `next.ServeHTTP` first, and every handler writes its answer there. The three `Set` calls come after it.
 
-`httptest.ResponseRecorder` hides the bug. `rec.Header()` returns the same live map the handler writes to, late changes included. `rec.Result().Header` holds a copy taken when the handler calls `WriteHeader`, which is what a client receives. Fix the test first, to read the headers the way a client does:
+`httptest.ResponseRecorder` hides the bug. `rec.Header()` returns the same live map the handler writes to, late changes included. `rec.Result().Header` holds a copy taken when the handler calls `WriteHeader`, which is what a client receives. Fix the test first, to read the headers the way a client does. Sam's list already holds the JSON `404`. Add the `403` that `sameOrigin` from Week 11 sends to a cross-site write. Sam wraps `secureHeaders` around everything else in `NewHandler`, which puts the headers on that `403` too:
 
 <CodeFrom file="go/week12/your-monitor/internal/api/headers_test.go" region="headers-test" lang="go" title="internal/api/headers_test.go" />
 
-Run `go test ./internal/api -run TestSecureHeaders`. It fails, as a test written before the fix must. This output is trimmed to the first three of its eleven lines:
+Run `go test ./internal/api -run TestSecureHeaders`. It fails, as a test written before the fix must. This output is trimmed to the first three of its fourteen lines:
 
 ```txt
 --- FAIL: TestSecureHeaders (0.00s)
-    headers_test.go:25: GET /healthz: X-Content-Type-Options = "", want "nosniff"
-    headers_test.go:25: GET /healthz: X-Frame-Options = "", want "DENY"
-    headers_test.go:25: GET /healthz: Content-Security-Policy = "", want "frame-ancestors 'none'"
+    headers_test.go:37: GET /healthz: X-Content-Type-Options = "", want "nosniff"
+    headers_test.go:37: GET /healthz: X-Frame-Options = "", want "DENY"
+    headers_test.go:37: GET /healthz: Content-Security-Policy = "", want "frame-ancestors 'none'"
 ```
 
 Now move the three `Set` calls above `next.ServeHTTP`:
@@ -276,25 +276,24 @@ The test passes. Run `make up` and the same `curl` again, and once more against 
 
 ### Step 4: A Stale Status Page Found with DevTools
 
-The second commit says that browsers keep the public reads for five minutes. Reproduce what that means for the status page. Open `http://localhost:5173`, then add a monitor with `curl`. `read -rs` reads your password without showing it, and `printf` hands it to `curl` on standard input, which keeps it out of your shell history and out of the process list:
+The second commit says that browsers keep the public reads for five minutes. Reproduce what that means for the status page. Open `http://localhost:5173`, then log in and add a monitor with `curl`, as in Week 11:
 
 ```sh
 read -rs PASSWORD
 printf '{"email":"you@example.com","password":"%s"}' "$PASSWORD" |
-  curl -sS -c /tmp/monitor-cookies.txt -H 'Content-Type: application/json' --data @- \
-  http://127.0.0.1:8080/api/login
-curl -sS -b /tmp/monitor-cookies.txt -H 'Content-Type: application/json' \
-  -d '{"url":"https://example.org","interval_seconds":30}' http://127.0.0.1:8080/api/monitors
+  curl -sS -c cookies.txt -H 'Content-Type: application/json' -d @- http://127.0.0.1:8080/api/login
+curl -sS -b cookies.txt -H 'Content-Type: application/json' \
+  -d '{"url":"https://example.net","interval_seconds":60}' http://127.0.0.1:8080/api/monitors
 ```
 
-The page refreshes every 30 seconds since <a href={weekHref(10)}>Week 10</a>, yet `https://example.org` stays missing for up to five minutes. `curl -s http://127.0.0.1:8080/api/monitors` lists it at once. The api is right, and the page shows old data.
+The page refreshes every 30 seconds since <a href={weekHref(10)}>Week 10</a>, yet `https://example.net` stays missing for up to five minutes. `curl -s http://127.0.0.1:8080/api/monitors` lists it at once. The api is right, and the page shows old data.
 
 Open DevTools with **F12**, or **Cmd+Option+I** on macOS, and select the **Network** panel. Click **Fetch/XHR** to list only the requests the page sends from code, and wait for the next refresh:
 
 - The **Size** column of each `monitors` row reads **(disk cache)** instead of a number of bytes. The browser answers from its cache, and the request never leaves the machine.
 - Click the row and open **Headers**. Under **Response Headers**, `Cache-Control: public, max-age=300` tells the browser to reuse the answer for 300 seconds.
 
-Now tick **Disable cache** at the top of the panel. The next refresh reaches the api, and `https://example.org` appears. Untick it, and the page goes stale again. Remember this trap: the checkbox works only while DevTools is open, which means a caching bug can vanish the moment you start to look for it.
+Now tick **Disable cache** at the top of the panel. The next refresh reaches the api, and `https://example.net` appears. Untick it, and the page goes stale again. Remember this trap: the checkbox works only while DevTools is open, which means a caching bug can vanish the moment you start to look for it.
 
 `grep -rn Cache-Control internal/` finds `cache.go`. The header also covers `GET /api/me`, which answers with the user that the session cookie from Week 11 names, and with `public`, a shared cache can hand that answer to the next person behind the same proxy. The fix is the value that the cheat sheet from the first commit lists first for every api answer: `no-store`. Write the test first:
 
@@ -309,8 +308,10 @@ It fails with `Cache-Control = "public, max-age=300", want no-store`. Then chang
 Last, check a write. The answer to the `POST` above holds the `id` of the new monitor. Delete it with the session cookie. The answer is `204 No Content`, with the three security headers and `Cache-Control: no-store`:
 
 ```sh
-curl -sv -o /dev/null -b /tmp/monitor-cookies.txt -X DELETE http://127.0.0.1:8080/api/monitors/<id>
+curl -sv -o /dev/null -b cookies.txt -X DELETE http://127.0.0.1:8080/api/monitors/<id>
 ```
+
+Then run `rm cookies.txt` and `unset PASSWORD`, as in Week 11.
 
 ### Step 5: A Busy Idle Worker Found with a CPU Profile
 
@@ -339,26 +340,26 @@ go tool pprof -top -cum 'http://127.0.0.1:6060/debug/pprof/profile?seconds=10'
 ```
 
 ```txt
-Duration: 10.11s, Total samples = 9.10s (89.99%)
+Duration: 10.19s, Total samples = 11.82s (116.00%)
       flat  flat%   sum%        cum   cum%
-     0.05s  0.55%  0.55%      7.90s 86.81%  main.run.func1
-         0     0%  0.55%      7.75s 85.16%  github.com/you/your-monitor/internal/queue.Work
-         0     0%  0.55%      7.75s 85.16%  main.main.func2
-     6.21s 68.24% 68.79%      6.21s 68.24%  internal/runtime/syscall.Syscall6
+     0.01s 0.085% 0.085%     10.10s 85.45%  main.run.func1
+     0.01s 0.085%  0.17%      9.81s 82.99%  main.main.func2
+     0.04s  0.34%  0.51%      9.79s 82.83%  github.com/you/your-monitor/internal/queue.Work
+     7.61s 64.38% 64.89%      7.61s 64.38%  internal/runtime/syscall.Syscall6
 ```
 
-`Total samples = 9.10s` in 10.11 seconds means that the worker keeps 0.9 of a CPU busy. `go tool pprof` saves each profile under `~/pprof/` and prints its path on a `Saved profile in` line, with a number that rises with each profile. Read the `cum` column from the top: 87% of the time runs inside `run`, the worker loop, and 85% inside `queue.Work`. The large flat value of `Syscall6` is the Linux system call that sends and receives bytes, and macOS shows its own syscall frame there: the worker talks to Postgres nonstop. `-peek` shows what one function calls, here from the file that the `Saved profile in` line names:
+`Total samples = 11.82s` in 10.19 seconds means that the worker keeps more than one CPU busy. `go tool pprof` saves each profile under `~/pprof/` and prints its path on a `Saved profile in` line, with a number that rises with each profile. Read the `cum` column from the top: 85% of the time runs inside `run`, the worker loop, and 83% inside `queue.Work`. The large flat value of `Syscall6` is the Linux system call that sends and receives bytes, and macOS shows its own syscall frame there: the worker talks to Postgres nonstop. `-peek` shows what one function calls, here from the file that the `Saved profile in` line names:
 
 ```sh
 go tool pprof -peek 'queue.Work$' <saved profile>
 ```
 
 ```txt
-                                             7.75s   100% |   main.main.func2
-         0     0%     0%      7.75s 85.16%                | github.com/you/your-monitor/internal/queue.Work
-                                             2.83s 36.52% |   github.com/jackc/pgx/v5/pgxpool.(*Pool).Begin (inline)
-                                             2.46s 31.74% |   github.com/jackc/pgx/v5/pgxpool.(*Tx).Rollback
-                                             2.29s 29.55% |   github.com/jackc/pgx/v5/pgxpool.(*Tx).QueryRow
+                                             9.79s   100% |   main.main.func2
+     0.04s  0.34%  0.34%      9.79s 82.83%                | github.com/you/your-monitor/internal/queue.Work
+                                             3.37s 34.42% |   github.com/jackc/pgx/v5/pgxpool.(*Pool).Begin (inline)
+                                             3.24s 33.09% |   github.com/jackc/pgx/v5/pgxpool.(*Tx).QueryRow
+                                             2.98s 30.44% |   github.com/jackc/pgx/v5/pgxpool.(*Tx).Rollback
 ```
 
 `Work` opens a transaction, asks for a job, finds none, and rolls back. `probe.Check` does not appear at all: the worker checks nothing, and spends its time asking. From <a href={weekHref(9)}>Week 9</a>, `run` waits `poll` after an empty answer before it asks again. The wait is gone. Now read the first log line of the worker again: `started pid=8933 workers=10 poll=1µs`. One microsecond.
@@ -367,7 +368,7 @@ The new constant reads `defaultPoll = 1000 // one second`. A constant without a 
 
 <CodeFrom file="go/week12/your-monitor/cmd/worker/poll_test.go" region="poll-test" lang="go" title="cmd/worker/poll_test.go" />
 
-Before the fix, it fails with two lines: `poll_test.go:15: defaultPoll = 1µs, want about a second` and `poll_test.go:25: two idle workers looked at the queue 16477 times in 200 ms, want 2`. Change the constant to `defaultPoll = time.Second`, and the test passes. Run the worker again and take a new profile: `Total samples` drops to about 10 to 20 ms, under 1% of the 10 seconds. For a picture of the same data, open a saved profile with `go tool pprof -http=127.0.0.1:8081 <file>` and pick **View**, then **Flame Graph**. The default graph view needs Graphviz: `brew install graphviz` on macOS, `sudo apt install graphviz` on Ubuntu. Stop your worker with Ctrl+C and start the two services in Docker again with `docker compose start worker scheduler`.
+Before the fix, it fails with two lines: `poll_test.go:15: defaultPoll = 1µs, want about a second` and `poll_test.go:25: two idle workers looked at the queue 12171 times in 200 ms, want 2`. Change the constant to `defaultPoll = time.Second`, and the test passes. Run the worker again and take a new profile: `Total samples` drops to about 10 to 20 ms, under 1% of the 10 seconds. For a picture of the same data, open a saved profile with `go tool pprof -http=127.0.0.1:8081 <file>` and pick **View**, then **Flame Graph**. The default graph view needs Graphviz: `brew install graphviz` on macOS, `sudo apt install graphviz` on Ubuntu. Stop your worker with Ctrl+C and start the two services in Docker again with `docker compose start worker scheduler`.
 
 ### Step 6: A Slow Handshake Found with Delve
 
@@ -399,7 +400,7 @@ curl measures a TLS handshake of 13 ms, the difference between the two. Your mon
 
 ```txt
 --- FAIL: TestTLSRowIsTheHandshakeOnly (0.31s)
-    tls_test.go:35: Connect = 173.662µs, TLS = 304.454165ms; want each under the 300ms gap between them
+    tls_test.go:35: Connect = 214.395µs, TLS = 304.113553ms; want each under the 300ms gap between them
 ```
 
 The TLS row holds the 300 ms wait, which means it starts before the wait does. Run the test under Delve and stop where every row gets its value: the line `*d = time.Since(*from)` inside `end`. `grep -n 'time.Since(\*from)' internal/probe/probe.go` gives its line number, 47 in this example:
@@ -530,8 +531,8 @@ git bisect reset
 `git bisect start` takes the bad commit first, the last one from Sam, then the good one. `git bisect run` runs the command at each step: exit code `0` marks the commit good, and any code from `1` to `127` except `125` marks it bad. The command copies the test in, runs it, removes it again, and passes on the result of `go test`. Git ends with this output, trimmed:
 
 ```txt
-7509dc33fbab214a899ac1239c16a80f66bbcb0e is the first bad commit
-commit 7509dc33fbab214a899ac1239c16a80f66bbcb0e
+c70596d375a19779b03acdf869c39d02b40162e3 is the first bad commit
+commit c70596d375a19779b03acdf869c39d02b40162e3
 Author: Sam Rivera <sam@example.com>
 
     probe: say what each trace hook measures
@@ -545,7 +546,7 @@ git bisect run sh -c 'go run ./cmd/worker -h 2>&1 | grep -q "(default 1s)"'
 git bisect reset
 ```
 
-`grep -q` exits with `0` when the help shows the one-second default, and with `1` when it does not. Bisect ends with `1fd93181c116499becbefbb47d1c1881950d9daa is the first bad commit` and `worker: name the flag defaults`.
+`grep -q` exits with `0` when the help shows the one-second default, and with `1` when it does not. Bisect ends with `a9273ea6dc4172da955c5632afc103193269d284 is the first bad commit` and `worker: name the flag defaults`.
 
 </SideLab>
 

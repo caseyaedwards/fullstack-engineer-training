@@ -1,4 +1,4 @@
-From 8070b872ad7888d547e14ad93fb5151d41bc5c3d Mon Sep 17 00:00:00 2001
+From ae78845e338ba299bdd27ee7fac45e5d534d6557 Mon Sep 17 00:00:00 2001
 From: Sam Rivera <sam@example.com>
 Date: Sun, 11 Oct 2026 07:40:24 +0000
 Subject: [PATCH 1/4] api: send security headers with every answer
@@ -16,13 +16,13 @@ including the JSON 404.
  create mode 100644 internal/api/headers_test.go
 
 diff --git a/internal/api/api.go b/internal/api/api.go
-index 97e025c..546aa62 100644
+index f68068c..3f4c787 100644
 --- a/internal/api/api.go
 +++ b/internal/api/api.go
-@@ -63,3 +63,3 @@ func NewHandler(store monitor.Store, results monitor.ResultStore, incidents Inci
+@@ -57,3 +57,3 @@ func NewHandler(store monitor.Store, results monitor.ResultStore, incidents Inci
  	}
--	return jsonFallback(mux)
-+	return secureHeaders(jsonFallback(mux))
+-	return sameOrigin(jsonFallback(mux))
++	return secureHeaders(sameOrigin(jsonFallback(mux)))
  }
 diff --git a/internal/api/headers.go b/internal/api/headers.go
 new file mode 100644
@@ -85,7 +85,7 @@ index 0000000..048f128
 2.43.0
 
 
-From 0f4dae154bdeb9f929033721d1552a69bde83a3d Mon Sep 17 00:00:00 2001
+From df7aaf7ab18cd2e0f3e5438a731b2b344af46ba5 Mon Sep 17 00:00:00 2001
 From: Sam Rivera <sam@example.com>
 Date: Sun, 11 Oct 2026 07:40:24 +0000
 Subject: [PATCH 2/4] api: let browsers cache the public reads
@@ -100,13 +100,13 @@ api and Postgres.
  create mode 100644 internal/api/cache.go
 
 diff --git a/internal/api/api.go b/internal/api/api.go
-index 546aa62..e7809cb 100644
+index 3f4c787..d8974da 100644
 --- a/internal/api/api.go
 +++ b/internal/api/api.go
-@@ -63,3 +63,3 @@ func NewHandler(store monitor.Store, results monitor.ResultStore, incidents Inci
+@@ -57,3 +57,3 @@ func NewHandler(store monitor.Store, results monitor.ResultStore, incidents Inci
  	}
--	return secureHeaders(jsonFallback(mux))
-+	return secureHeaders(cacheControl(jsonFallback(mux)))
+-	return secureHeaders(sameOrigin(jsonFallback(mux)))
++	return secureHeaders(cacheControl(sameOrigin(jsonFallback(mux))))
  }
 diff --git a/internal/api/cache.go b/internal/api/cache.go
 new file mode 100644
@@ -136,7 +136,7 @@ index 0000000..98635bb
 2.43.0
 
 
-From 7f53446b40f0e0cf5a9124f5b8870e4df33d5354 Mon Sep 17 00:00:00 2001
+From aeed5a124b894aea193ca7453901403de9c63dfa Mon Sep 17 00:00:00 2001
 From: Sam Rivera <sam@example.com>
 Date: Sun, 11 Oct 2026 07:40:49 +0000
 Subject: [PATCH 3/4] worker: name the flag defaults
@@ -148,10 +148,10 @@ block at the top of main.go, where the next person finds them.
  1 file changed, 10 insertions(+), 3 deletions(-)
 
 diff --git a/cmd/worker/main.go b/cmd/worker/main.go
-index a8b93bf..5f6956b 100644
+index fb80c5c..a4d72ac 100644
 --- a/cmd/worker/main.go
 +++ b/cmd/worker/main.go
-@@ -36,6 +36,13 @@ import (
+@@ -34,7 +34,14 @@ import (
  
 +// The defaults of the command-line flags, in one place.
 +const (
@@ -161,6 +161,7 @@ index a8b93bf..5f6956b 100644
 +)
 +
  func main() {
+ 	databaseURL := flag.String("database-url", os.Getenv("DATABASE_URL"), "Postgres connection string; defaults to $DATABASE_URL")
 -	timeout := flag.Duration("timeout", 5*time.Second, "how long to wait for each check")
 -	workers := flag.Int("workers", 10, "how many checks run at the same time")
 -	poll := flag.Duration("poll", time.Second, "how long a worker waits before it looks again when the queue is empty")
@@ -172,7 +173,7 @@ index a8b93bf..5f6956b 100644
 2.43.0
 
 
-From 1a5713a19b0bfc01c700457560c23edc5ac0aee0 Mon Sep 17 00:00:00 2001
+From 0fa9cb003297b116eb2e21a66a2b294186be4324 Mon Sep 17 00:00:00 2001
 From: Sam Rivera <sam@example.com>
 Date: Sun, 11 Oct 2026 07:40:49 +0000
 Subject: [PATCH 4/4] probe: say what each trace hook measures
@@ -184,10 +185,10 @@ No change in behavior.
  1 file changed, 10 insertions(+), 6 deletions(-)
 
 diff --git a/internal/probe/probe.go b/internal/probe/probe.go
-index c8ebf67..7238458 100644
+index 31a786e..5b46f82 100644
 --- a/internal/probe/probe.go
 +++ b/internal/probe/probe.go
-@@ -66,8 +66,12 @@ func Check(ctx context.Context, url string) (Timings, int, error) {
+@@ -58,8 +58,12 @@ func Check(ctx context.Context, url string) (Timings, int, error) {
  	trace := &httptrace.ClientTrace{
 -		DNSStart:             func(httptrace.DNSStartInfo) { begin(&dnsStart) },
 -		DNSDone:              func(httptrace.DNSDoneInfo) { end(&t.DNS, &dnsStart) },

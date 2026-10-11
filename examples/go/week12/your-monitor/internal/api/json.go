@@ -46,26 +46,37 @@ func isJSON(r *http.Request) bool {
 	return err == nil && mediaType == "application/json"
 }
 
-// decodeJSON reads one JSON object from the body into dst. On failure it
-// returns the status code to answer with and an error written for the
-// client.
-func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) (int, error) {
+// decodeJSON reads one JSON object from the body into a new T. On failure
+// it returns nil, the status code to answer with, and an error written for
+// the client. T is a type parameter: decodeJSON[createRequest] reads a
+// createRequest.
+func decodeJSON[T any](w http.ResponseWriter, r *http.Request) (*T, int, error) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields() // a typo such as "interval" is an error, not ignored
 
-	err := dec.Decode(dst)
+	var v *T // a body of null leaves v nil
+	err := dec.Decode(&v)
 	if err == nil {
 		// One object only: after it, the body must end. Decode into an any,
 		// which takes every JSON value, to see what follows.
-		if err = dec.Decode(new(any)); err == io.EOF {
-			return 0, nil
-		}
-		if err == nil {
-			return http.StatusBadRequest, errors.New("body must hold a single JSON object")
+		err = dec.Decode(new(any))
+		switch {
+		case err == nil:
+			return nil, http.StatusBadRequest, errors.New("body must hold a single JSON object")
+		case err == io.EOF && v == nil:
+			return nil, http.StatusBadRequest, errors.New("body must be a JSON object, got a JSON null")
+		case err == io.EOF:
+			return v, 0, nil
 		}
 	}
+	status, msg := decodeError(err)
+	return nil, status, msg
+}
 
+// decodeError turns an error from Decode into a status code and a message
+// for the client.
+func decodeError(err error) (int, error) {
 	var tooBig *http.MaxBytesError
 	var syntaxErr *json.SyntaxError
 	var typeErr *json.UnmarshalTypeError

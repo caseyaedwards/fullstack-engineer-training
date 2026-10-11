@@ -12,7 +12,7 @@ import (
 
 	"fsp/examples/week12/your-monitor/internal/auth"
 	"fsp/examples/week12/your-monitor/internal/db"
-	"fsp/examples/week12/your-monitor/internal/dbtest"
+	"fsp/examples/week12/your-monitor/internal/db/dbtest"
 )
 
 // region: create-user-test
@@ -25,11 +25,11 @@ func TestCreateUserReadsThePasswordFromStdin(t *testing.T) {
 		{"Windows line end", "correct horse battery\r\n", "created user id=1 email=you@example.com\n", ""},
 		{"no line end", "correct horse battery", "created user id=1 email=you@example.com\n", ""},
 		{"empty stdin", "", "", "no password on stdin"},
-		{"short password", "hunter2\n", "", "password must have at least 12 characters"},
+		{"short password", "hunter2\n", "", "password must have at least 15 characters"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			users := auth.NewService(db.NewAuthStore(dbtest.New(t)))
+			users := auth.NewService(db.NewAuthStore(dbtest.Pool(t, dbtest.URL(t), db.Migrate)))
 			users.Cost = bcrypt.MinCost
 			var out strings.Builder
 			err := createUser(context.Background(), users, "you@example.com", strings.NewReader(tt.stdin), &out)
@@ -59,7 +59,7 @@ func errString(err error) string {
 // TestLoginFlowInABrowser runs the api over HTTPS with Postgres behind it,
 // and a client that keeps cookies the way a browser does.
 func TestLoginFlowInABrowser(t *testing.T) {
-	pool := dbtest.New(t)
+	pool := dbtest.Pool(t, dbtest.URL(t), db.Migrate)
 	users := auth.NewService(db.NewAuthStore(pool))
 	users.Cost = bcrypt.MinCost
 	if _, err := users.CreateUser(context.Background(), "you@example.com", "correct horse battery"); err != nil {
