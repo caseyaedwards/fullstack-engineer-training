@@ -22,6 +22,24 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Postgres 17 for the example tests from Week 8 on. They read
+    # DATABASE_URL, and fail rather than skip when it is unset in CI.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: monitor
+          POSTGRES_PASSWORD: monitor
+          POSTGRES_DB: monitor
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U monitor -d monitor"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://monitor:monitor@localhost:5432/monitor?sslmode=disable
     steps:
       - uses: actions/checkout@v4
 
@@ -35,8 +53,11 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: examples/go/go.mod
-          cache-dependency-path: examples/go/go.mod
+          # Not go-version-file: go.mod says go 1.24.0, the oldest Go that
+          # builds pgx v5.8.0, and setup-go would install exactly that.
+          # '1.24' installs the newest 1.24 patch release.
+          go-version: '1.24'
+          cache-dependency-path: examples/go/go.sum
 
       - name: Install d2
         run: |
