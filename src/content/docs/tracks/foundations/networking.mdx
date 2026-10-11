@@ -1,36 +1,164 @@
 ---
 title: "Networking"
+description: How bytes travel between two programs, from IP addresses, routing and NAT to TCP connections, ports and deadlines, with a tested echo server and client in Go.
 track: networking
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+An uptime monitor is a networking program: every check opens a connection to another machine and waits for bytes to come back. When a check fails, the error names a network event, such as `connection refused` or `i/o timeout`, and you can only act on it once you know what happened on the wire. This page explains the layers between your code and the cable, and how Go exposes them.
+
 ## What It Is
 
-This section is not written yet.
+### Layers
+
+Networking splits into **layers**, and each one solves one problem for the layer above it:
+
+- **Link layer:** moves a frame from one machine to the next on the same network, over Ethernet or Wi-Fi. A standard Ethernet frame carries at most 1500 bytes of data, the **MTU**, short for maximum transmission unit.
+- **Internet layer:** IP, the Internet Protocol, moves a **packet** from any machine to any other across many networks, one hop at a time. IP makes no promises: a packet can arrive late, twice, out of order or never.
+- **Transport layer:** TCP, the Transmission Control Protocol, and UDP, the User Datagram Protocol, deliver data to one program on the machine, picked by its port. TCP adds reliable, ordered delivery on top of IP. UDP adds only the port number.
+- **Application layer:** the protocol your program speaks, such as HTTP, DNS or the Postgres wire protocol.
+
+Each layer wraps the data from the layer above in a **header** of its own, as in the first diagram below. The receiver unwraps the headers in reverse order. A router reads up to the IP header and no further: it does not care whether the packet carries HTTP or DNS.
+
+### Addresses, Networks and Routing
+
+An **IP address** names a network interface. An IPv4 address is 32 bits, written as four numbers such as `203.0.113.10`. An IPv6 address is 128 bits, written in hexadecimal such as `2001:db8::10`. A **network**, or subnet, is a block of addresses that share a prefix, written in **CIDR** notation, short for Classless Inter-Domain Routing: `203.0.113.0/24` means the first 24 bits are fixed, which leaves 256 addresses.
+
+Each machine holds a **routing table**: for each destination network, the next machine to send the packet to. Most machines have one rule that matters, the **default route**, which sends everything not on the local network to the **gateway**, your home router. Each router along the way repeats the decision with its own table, until a router connects directly to the network of the destination. `ip route` on Linux and `netstat -rn` on macOS print the table.
+
+Three IPv4 blocks are **private**: `10.0.0.0/8`, `172.16.0.0/12` and `192.168.0.0/16`. Any home or office can use them, and routers on the internet drop packets addressed to them. Your laptop has a private address such as `192.168.1.20`, and millions of other laptops have the same one.
+
+### NAT
+
+With **NAT**, short for network address translation, many machines with private addresses share one public address. Your home router rewrites the source address and port of each outgoing packet to its own public address and a port it picks, and remembers the pair in a **translation table**. When the reply arrives at that public port, the router looks up the entry and rewrites the destination back to your laptop. A packet that arrives with no matching entry has nowhere to go, which is why a machine behind NAT can open connections but cannot accept them without a port forward. Docker uses the same trick when a container with a private address of its own reaches the internet.
+
+### Ports and Sockets
+
+A **port** is a 16-bit number that picks one program on a machine. A server **listens** on a well-known port, such as `443` for HTTPS or `5432` for Postgres. The client side gets an **ephemeral port**, a free number the kernel picks for that one connection: on Linux, from `32768` to `60999`. Four values name a TCP connection: source address, source port, destination address and destination port.
+
+A **socket** is the program end of a connection: a file descriptor that the program reads and writes. A listening socket accepts new connections, and each accepted connection gets a socket of its own. `ss -tan` on Linux lists every TCP socket with its state.
+
+### TCP
+
+TCP turns lossy packets into a reliable stream of bytes. Before data flows, the two sides run the **three-way handshake**: SYN, short for synchronize, then SYN-ACK, then ACK, short for acknowledge. Each side numbers its bytes, the receiver acknowledges what it gets, and the sender resends anything not acknowledged in time. **Flow control** stops a fast sender from overrunning a slow receiver, and **congestion control** slows every sender down when the network drops packets.
+
+Three answers to a connection attempt look different, and your monitor sees each one:
+
+- **The SYN-ACK arrives:** the connection opens after one round trip.
+- **A reset, RST, arrives:** the machine is up, but nothing listens on that port. Go returns an error that wraps `syscall.ECONNREFUSED`, with the message `connection refused`, at once.
+- **Nothing arrives:** a firewall drops the SYN, or the machine is gone. The kernel sends the SYN again after one second, then two, then four, and gives up after about two minutes on Linux. Only a deadline in your code ends the wait sooner.
+
+A connection ends with a **FIN**, short for finish, from each side. The side that closes first keeps the connection in the `TIME_WAIT` state for 60 seconds on Linux, which absorbs late packets from the old connection.
+
+### UDP
+
+UDP sends single messages, **datagrams**, with no handshake, no acknowledgment and no ordering. A lost datagram is gone unless the program sends it again. DNS uses UDP because one question fits in one datagram, and a lost question costs only a retry. The <TrackLink slug="dns">DNS track</TrackLink> builds a UDP client.
+
+### Deadlines
+
+A network call can wait forever: a silent server never sends the byte your `Read` waits for. Go attaches a **deadline** to each connection: `conn.SetDeadline(t)` makes every read and write after time `t` fail with an error that wraps `os.ErrDeadlineExceeded`, with the message `i/o timeout`. A deadline is an absolute time, not a duration: set it once to bound a whole exchange, or move it forward before each read to bound idle time between messages.
 
 ## Diagrams
 
-This section is not written yet.
+Each layer adds a header in front of the data from the layer above:
+
+<Diagram
+  id="layers"
+  title="The layer stack, from your code to the wire"
+  code={`direction: down
+app: "application\\nGET / HTTP/1.1"
+tcp: "transport\\nTCP header: ports 52000 to 443"
+ip: "internet\\nIP header: 192.168.1.20 to 203.0.113.10"
+eth: "link\\nEthernet header: next hop"
+wire: "the wire\\nbits"
+app -> tcp: "write to the socket"
+tcp -> ip: "segment"
+ip -> eth: "packet"
+eth -> wire: "frame"
+`}
+/>
+
+One packet from your laptop to a server, through a home router that does NAT:
+
+<Diagram
+  id="packet-path"
+  title="A packet from a laptop to a server, through NAT"
+  code={`direction: right
+laptop: "laptop\\n192.168.1.20"
+router: "home router, NAT\\n198.51.100.7"
+isp: "internet routers"
+server: "server\\n203.0.113.10:443"
+laptop -> router: "from 192.168.1.20:52000"
+router -> isp: "from 198.51.100.7:40001"
+isp -> server: "to 203.0.113.10:443"
+server -> isp: "reply to 198.51.100.7:40001"
+isp -> router: "reply"
+router -> laptop: "to 192.168.1.20:52000"
+`}
+  steps={[
+    { hl: ['laptop', 'router', 'laptop->router'], caption: 'The laptop sends a SYN to 203.0.113.10 port 443. The destination is not on the local network, and the default route sends the packet to the home router.' },
+    { hl: ['router', 'isp', 'router->isp'], caption: 'The router rewrites the source to its public address 198.51.100.7 and a free port, 40001, and stores the pair in its translation table. The private address never leaves your home.' },
+    { hl: ['isp', 'server', 'isp->server'], caption: 'Each router on the way reads only the destination address and forwards the packet one hop closer. The server sees a connection from 198.51.100.7, not from your laptop.' },
+    { hl: ['server', 'isp', 'server->isp'], caption: 'The server answers with a SYN-ACK addressed to 198.51.100.7 port 40001, the only address it knows.' },
+    { hl: ['isp', 'router', 'laptop', 'isp->router', 'router->laptop'], caption: 'The router finds port 40001 in its table, rewrites the destination back to 192.168.1.20 port 52000, and delivers the reply. The handshake completes, and the laptop never sees the rewrite.' },
+  ]}
+/>
 
 ## Example
 
-This section is not written yet.
+The example is a line echo server and a client for it, in plain TCP with no HTTP on top. The server reads each line a client sends and writes it straight back:
+
+<CodeFrom file="go/tracks/networking/echo.go" region="serve" lang="go" title="echo.go" />
+
+`ln.Accept` blocks until a client completes the handshake, then returns a `net.Conn`, the socket for that one connection. Each connection gets its own goroutine, which keeps one slow client from holding up the rest. The read deadline moves forward before each line, which makes it an idle timeout: a client that sends nothing for two seconds loses its connection, and its file descriptor goes back to the kernel. When the caller closes the listener, `Accept` returns an error that wraps `net.ErrClosed`, and `Serve` returns `nil`.
+
+The client sets one deadline for the whole exchange:
+
+<CodeFrom file="go/tracks/networking/echo.go" region="echo" lang="go" title="echo.go" />
+
+`net.DialTimeout` bounds the handshake, and `conn.SetDeadline` bounds the write and the read after it, both against the same `deadline`. Every error wraps the original with `%w`, which keeps it open to `errors.Is` in the caller.
+
+The tests run the server on `127.0.0.1:0`: port `0` asks the kernel for any free port, and `ln.Addr()` reports which one it picked. That keeps the tests offline and free of clashes with anything else on the machine:
+
+<CodeFrom file="go/tracks/networking/echo_test.go" region="test" lang="go" title="echo_test.go" />
+
+The second test takes a free port and closes it before it dials, which leaves nothing listening there. The kernel answers the SYN with a reset, and the error wraps `syscall.ECONNREFUSED`. Three more tests in the file cover the other answers: a listener that never calls `Accept` still completes the handshake from its backlog but never replies, and `Echo` fails with `os.ErrDeadlineExceeded` well within two seconds of a 100 ms timeout. A client that connects and stays silent gets an `io.EOF` once the server idle deadline closes the connection. Several clients in a row each get their line back.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={4} anchor="addresses-ports-and-round-trips">Week 4</WeekLink> takes one check apart: addresses, ports and round trips, then <WeekLink n={4} anchor="tcp-opening-a-connection">the TCP handshake</WeekLink> that the connect row of the timing table measures. Its Operate It section tells a refused port from a black hole by the same two answers the Example tests: a reset at once, or nothing until the deadline.
+
+<WeekLink n={12} anchor="step-6-a-slow-handshake-found-with-delve">Week 12</WeekLink> finds a timing bug between the TCP handshake and the handshake of TLS, Transport Layer Security. Its test wraps the dialer to wait 300 ms between the two, on `127.0.0.1`, the same offline approach as the tests here, and `curl -w` confirms the real handshake times.
+
+From <WeekLink n={4} anchor="step-5-send-the-request">Step 5 of Week 4</WeekLink> on, each check opens a fresh connection with `req.Close = true`, which keeps the connect row honest. The <TrackLink slug="load-balancing">Load Balancing track</TrackLink> continues with what sits between the internet and your api, and the <TrackLink slug="tls-pki">TLS and PKI track</TrackLink>, where PKI stands for public key infrastructure, with the encryption on top of TCP.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **No deadline on a connection.** A `Read` on a socket with no deadline waits as long as the peer stays silent, which can be forever. One silent server then holds a goroutine and a file descriptor for good. Set a deadline on every connection, or use a client with a timeout, as `http.Client` does with `Timeout`.
+- **Setting a deadline once on a long-lived connection.** A deadline is an absolute time. Set once at connect, it ends a healthy connection that runs past it. Move the deadline forward before each read when it means idle time, as `handle` does.
+- **Reading a refused connection as a down machine.** `connection refused` means the machine answered: the host is up, and nothing listens on the port, or a firewall rejects the connection. A timeout means no answer at all. The fix differs: start the program, or open the firewall and check the route.
+- **Binding a server to `127.0.0.1` inside a container.** `127.0.0.1` accepts connections only from the same network namespace. Docker forwards a published port to the container address, not to its loopback, and every request from outside the container fails with a reset or an empty reply. Listen on `0.0.0.0:8080` or `:8080` inside a container.
+- **Tests that use a fixed port.** A test that listens on `127.0.0.1:8080` fails when another program, or a parallel test, holds the port. Listen on port `0` and read the real address from the listener.
+- **Treating one `Read` as one message.** TCP is a stream: one `Write` of 10 bytes can arrive as two reads of 5, and two writes can arrive as one read. Frame your messages, with a newline as the Example does or with a length prefix, and read until a frame is complete.
 
 ## Going Deeper
 
-This section is not written yet.
+- **TCP congestion control:** algorithms such as CUBIC, the Linux default, decide how fast a connection sends, which explains why a fresh connection is slow for its first few round trips.
+- **IPv6:** it removes the need for NAT and changes how machines get their addresses. Week 16 serves the status page over IPv4 only, and IPv6 is the next step.
+- **Packet capture with tcpdump and Wireshark:** seeing the SYN, the RST and each retransmission on the wire turns every error message on this page into something you can watch.
+- **QUIC and HTTP/3:** they move the transport into user space over UDP, with the TLS handshake inside the connection handshake.
+- **Linux network namespaces:** each container gets its own interfaces, routes and loopback. They explain the container binding mistake above and how Kubernetes networking works.
 
 ## Further Reading
 
-This section is not written yet.
+- [The net package](https://pkg.go.dev/net): the reference for `Listen`, `Dial`, `Conn` and its deadlines, with the rules for address strings such as `127.0.0.1:0`.
+- [The net/netip package](https://pkg.go.dev/net/netip): small, comparable types for addresses and CIDR prefixes, with methods such as `IsPrivate` and `IsLoopback`.
+- [The syscall package](https://pkg.go.dev/syscall): the error numbers, such as `ECONNREFUSED` and `ECONNRESET`, that network errors wrap.
+- [The golang.org/x/net/ipv4 package](https://pkg.go.dev/golang.org/x/net/ipv4): control over IP header fields such as the TTL, the tool behind a traceroute written in Go.
