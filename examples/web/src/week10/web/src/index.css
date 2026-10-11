@@ -1,0 +1,54 @@
+/* region: css */
+:root {
+  font-family: system-ui, sans-serif;
+  color-scheme: light dark;
+  --up: #1a7f37;
+  --down: #cf222e;
+  --muted: #6e7781;
+}
+
+main {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.monitors {
+  list-style: none;
+  padding: 0;
+}
+
+.monitors > li {
+  border-bottom: 1px solid var(--muted);
+  padding: 0.75rem 0;
+}
+
+.monitors h2 {
+  display: inline;
+  font-size: 1rem;
+  margin-right: 0.5rem;
+}
+
+.badge {
+  border-radius: 0.25rem;
+  color: white;
+  padding: 0 0.4rem;
+}
+.badge.up { background: var(--up); }
+.badge.down { background: var(--down); }
+.badge.unknown { background: var(--muted); }
+
+.chart {
+  display: block;
+  width: 100%;
+  max-width: 24rem; /* keeps the 300 by 60 shape: 24rem wide, about 5rem high */
+  height: auto;
+}
+.chart .line { fill: none; stroke: currentColor; stroke-width: 1; }
+.chart .point { fill: currentColor; }
+.chart .failure { stroke: var(--down); stroke-width: 2; }
+
+.updated {
+  color: var(--muted);
+}
+/* endregion: css */
