@@ -1,17 +1,22 @@
 ---
 title: "Week 6: Frontend vs Backend and the Repo Skeleton"
+description: Learn what runs in the browser and what runs on a server, then reshape the uptime monitor into a monorepo with a worker, an API stub and a React skeleton, built into small images and started with Docker Compose and a Makefile.
 week: 6
 phase: build
-hours: [5, 8]
+hours: [6, 8]
 aiStage: 2
 tracks: [system-design, containers, documentation]
 done:
-  - id: item-1
-    text: "Placeholder item 1: this week is not written yet"
-  - id: item-2
-    text: "Placeholder item 2: this week is not written yet"
-  - id: item-3
-    text: "Placeholder item 3: this week is not written yet"
+  - id: explain-architecture
+    text: Without notes, you can draw the end-of-course architecture, say what each component does, and say which code runs in the browser and which on a server.
+  - id: explain-cors
+    text: You can explain what an origin is, what the browser does with a cross-origin fetch that the server does not allow, and why your page fetches /healthz through the Vite proxy.
+  - id: monorepo-tests-pass
+    text: Your repository has cmd/worker, cmd/api, internal/ and web/, and make build and make test pass, including the /healthz tests and the web test.
+  - id: stack-runs
+    text: make up starts postgres, api and worker, docker compose ps shows postgres and api as healthy, curl 127.0.0.1:8080/healthz answers status ok, and make down stops all three.
+  - id: explain-images
+    text: You can explain every line of your Dockerfile and compose.yaml, including why the final image starts from scratch, runs as user 65532 and holds CA certificates.
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -21,43 +26,535 @@ import AiThisWeek from '../../../components/AiThisWeek.astro';
 import SideLab from '../../../components/SideLab.astro';
 import ReadWith from '../../../components/ReadWith.astro';
 import DoneWhen from '../../../components/DoneWhen.astro';
+import Diagram from '../../../components/Diagram.astro';
+import CodeFrom from '../../../components/CodeFrom.astro';
+import { weekHref, trackHref } from '../../../lib/links';
 
 <WeekHeader />
 
+At the end of <a href={weekHref(5)}>Week 5</a>, `your-monitor` is one Go program in one folder: it checks 100 URLs on a pool of workers and stops cleanly on SIGTERM. The finished app is five programs, a database and a status page. This week opens the Build the App phase. You learn what the frontend and the backend are and how they talk, then you give the repository the shape that Weeks 7 to 10 fill in, and start the backend with one command. From this week, you can also generate code with an AI assistant, as long as you read every line, test it, and can explain it: see [AI This Week](#ai-this-week).
+
 ## Goals
 
-This section is not written yet.
+- Explain what runs in the browser and what runs on a server, and how the two talk over HTTP and JSON.
+- Explain what an origin is, what CORS controls, and how a dev-server proxy keeps the page and the API on one origin.
+- Reshape `your-monitor` into a monorepo: `cmd/worker`, `cmd/api`, shared packages under `internal/`, and a React app in `web/`.
+- Build each Go program into a small image that runs as a non-root user, with a multi-stage Dockerfile.
+- Start Postgres, the api and the worker in the right order with Docker Compose, through a Makefile.
 
 ## Concepts
 
-This section is not written yet.
+### Frontend and Backend
+
+The **frontend** is the code that runs in the browser of the person using the app: HTML for structure, CSS for looks and JavaScript for behavior. You write it in TypeScript and React, and a build tool turns it into plain files that a server hands to the browser. From then on, it runs on the computer of the user. Anyone can read it with the browser developer tools, which means it cannot keep a secret, such as a database password.
+
+The **backend** is the code that runs on servers you control. It holds the secrets, talks to the database, and decides what each user can see and change. In your monitor, the backend also does work that no browser can: it checks sites around the clock, whether or not anyone has the status page open.
+
+One rule follows: the frontend never talks to the database. It asks the backend, and the backend checks every request before it touches data. A check in the frontend, such as a form that refuses an empty URL, is a convenience for the user. The backend repeats it, because anyone can send a request with `curl` and skip your frontend.
+
+### The Target Architecture
+
+By <a href={weekHref(18)}>Week 18</a>, the monitor has seven parts: `web`, the status page in the browser; four Go services, `api`, `scheduler`, `worker` and `alerter`; Postgres; and a queue, which Week 9 builds as a table in Postgres. The walkthrough below follows the data through them, and its last step shows what exists after this week.
+
+A **service** here is a program that runs on its own and talks to the others over the network. You can restart, scale or change one without touching the others. The <a href={trackHref('system-design')}>System and Software Design track</a> covers where to draw those lines.
+
+<Diagram
+  id="target-architecture"
+  title="The uptime monitor at the end of the course"
+  code={`direction: down
+browser: "browser"
+web: "web\\nReact page"
+api: "api\\nGo"
+scheduler: "scheduler\\nGo"
+pg: "Postgres"
+queue: "job queue\\nin Postgres"
+worker: "worker\\nGo"
+alerter: "alerter\\nGo"
+sites: "monitored sites"
+notify: "email, chat"
+
+browser -> web: "HTML, JS, CSS"
+browser -> api: "JSON"
+api -> pg: SQL
+scheduler -> pg: due monitors
+scheduler -> queue: jobs
+queue -> worker: jobs
+worker -> pg: results
+worker -> queue: failures
+queue -> alerter: failures
+worker -> sites: checks
+alerter -> notify: sends
+`}
+  steps={[
+    { hl: ['browser', 'web', 'browser->web'], caption: 'The browser downloads the frontend from web: HTML, JavaScript and CSS files. From then on, that code runs on the computer of the user.' },
+    { hl: ['browser', 'api', 'pg', 'browser->api', 'api->pg'], caption: 'The page asks the api for data over HTTP and gets JSON back. The api is the only part the browser talks to, and it checks every request before it reads or writes Postgres.' },
+    { hl: ['scheduler', 'pg', 'queue', 'scheduler->pg', 'scheduler->queue'], caption: 'The scheduler reads which monitors are due and puts one check job per monitor into the queue, a table in Postgres.' },
+    { hl: ['queue', 'worker', 'sites', 'pg', 'queue->worker', 'worker->sites', 'worker->pg'], caption: 'Workers take jobs from the queue, check the sites with the timing code from Week 4, and write each result to Postgres.' },
+    { hl: ['worker', 'queue', 'alerter', 'notify', 'worker->queue', 'queue->alerter', 'alerter->notify'], caption: 'A failed check becomes an event in the queue. The alerter reads it, applies the alert rules and sends the notification.' },
+    { hl: ['browser', 'web', 'api', 'worker', 'pg'], caption: 'This week builds the skeleton: a web page, an api with one route, the worker as your Week 5 monitor, and an empty Postgres. Weeks 7 to 10 fill it in.' },
+  ]}
+/>
+
+### How the Browser Talks to the API
+
+The frontend and the api talk over HTTP, the protocol from <a href={weekHref(4)}>Week 4</a>. The browser sends a request with a method, such as `GET` or `POST`, and a path. The api answers with a status code, headers and a body. The body is **JSON**, the text form of JavaScript objects and arrays, such as `{"status":"ok"}`. Go writes and reads it with the `encoding/json` package, and the browser reads it with `response.json()`. The `Content-Type: application/json` header tells the receiver what the body holds.
+
+The browser adds one rule that `curl` does not have: the **same-origin policy**. An **origin** is the scheme, host and port of a URL. `http://localhost:5173` and `http://localhost:8080` are two origins, because the ports differ. JavaScript on a page from one origin can send a request to another origin, but the browser hides the response from it unless the server allows that origin. Without the policy, a page on any site can send a request to your webmail, which carries your login cookie, and read your mail from the answer.
+
+A server allows other origins with response headers, such as `Access-Control-Allow-Origin: http://localhost:5173`. That protocol is **CORS**, Cross-Origin Resource Sharing. Two details help when you debug it:
+
+- For a plain `GET`, the request reaches the server, and the server does the work and answers. The browser then withholds the answer from your code, which sees only `TypeError: Failed to fetch`. CORS protects the user in the browser. It does not protect your server.
+- For a request that changes data, such as a `POST` with a JSON body, the browser first sends a **preflight**: an `OPTIONS` request that asks whether the real request is allowed. The real request goes out only when the preflight answer allows it.
+
+Your monitor keeps the page and the API on one origin, which means it needs no CORS at all. In development, the Vite dev server serves the page on port `5173` and passes `/healthz` and `/api/` requests on to the api. A server that passes requests on like that is a **proxy**. In production, the ingress from <a href={weekHref(16)}>Week 16</a> does the same job. <a href={weekHref(7)}>Week 7</a> puts the JSON routes under `/api/` to fit.
+
+<Diagram
+  id="dev-proxy"
+  title="The page reaches the api through the Vite proxy, not directly"
+  code={`shape: sequence_diagram
+browser: "browser\\npage from localhost:5173"
+vite: "Vite dev server\\nport 5173"
+api: "api\\nport 8080"
+
+browser -> vite: GET /
+vite -> browser: index.html, JavaScript
+browser -> vite: GET /healthz
+vite -> api: GET /healthz
+api -> vite: '200 {"status":"ok"}'
+vite -> browser: '200 {"status":"ok"}'
+browser -> api: GET http://localhost:8080/healthz
+api -> browser: 200, no Access-Control-Allow-Origin
+`}
+  steps={[
+    { hl: ['browser', 'vite', 'browser->vite', 'vite->browser'], caption: 'You open http://localhost:5173. The page and its JavaScript come from the Vite dev server, which makes http://localhost:5173 the origin of the page.' },
+    { hl: ['browser', 'vite', 'api', 'browser->vite#1', 'vite->api'], caption: 'The page fetches /healthz, a path with no host, which goes to its own origin. Vite matches the path against its proxy table and sends the request on to the api.' },
+    { hl: ['browser', 'vite', 'api', 'api->vite', 'vite->browser#1'], caption: 'The api answers with JSON, and Vite passes the answer back. To the browser, the answer comes from the origin of the page, and your code reads it.' },
+    { hl: ['browser', 'api', 'browser->api', 'api->browser'], caption: 'Fetch http://localhost:8080/healthz instead, and the request crosses origins. The api gets it and answers 200, but without Access-Control-Allow-Origin. The browser blocks the answer and logs a CORS error.' },
+  ]}
+/>
+
+### One Repository for Every Program
+
+A **monorepo** keeps every part of a project in one repository: the Go services, the web app and the deployment files. One pull request can change the api and the page that calls it, and one CI run tests both.
+
+Two Go conventions shape the layout:
+
+- `cmd/<name>/`: one folder per program, each with its own `package main`. `go build ./cmd/api` builds the program named `api`.
+- `internal/`: the go command allows an import of a package under an `internal` folder only from code in the folder that holds `internal`, or below it. Your `internal/` sits at the root of the module, which means every program in `your-monitor` can import `internal/check`, and no other module can. You can change those packages without breaking anyone else.
+
+### Images, Containers and Multi-Stage Builds
+
+<a href={weekHref(0)}>Week 0</a> introduced images and containers. An **image** is a stack of read-only **layers**, one for each instruction that changes files, plus settings such as the user and the program to start. A **container** is a process started from an image, with its own view of the files, the network and the process list. The [side lab](#side-lab) looks at that process from the outside.
+
+A **Dockerfile** lists the instructions that build an image. `FROM` picks the base image, `COPY` adds files, `RUN` runs a command at build time, `USER` sets the user, and `ENTRYPOINT` sets the program each container starts. Docker caches each layer, and on the next build it reuses every layer up to the first instruction whose input changed. Put the files that change least near the top.
+
+A **multi-stage build** has more than one `FROM`. The first stage holds the full Go toolchain and compiles your code: `golang:1.27-alpine` alone is a 75 MB download on amd64. The final stage starts again from an empty image and copies only the binaries in. The toolchain and your source never reach the image you run.
+
+That works because Go builds a **static binary**: one file that holds every library it uses. With `CGO_ENABLED=0`, Go leaves out C code, and the binary needs nothing from the operating system, not even the C library. The empty base image is called `scratch`. Your worker needs one file beyond itself: the CA certificates from Week 4, to trust the sites it checks over HTTPS.
+
+A process in a container runs as `root` unless the image or Compose names another user. Week 3 gave the service its own user, and the image does the same with `USER 65532:65532`, a numeric user ID and group ID with no rights beyond its own files. `scratch` has no `/etc/passwd` to look names up in, and a number needs none.
+
+### Docker Compose
+
+**Docker Compose** starts several containers from one file, `compose.yaml`, and stops them together. Each entry under `services:` describes one container: the image or how to build it, its settings, and its links to the others. The <a href={trackHref('containers')}>Containers track</a> covers the rest of the format.
+
+- **Network.** Compose creates one network for the project, `your-monitor_default`, and attaches every service to it. Docker runs a DNS server on that network that answers each service name with the address of its container: the api reaches Postgres at `postgres:5432`.
+- **Ports.** Your laptop cannot reach a container port until you publish it. `"127.0.0.1:8080:8080"` maps port `8080` on the loopback address of your laptop to port `8080` in the container. Leave out `127.0.0.1:`, and Docker publishes the port on every network interface, where anyone on your Wi-Fi reaches it.
+- **Volumes.** Every container starts from its image, and the files it writes go when you remove it. A **named volume**, such as `pgdata`, is storage that Docker keeps apart from any container: Postgres keeps its data there. A **bind mount** maps a file or folder of your laptop into a container, the way the worker gets `urls.txt`.
+- **Healthchecks.** A healthcheck is a command that Docker runs inside the container at an interval. Exit code `0` means healthy and `1` unhealthy. After `retries` failures in a row, Docker marks the container `unhealthy`.
+- **Start order.** `depends_on` with `condition: service_healthy` makes Compose wait until Postgres is healthy before it starts the api and the worker. A plain `depends_on` waits only until the Postgres container starts, and Postgres takes a few seconds more to accept connections.
+
+<Diagram
+  id="compose-stack"
+  title="What make up starts on your laptop"
+  code={`direction: down
+urls: urls.txt
+you: "your laptop\\ncurl, browser"
+vol: "volume\\npgdata"
+net: "network your-monitor_default" {
+  worker: "worker"
+  api: "api\\nport 8080"
+  pg: "postgres\\nport 5432"
+}
+
+urls -> net.worker: "bind mount"
+you -> net.api: "127.0.0.1:8080"
+vol -> net.pg: "data folder"
+net.api -> net.pg: "postgres:5432"
+net.worker -> net.pg: "postgres:5432"
+`}
+/>
+
+### Make
+
+`make` runs commands by name. A `Makefile` holds **rules**: a target, a colon, the prerequisites, and below them the **recipe**, the commands to run, each line indented with one tab character. `make build` runs the recipe of `build`. Make exists to rebuild files: when a target names a file, Make runs its recipe only when the file is missing or older than one of its prerequisites. Most of your targets name commands, not files, and the `.PHONY` line declares them. Everyone who clones your repository gets the same short commands, and CI in <a href={weekHref(14)}>Week 14</a> runs the same ones.
 
 ## Build
 
-This section is not written yet.
+By the end of this section, `your-monitor` is a monorepo: the worker and an api stub under `cmd/`, shared packages under `internal/`, a React skeleton in `web/`, a Dockerfile, a `compose.yaml` and a Makefile. The code comes from the site examples in `examples/go/week06/your-monitor`, which mirror your repository. Their import paths start with `fsp/examples/week06/your-monitor`, and yours start with `github.com/<user>/your-monitor`. You finish with this layout:
+
+```txt
+your-monitor/
+├── .dockerignore, .env.example, Dockerfile, compose.yaml, Makefile
+├── README.md, go.mod, urls.txt
+├── cmd/
+│   ├── api/            new: the api stub with /healthz
+│   ├── check/          the Week 4 CLI
+│   ├── testsite/       the Week 5 test site
+│   └── worker/         your monitor: main.go, run_test.go, signal_test.go
+├── internal/           check/, pool/ and probe/, moved from the root
+├── deploy/             your-monitor.service
+└── web/                the Vite, React and TypeScript skeleton
+```
+
+### Step 1: Move the Monitor Into the New Layout
+
+Start a branch, then move the files with `git mv`, which records each move. Afterward, `git log --follow cmd/worker/main.go` still shows the history back to Week 1:
+
+```sh
+git switch main && git pull && git switch -c week-06
+mkdir -p cmd/worker internal deploy
+git mv main.go run_test.go signal_test.go cmd/worker/
+git mv check pool probe internal/
+git mv your-monitor.service deploy/
+```
+
+The import paths still name the old folders. `grep` lists every Go file that imports `check`, `pool` or `probe`, and `perl -pi -e` rewrites each one in place to add `internal/`, the same way on macOS and Linux:
+
+```sh
+grep -rlE --include='*.go' 'your-monitor/(check|pool|probe)"' . | xargs perl -pi -e 's#your-monitor/(check|pool|probe)"#your-monitor/internal/$1"#'
+go vet ./... && go test ./...
+```
+
+Every test passes unchanged. `git status` lists the moved files as renamed, and `git diff` shows only import lines. A move changes where code lives, not what it does: the example tests check that each moved file matches its Week 5 version apart from the import paths. The unit file in `deploy/` still runs `/usr/local/bin/your-monitor`. To install the worker under that name, build it with `go build -o your-monitor ./cmd/worker`.
+
+The go command now enforces the `internal/` rule. The example tests build a program outside `your-monitor` that imports `internal/check`, and the build fails:
+
+```txt
+$ go build ./testdata/outside
+package fsp/examples/week06/testdata/outside
+	testdata/outside/main.go:11:2: use of internal package fsp/examples/week06/your-monitor/internal/check not allowed
+```
+
+### Step 2: Add the API Stub
+
+Create `cmd/api/main.go`. It starts with the one route the api serves this week:
+
+<CodeFrom file="go/week06/your-monitor/cmd/api/main.go" region="routes" lang="go" title="cmd/api/main.go" />
+
+Since Go 1.22, a pattern can name a method: `"GET /healthz"` matches `GET` and `HEAD`. A `POST` to `/healthz` gets `405 Method Not Allowed`, and any other path gets `404 Not Found`. A **struct tag**, the text in backquotes after a field, tells `encoding/json` the name of the JSON field: `Status` becomes `"status"`. A **health endpoint** such as `/healthz` answers for as long as the process can serve requests. Docker calls it from Step 5 on, and Kubernetes calls it in Week 15.
+
+Add the imports and `main` above the routes:
+
+<CodeFrom file="go/week06/your-monitor/cmd/api/main.go" region="imports" lang="go" title="cmd/api/main.go" />
+
+<CodeFrom file="go/week06/your-monitor/cmd/api/main.go" region="main" lang="go" title="cmd/api/main.go" />
+
+`-addr` defaults to `:8080`, port `8080` on every network interface. Inside a container, the published port arrives on the container network interface, not on its loopback address, which makes an api on `127.0.0.1:8080` there unreachable. On your laptop, `-addr 127.0.0.1:8080` keeps it private. `-healthcheck` turns the program into a client of itself: the final image holds no `curl` or `wget`, and the Compose healthcheck runs `/api -healthcheck` instead. Add `serve` and `checkHealth`:
+
+<CodeFrom file="go/week06/your-monitor/cmd/api/main.go" region="serve" lang="go" title="cmd/api/main.go" />
+
+`Shutdown` closes the listener, waits for the requests in flight, and makes `Serve` return `http.ErrServerClosed`, which lands in the buffered channel: no goroutine waits forever. `ReadHeaderTimeout` closes a connection that sends its headers too slowly. Without it, a client that never finishes its headers holds a connection open for good: an attack called Slowloris.
+
+### Step 3: Test the API Stub
+
+Create `cmd/api/main_test.go`. The first test drives the router with `httptest.NewRecorder`, which records the answer in memory, with no network:
+
+<CodeFrom file="go/week06/your-monitor/cmd/api/main_test.go" region="healthz" lang="go" title="cmd/api/main_test.go" />
+
+The second starts the server on port `0`, which makes the kernel pick a free port, then cancels its context, as SIGTERM does:
+
+<CodeFrom file="go/week06/your-monitor/cmd/api/main_test.go" region="serve" lang="go" title="cmd/api/main_test.go" />
+
+The example file also tests `checkHealth` against a healthy server, a `503` and a closed port. Run `go test -race ./cmd/api`, then start the api and ask it from a second terminal:
+
+```txt
+$ go run ./cmd/api -addr 127.0.0.1:8080
+2026/10/11 06:26:34 listening addr=127.0.0.1:8080
+$ curl -i http://127.0.0.1:8080/healthz
+HTTP/1.1 200 OK
+Content-Type: application/json
+Date: Sun, 11 Oct 2026 06:26:35 GMT
+Content-Length: 16
+
+{"status":"ok"}
+```
+
+`curl -i -X POST http://127.0.0.1:8080/healthz` answers `405 Method Not Allowed` with `Allow: GET, HEAD`. Stop the api with **Ctrl+C**: it logs `stopped`.
+
+### Step 4: Write the Dockerfile
+
+Create `Dockerfile` in the repository root. The build stage compiles both programs:
+
+<CodeFrom file="go/week06/your-monitor/Dockerfile" region="build" lang="dockerfile" title="Dockerfile" />
+
+- `ARG GO_VERSION=1.24`: the official `golang` images set `GOTOOLCHAIN=local`, which makes an image older than the `go` line of your `go.mod` fail. Open `go.mod`: a line such as `go 1.27.2` means `GO_VERSION=1.27`.
+- `COPY go.* ./` comes before `COPY . .`: the module download gets a layer of its own, which Docker reuses until `go.mod` or `go.sum` changes. Your module has no dependencies yet, and `go mod download` prints `go: no module dependencies to download`. Week 8 adds the first one.
+- `-trimpath` removes the folder paths of your laptop from the binary, and `-ldflags="-s -w"` drops the symbol table and the debug data. With Go 1.24 on amd64, the worker shrinks from 9.9 MB to 6.7 MB. The debugger in Week 12 needs that debug data, which means a build without `-s -w` there.
+
+The runtime stage and the two final images:
+
+<CodeFrom file="go/week06/your-monitor/Dockerfile" region="runtime" lang="dockerfile" title="Dockerfile" />
+
+<CodeFrom file="go/week06/your-monitor/Dockerfile" region="targets" lang="dockerfile" title="Dockerfile" />
+
+Each `FROM runtime AS ...` starts a **target**, a stage that Compose builds by name. `ENTRYPOINT ["/worker"]`, in this JSON form, starts the binary directly as PID 1 of the container, and the SIGTERM from `docker compose stop` reaches your handler from Week 3. `EXPOSE` documents the port. It publishes nothing.
+
+`COPY . .` copies the whole folder, the **build context**, minus what `.dockerignore` lists. Create `.dockerignore` to keep your secrets out of every image:
+
+```txt title=".dockerignore"
+# Never sent to docker build: keeps the context small and secrets out.
+.git
+.env
+bin
+web
+```
+
+### Step 5: Write the Compose File
+
+Create `compose.yaml` in the repository root:
+
+<CodeFrom file="go/week06/your-monitor/compose.yaml" region="compose" lang="yaml" title="compose.yaml" />
+
+- `name: your-monitor` fixes the project name. Compose builds every container, network and volume name from it: `your-monitor-api-1`, `your-monitor_default`, `your-monitor_pgdata`.
+- `${POSTGRES_PASSWORD:?...}` stops Compose with that message when the variable is empty. `${API_PORT:-8080}` falls back to `8080`.
+- `postgres:17` keeps its data in `/var/lib/postgresql/data`, and the `pgdata` volume holds that folder. The image reads `POSTGRES_PASSWORD` only when it creates the database on an empty volume.
+- `pg_isready -h 127.0.0.1` asks over TCP. On first start, the image runs a temporary server that answers only on a Unix socket while it creates the database. A plain `pg_isready` reports that server as ready too early.
+- `build.target` picks the stage of the Dockerfile. `command` adds arguments after the `ENTRYPOINT`.
+- `DATABASE_URL` names the host `postgres`, the service name. Neither program reads it yet: <a href={weekHref(8)}>Week 8</a> does.
+- `restart: on-failure` restarts a container that exits with an error, as `Restart=on-failure` did under systemd in Week 3.
+
+Create `.env.example`, the file you commit, then copy it to `.env`, the file you never commit. The Week 0 `.gitignore` already lists `.env`:
+
+```txt title=".env.example"
+# Copy this file to .env, then change the password: cp .env.example .env
+# Compose reads .env from this folder. .gitignore keeps .env out of Git.
+# Use only letters and digits in the password: it goes into DATABASE_URL.
+POSTGRES_PASSWORD=changeme
+POSTGRES_PORT=5432
+API_PORT=8080
+WORKERS=10
+```
+
+`docker compose config` checks the file and prints it with every variable filled in. Before you create `.env`, it stops with `required variable POSTGRES_PASSWORD is missing a value: set POSTGRES_PASSWORD in .env`.
+
+### Step 6: Write the Makefile
+
+Create `Makefile`. Make accepts only a tab at the start of a recipe line: when your editor turns the tab into spaces, `make` stops with `*** missing separator.  Stop.`, after the file name and the line number. In VS Code, the status bar shows **Tab Size** or **Spaces** for the open file.
+
+<CodeFrom file="go/week06/your-monitor/Makefile" region="makefile" lang="makefile" title="Makefile" />
+
+- `ARGS ?= ...` sets a default that the command line replaces: `make run ARGS="-file urls.txt -workers 20"`.
+- `build` runs the `go build` command of the Dockerfile, and the example tests check that the two match. `CGO_ENABLED=0` sits on that line only, because the race detector in `test` needs cgo.
+- `test: web/node_modules` makes the web packages a prerequisite of the tests. `web/node_modules` is a real folder, and its rule runs `npm ci` only when the folder is missing or older than `web/package-lock.json`.
+
+### Step 7: Start the Stack
+
+`docker compose` needs the Docker engine: Docker Desktop running on macOS, or the `docker` service on Linux. Copy the settings, choose a password in `.env`, and start everything:
+
+```sh
+cp .env.example .env
+make up
+```
+
+Compose builds both images, creates the network and the volume, starts Postgres, waits until it is healthy, then starts the api and the worker. The first run also downloads the `golang` and `postgres` images. Check each part. These outputs are examples:
+
+```txt
+$ docker compose ps --format 'table {{.Service}}\t{{.Status}}'
+SERVICE    STATUS
+api        Up 25 seconds (healthy)
+postgres   Up 31 seconds (healthy)
+worker     Up 25 seconds
+$ curl http://127.0.0.1:8080/healthz
+{"status":"ok"}
+$ docker compose exec postgres psql -U monitor -d monitor -c 'SELECT current_user, current_database();'
+ current_user | current_database
+--------------+------------------
+ monitor      | monitor
+(1 row)
+```
+
+`docker compose exec` runs a command in a running container, here `psql`, the Postgres client inside the `postgres` image. `make down` stops and removes the containers. The `pgdata` volume stays, with the database in it.
+
+### Step 8: Add the Web Skeleton
+
+Vite needs Node 22.12 or newer: check with `node --version`. From the repository root, create the app, install its packages, and add Vitest, the test runner built on Vite:
+
+```sh
+npm create vite@latest web -- --template react-ts --no-interactive
+npm --prefix web install
+npm --prefix web install --save-dev vitest
+npm --prefix web pkg set scripts.test="vitest run"
+rm -r web/src/App.css web/src/assets
+```
+
+`--prefix web` runs `npm` in the `web` folder. The template brings its own `web/.gitignore`, which keeps `node_modules` and `dist` out of Git. In `web/vite.config.ts`, add a `server` key after `plugins: [react()],` inside `defineConfig({...})`:
+
+```ts title="web/vite.config.ts"
+  server: {
+    // The dev server passes these paths on to the api. The browser sees
+    // one origin, http://localhost:5173, which means no CORS is involved.
+    proxy: {
+      '/api': 'http://127.0.0.1:8080',
+      '/healthz': 'http://127.0.0.1:8080',
+    },
+  },
+```
+
+Create `web/src/api.ts`. The site keeps it, with its test, in `examples/web/src/week06`:
+
+<CodeFrom file="web/src/week06/api.ts" region="api" lang="ts" title="web/src/api.ts" />
+
+The `Health` type mirrors the `health` struct in Go. Nothing checks that the two agree: rename the Go field, and the page breaks at run time. Week 7 describes the API in OpenAPI to keep them in step. Test `getHealth` with a fake `fetch`, in `web/src/api.test.ts`:
+
+<CodeFrom file="web/src/week06/api.test.ts" region="test" lang="ts" title="web/src/api.test.ts" />
+
+Replace `web/src/App.tsx` with a page that shows what the api answers:
+
+```tsx title="web/src/App.tsx"
+import { useEffect, useState } from 'react'
+import { getHealth } from './api'
+
+function App() {
+  const [status, setStatus] = useState('checking')
+  useEffect(() => {
+    getHealth()
+      .then((health) => setStatus(health.status))
+      .catch((err: Error) => setStatus(`unreachable: ${err.message}`))
+  }, [])
+  return (
+    <main>
+      <h1>your-monitor</h1>
+      <p>API status: {status}</p>
+    </main>
+  )
+}
+
+export default App
+```
+
+Run `make test`: the Go tests run, then Vitest reports `2 passed`. Start the api in one terminal with `make run-api`, and the dev server in a second with `make web`. Open `http://localhost:5173`: the page reads **API status: ok**. Stop the api and reload. The page reads `unreachable: GET /healthz: status 502`, and the dev server logs `http proxy error: /healthz` with `connect ECONNREFUSED 127.0.0.1:8080`. Status `502 Bad Gateway` is how a proxy says that the server behind it does not answer.
+
+### Step 9: Document It and Commit
+
+Add a section to `README.md`, for the next person who clones the repository, and for you in a month:
+
+```md title="README.md"
+## Run It
+
+You need Go 1.24 or newer, Node 22.12 or newer, and Docker with Compose.
+
+1. `cp .env.example .env`, then set `POSTGRES_PASSWORD` in `.env`.
+2. `make up` starts Postgres, the api and the worker. `make down` stops them.
+3. `make test` runs the Go and web tests. `make build` writes the binaries to `bin/`.
+4. `make run-api` and `make web` start the api and the page without Docker: open http://localhost:5173.
+```
+
+Add `/bin/` to `.gitignore`, under the `/your-monitor` line, because `make build` writes the binaries there. The <a href={trackHref('documentation')}>Documentation track</a> covers READMEs in depth. Commit, and read the `git status` list before the commit: it must not hold `.env`, `bin/` or `web/node_modules/`.
+
+```sh
+git add .dockerignore .env.example .gitignore Dockerfile Makefile README.md compose.yaml cmd internal deploy web
+git status
+git commit -m "Split into cmd and internal, add the api stub, Docker, Compose, Make and the web skeleton"
+git push -u origin week-06
+```
+
+Open a pull request from `week-06` into `main`, read the diff once more, and merge it.
 
 ## Observe It
 
 <ObserveIt>
-This section is not written yet.
+
+Three views show how the stack is doing. The outputs are examples.
+
+**Health.** `docker compose ps` adds `(healthy)`, `(unhealthy)` or `(health: starting)` to the status of each service with a healthcheck. Docker keeps the last five check results, with exit code and output:
+
+```txt
+$ docker inspect --format '{{.State.Health.Status}} streak={{.State.Health.FailingStreak}}' your-monitor-api-1
+healthy streak=0
+$ docker inspect --format '{{json .State.Health.Log}}' your-monitor-api-1
+```
+
+**Logs.** `make logs` follows all three services, and Compose puts the service name in front of each line. The worker logs `started pid=1`: in its container, it is the first process. The round lines from Week 5 work as before: `docker compose logs --since 10m worker | grep ' round '` lists the last ten minutes of rounds, with their timeouts.
+
+**Resources and size.** `docker stats --no-stream` prints the CPU and memory use of each container. With no limit set, its limit column shows all the memory of the Docker host: the [side lab](#side-lab) sets one. `docker image ls` lists `your-monitor-worker` at about 7 MB, the binary and a certificate file of about 200 KB. Compare it with the `golang` image that built it.
+
+Read these signs:
+
+- **`(health: starting)` never turns `healthy`.** The check command fails every time. The `Output` field of `.State.Health.Log` holds its error message.
+- **`curl` works from your laptop, but the api is `unhealthy`.** The healthcheck runs inside the container. Its URL names a different port from the one the api listens on.
+- **`docker compose ps` shows `Restarting`.** The program exits with an error, and `restart: on-failure` starts it again. `docker compose logs api` shows the last words of each run.
+- **The worker memory climbs every round.** A leak. Check `goroutines=` in the round lines, as in Week 5.
+
 </ObserveIt>
 
 ## Operate It
 
 <OperateIt>
-This section is not written yet.
+
+**Stop sends SIGTERM, then SIGKILL after 10 seconds.** `docker compose stop worker` sends SIGTERM and waits up to 10 seconds, the pattern from Week 3. Your worker cancels its checks and exits at once, and `docker compose ps -a` shows `Exited (0)`. A stop that takes the full 10 seconds and ends in `Exited (137)`, 128 plus 9 for SIGKILL, means SIGTERM never reached your code: the program ignores it, or it runs under a shell that does not pass it on. `stop_grace_period` in `compose.yaml` raises the 10 seconds for a service that needs longer.
+
+**The volume outlives the containers.** `make down` keeps `your-monitor_pgdata`. `docker compose down --volumes` deletes it, with every row in it. Because Postgres reads `POSTGRES_PASSWORD` only on an empty volume, a password you change in `.env` later never reaches the database: in Week 8, the api then fails with `password authentication failed for user "monitor"`. While the database holds nothing you need, delete the volume and start again.
+
+**A dynamic binary in an empty image.** On a Linux machine with a C compiler, such as the Debian-based `golang` images, `go build` turns cgo on by default and links the C library. In `scratch`, that binary fails at start with `exec /worker: no such file or directory`, although the file is there: the missing file is the loader that a dynamic binary names. `file` tells the two apart: `statically linked`, or `dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2` on amd64.
+
+| What you see | What it points to |
+| --- | --- |
+| `port is already allocated` or `address already in use` | Another program or container holds that port on your laptop, such as a local Postgres on `5432`: set `POSTGRES_PORT=5433` in `.env` |
+| `dependency failed to start: container your-monitor-postgres-1 is unhealthy` | Postgres fails its healthcheck ten times in a row: read `docker compose logs postgres` |
+| `go: go.mod requires go >= 1.27.2 (running go 1.24.7; GOTOOLCHAIN=local)` during the build | `GO_VERSION` in the Dockerfile is older than the `go` line of `go.mod` |
+| `x509: certificate signed by unknown authority` on every HTTPS check | The image has no CA certificates: the `COPY` of `ca-certificates.crt` is missing |
+| `connection refused` for a URL with `127.0.0.1` or `localhost` in `urls.txt` | Inside a container, `127.0.0.1` is the container itself. Docker Desktop answers `host.docker.internal` with the address of your laptop. On Linux, add `extra_hosts: ["host.docker.internal:host-gateway"]` to the service, and listen on the Docker gateway address, not only on `127.0.0.1` |
+| `missing separator` from `make` | A recipe line starts with spaces instead of a tab |
+
 </OperateIt>
 
 ## AI This Week
 
 <AiThisWeek>
-This section is not written yet.
+
+Stage 2, review everything: generate code with the assistant, then read every line, write or extend the tests, and explain it back. Do not merge code you cannot explain or that has no test.
+
+**Do:** give the assistant a short spec for the api stub and let it write the code and a test: `GET /healthz` answers `{"status":"ok"}` as JSON, a `-healthcheck` mode exits with `0` or `1`, and SIGTERM shuts the server down. Then review it like a pull request from a colleague. Run `go doc` on every function you have not used, such as `go doc http.Server.Shutdown`. Break the handler on purpose, for example answer `500`, and watch the test fail. Add the cases it leaves out yourself, such as `POST /healthz` and a closed port. Then write, in your own words in the pull request, what each function does.
+
+**Do not:** commit a generated Dockerfile or `compose.yaml` that you have not checked line by line against this page and the Docker documentation. Each of these mistakes builds and runs, which is why a test run does not catch them: no `USER` line, which runs the program as `root`; no `.dockerignore`, which copies `.env` into the build; the `golang` image as the final stage, which ships the whole toolchain; a `latest` tag; a port published without `127.0.0.1:`; a plain `depends_on` without a healthcheck.
+
 </AiThisWeek>
 
 ## Side Lab
 
-<SideLab title="Optional lab: not written yet">
-This section is not written yet.
+<SideLab title="A container is a process: find its namespaces and its cgroup">
+
+A container is an ordinary Linux process that the kernel gives a restricted view. **Namespaces** give it its own process list, host name, network and files. A **cgroup**, short for control group, limits the CPU and memory it uses. On macOS, these commands run in the Linux virtual machine of Docker Desktop. The outputs are examples.
+
+**1. Start a container with a memory limit,** then look at it from inside and from outside:
+
+```txt
+$ docker run -d --name lab --memory 64m alpine:3.24 sleep 3600
+$ docker exec lab ps
+PID   USER     TIME  COMMAND
+    1 root      0:00 sleep 3600
+    7 root      0:00 ps
+$ docker top lab
+UID     PID     PPID    C    STIME   TTY   TIME       CMD
+root    48213   48190   0    07:15   ?     00:00:00   sleep 3600
+```
+
+Inside, `sleep` is PID 1 in a process list of its own: that is the PID namespace. `docker top` shows the same process as the host sees it, with PID 48213. On Linux, `ps -o pid,user,cmd -p 48213` finds it in your own process list, next to your shell.
+
+**2. Read the cgroup limit.** `docker exec lab cat /sys/fs/cgroup/memory.max` prints `67108864`: 64 MiB in bytes, 64 × 1024 × 1024.
+
+**3. Hit the limit.** `tail /dev/zero` looks for the last line of a file with no line breaks and keeps everything it reads in memory:
+
+```txt
+$ docker run --name hog --memory 64m alpine:3.24 tail /dev/zero; echo "exit $?"
+exit 137
+$ docker inspect --format '{{.State.OOMKilled}}' hog
+true
+```
+
+When the container reaches its limit, the out-of-memory killer of the kernel ends `tail` with SIGKILL: exit code 137, 128 plus 9, as in Week 3. Kubernetes sets the same cgroup limit for a pod from its `resources.limits.memory`. Clean up with `docker rm -f lab hog`.
+
 </SideLab>
 
 ## Done When
