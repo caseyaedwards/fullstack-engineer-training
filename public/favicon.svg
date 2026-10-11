@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>
+    .mark { fill: #d97757; }
+    .ink { fill: #faf9f5; }
+    @media (prefers-color-scheme: dark) {
+      .mark { fill: #e5896b; }
+      .ink { fill: #1c1b19; }
+    }
+  </style>
+  <rect class="mark" width="32" height="32" rx="7"/>
+  <path class="ink" d="M9 8h5v3.2h-1.8v9.6H14V24H9zM23 8h-5v3.2h1.8v9.6H18V24h5z"/>
+  <rect class="ink" x="14.8" y="14.4" width="2.4" height="3.2" rx="0.4"/>
+</svg>

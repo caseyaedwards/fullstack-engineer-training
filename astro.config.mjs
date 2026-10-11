@@ -38,6 +38,7 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'Full-Stack Engineer Path',
+      favicon: '/favicon.svg',
       sidebar,
       plugins: [starlightLinksValidator()],
       customCss: ['./src/styles/theme.css', './src/styles/diagrams.css', './src/styles/custom.css'],
