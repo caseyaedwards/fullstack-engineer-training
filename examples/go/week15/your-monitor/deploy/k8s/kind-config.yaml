@@ -1,0 +1,19 @@
+# region: kind-config
+# A kind cluster with one node, which runs both the control plane and
+# your pods. Create it with make kind-up.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+# The kubectl context becomes kind-your-monitor.
+name: your-monitor
+nodes:
+  - role: control-plane
+    # Kubernetes 1.33. The digest pins the exact image that kind publishes.
+    image: kindest/node:v1.33.12@sha256:3f5c8443c620245e4d355cfe09e96a91ead32ceaa569d3f1ca9edf0cb2fe2ff4
+    # Port 3000 on your laptop, and only on 127.0.0.1, reaches port 30080
+    # of the node: the NodePort of the web Service.
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 3000
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+# endregion: kind-config
