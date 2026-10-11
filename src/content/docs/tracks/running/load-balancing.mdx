@@ -1,36 +1,185 @@
 ---
 title: "Load Balancing"
+description: How a load balancer spreads requests over several copies of a service, the difference between layer 4 and layer 7, and how health checks take a broken copy out of the pool.
 track: load-balancing
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+A **load balancer** sits in front of several copies of a service and decides which copy answers each connection or request. It turns one address into many servers, which gives you more capacity, and one copy can fail or restart without users noticing. Every request to your status page passes through two or three of them, and each one has its own rules for picking a copy and noticing a broken one.
+
 ## What It Is
 
-This section is not written yet.
+### Why Spread Traffic
+
+Each copy of a service behind a load balancer is a **backend**, and the set of backends the balancer can choose from is the **pool**. A balancer gives you three things:
+
+- **Capacity.** Four api pods answer about four times the requests of one, as long as the database keeps up.
+- **Availability.** When one backend crashes, the balancer sends its traffic to the others.
+- **Safe deploys.** A rolling update replaces backends one at a time while the rest keep serving.
+
+The balancer itself becomes the one thing every request needs. Cloud providers run theirs as a cluster of machines behind one address. On your one virtual private server (VPS), the balancer and the backends share the same machine, and losing the machine loses everything.
+
+### Layer 4 and Layer 7
+
+Networking describes a connection in layers. **Layer 4**, the transport layer, is TCP, the Transmission Control Protocol, and UDP, the User Datagram Protocol: addresses, ports and connections. **Layer 7**, the application layer, is the protocol inside the connection, here HTTP. The <TrackLink slug="networking">Networking track</TrackLink> covers the layers in full.
+
+A **layer 4 balancer** sees only the IP address and port of each packet. It picks a backend when a TCP connection opens and forwards every byte of that connection to the same backend, without reading it. It cannot route by path, and it does not end TLS: the encrypted bytes pass through to the backend. It is fast and protocol-agnostic. kube-proxy and ServiceLB in k3s, and network load balancers in the cloud, work at layer 4.
+
+A **layer 7 balancer** is a **reverse proxy**: it accepts the connection itself, ends TLS, reads each HTTP request and opens its own connection to the backend it picks. It routes by host name, path or header, retries a failed request on another backend, adds headers such as `X-Forwarded-For`, and limits rates. It picks a backend per request, not per connection. Traefik, nginx, HAProxy and Envoy, and application load balancers in the cloud, work at layer 7.
+
+The difference matters for long connections. A browser that holds one HTTP/2 connection open sends every request over it. A layer 4 balancer pins all of them to one backend; a layer 7 balancer spreads them.
+
+### Picking a Backend
+
+The rule that picks the next backend is the **algorithm**:
+
+- **Round robin** hands out backends in turn: A, B, C, A, B, C. It needs no information about the backends and works well when every request costs about the same. **Weighted round robin** gives a bigger machine more turns. Traefik and nginx use weighted round robin by default, with every weight at one unless you set it.
+- **Least connections** picks the backend with the fewest requests in progress. When some requests take 5 ms and others 5 seconds, a backend stuck on slow requests stops receiving new ones.
+- **Random** picks any healthy backend. kube-proxy in its default iptables mode picks a pod at random for each new connection. **Power of two choices** picks two backends at random and sends the request to the less busy one, which comes close to least connections without tracking every backend.
+- **Hashing** maps a key, such as the client address or a cookie, to a backend, which keeps one client on one backend. This is a **sticky session**. It suits caches, and it hides a design problem when a backend keeps user state only in its own memory.
+
+### Health Checks
+
+A balancer must stop sending traffic to a backend that cannot answer. An **active health check** sends a request on a schedule, such as `GET /healthz` every 5 seconds, and counts the results. A backend leaves the pool after a number of failures in a row, the **unhealthy threshold**, and rejoins after a number of successes in a row, the **healthy threshold**. Two thresholds stop one slow answer from flapping a backend in and out. A **passive health check** watches real traffic instead: nginx marks a server unavailable for `fail_timeout`, 10 seconds by default, after `max_fails` failed attempts, one by default.
+
+Kubernetes splits the job. The kubelet on each node runs the **readiness probe** of every pod, and a pod that fails it leaves the **endpoints** of its Service: the list of pod addresses behind the Service name. kube-proxy and Traefik watch that list and stop sending new connections and requests to the pod. The balancers in the cluster run no health checks of their own.
+
+### Draining
+
+A backend that leaves the pool on purpose, for a deploy or a scale-down, still has requests in flight. **Draining** stops new traffic to it and gives the open requests time to finish before the process exits. Without it, every deploy cuts off the requests that happen to be running and the clients see `502 Bad Gateway`.
+
+### ServiceLB and Cloud Load Balancers
+
+Kubernetes defines the Service type `LoadBalancer` but leaves the implementation to the platform. On a cloud, the cloud controller creates a load balancer with an address of its own, which survives the loss of any node. It health-checks the nodes, spreads connections over nodes in several availability zones, and costs a monthly fee plus traffic.
+
+**ServiceLB**, the k3s implementation, creates no new machine and no new address. For each `LoadBalancer` Service, it starts a DaemonSet, one pod per node, whose pods hold the Service ports on the node itself through a `hostPort`. The Service gets the node addresses as its external addresses, and the pods forward incoming traffic to the Service. Your DNS record points at the VPS, and the balancing between pods happens behind it, in Traefik and kube-proxy.
+
+| | ServiceLB on k3s | Cloud load balancer |
+| --- | --- | --- |
+| Address | The address of each node | Its own, stable address |
+| A node fails | Its address stops answering | Traffic moves to the other nodes |
+| Health checks | None: the node answers or not | Checks every node on a schedule |
+| Cost | Nothing extra | A monthly fee plus traffic |
+| Fits | One node, or a few with DNS in front | Clusters that must survive a node loss |
+
+On your own hardware with several nodes, **MetalLB** fills the gap: it hands a Service a virtual address from a range you own and announces that address to your network from a healthy node.
 
 ## Diagrams
 
-This section is not written yet.
+The two kinds of balancer differ in how much of the traffic they read.
+
+<Diagram
+  id="layers"
+  title="Layer 4 forwards whole connections; layer 7 routes each request"
+  code={`direction: right
+l4: "Layer 4" {
+  c: client
+  lb: "balancer\\nIP and port"
+  p1: api pod 1
+  p2: api pod 2
+  c -> lb: "TCP connection"
+  lb -> p1: "the whole connection"
+  lb -> p2: "the next connection" {style.stroke-dash: 3}
+}
+l7: "Layer 7" {
+  c: client
+  lb: "reverse proxy\\nends TLS, reads HTTP"
+  web: web pod
+  api: api pod
+  c -> lb: "HTTPS"
+  lb -> web: "GET /"
+  lb -> api: "GET /api/monitors"
+}
+`}
+/>
+
+The walkthrough follows one backend that stops answering its health check, with an unhealthy threshold of two and a healthy threshold of two.
+
+<Diagram
+  id="health-check"
+  title="A backend fails its health check, leaves the pool and comes back"
+  code={`shape: sequence_diagram
+cl: client
+lb: load balancer
+a: backend A
+b: backend B
+
+lb -> a: "GET /healthz"
+a -> lb: "200"
+lb -> b: "GET /healthz"
+b -> lb: "no answer in 2 s"
+lb -> b: "GET /healthz, 5 s later"
+b -> lb: "503"
+cl -> lb: "GET /api/monitors"
+lb -> a: "GET /api/monitors"
+lb -> b: "GET /healthz"
+b -> lb: "200"
+lb -> b: "GET /healthz"
+b -> lb: "200, back in the pool"
+`}
+  steps={[
+    { hl: ['lb', 'a', 'b', 'lb->a', 'a->lb', 'lb->b'], caption: 'Every 5 seconds, the balancer sends GET /healthz to each backend. A answers 200. Both backends are in the pool and share the traffic.' },
+    { hl: ['lb', 'b', 'b->lb'], caption: 'B does not answer within the 2-second timeout of the check. One failure: B stays in the pool, because one slow answer is not enough to act on.' },
+    { hl: ['lb', 'b', 'lb->b#1', 'b->lb#1'], caption: 'The next check gets 503 Service Unavailable. Two failures in a row reach the unhealthy threshold, and B leaves the pool. Requests in flight on B finish or fail; new ones go elsewhere.' },
+    { hl: ['cl', 'lb', 'a', 'cl->lb', 'lb->a#1'], caption: 'A request arrives. The pool holds only A, and round robin over a pool of one picks A every time. If A fails too, the balancer has no backend left and answers 503 itself.' },
+    { hl: ['lb', 'b', 'lb->b#2', 'b->lb#2'], caption: 'The balancer keeps checking B while it is out of the pool. B answers 200 once: one success is below the healthy threshold, and B stays out.' },
+    { hl: ['lb', 'b', 'lb->b#3', 'b->lb#3'], caption: 'A second 200 in a row reaches the healthy threshold. B rejoins the pool and takes its share of new requests again.' },
+  ]}
+/>
 
 ## Example
 
-This section is not written yet.
+The example implements the two most common algorithms over a pool of backends. In a full balancer, a health checker sets `Healthy`, and the proxy raises and lowers `Active` around each request.
+
+<CodeFrom file="go/tracks/loadbalancing/loadbalancing.go" region="backend" lang="go" title="loadbalancing.go" />
+
+`ErrNoHealthyBackend` is a **sentinel error**: a fixed value that callers compare with `errors.Is`. A proxy that gets it answers `503 Service Unavailable` at once instead of waiting on a backend it knows is down.
+
+<CodeFrom file="go/tracks/loadbalancing/loadbalancing.go" region="roundrobin" lang="go" title="loadbalancing.go" />
+
+`Next` remembers where it stopped in `next` and moves past each backend it looks at, healthy or not. That way, an unhealthy backend costs one skipped turn, and the order resumes where it left off once it recovers. The loop runs at most once around the pool, which bounds the work when every backend is down. `sync.Mutex` serializes the calls: a proxy calls `Next` from one goroutine per request, and two goroutines that read and write `next` at the same time race. Week 5 covers goroutines and the mutex.
+
+<CodeFrom file="go/tracks/loadbalancing/loadbalancing.go" region="leastconn" lang="go" title="loadbalancing.go" />
+
+`LeastConnections` scans the whole pool on every call, which is fine for a handful of backends. Large balancers keep the backends in a heap ordered by `Active`, or use power of two choices to avoid the scan. The strict `<` keeps the first of several equal backends, which makes the result predictable in tests.
+
+<CodeFrom file="go/tracks/loadbalancing/loadbalancing_test.go" region="test" lang="go" title="loadbalancing_test.go" />
+
+The tests use addresses from `192.0.2.0/24`, a range reserved for documentation. `TestRoundRobinSkipsUnhealthy` also checks recovery: once the backend passes again, it gets its turn on the next cycle. A fifth test, `TestRoundRobinConcurrent`, calls `Next` 3,000 times from 100 goroutines and expects exactly 1,000 picks per backend. Under `go test -race`, removing the mutex fails it with a data race report.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={16} anchor="the-path-of-a-request">Week 16, The Path of a Request</WeekLink>: a request for your status page reaches the VPS through ServiceLB on ports `80` and `443`. Traefik, the ingress controller of k3s, ends TLS and balances requests over the web pods at layer 7. nginx in the web pod passes `/api` to the api Service, and kube-proxy picks an api pod at layer 4. <WeekLink n={16} anchor="one-box-running-kubernetes">One Box Running Kubernetes</WeekLink> introduces ServiceLB and Traefik as parts of k3s.
+
+<WeekLink n={17} anchor="rolling-updates-and-rollbacks">Week 17, Rolling Updates and Rollbacks</WeekLink>: the HorizontalPodAutoscaler grows the pool of api pods under load, and a rolling update replaces them one at a time. A `preStop` pause of 5 seconds drains each pod: it keeps serving while Traefik and kube-proxy learn that it is leaving. <WeekLink n={17} anchor="rate-limits-and-token-buckets">Rate Limits and Token Buckets</WeekLink> shows two costs of balancing: every proxy hides the client address behind its own, which `X-Forwarded-For` and `externalTrafficPolicy: Local` recover, and a limit kept in the memory of each api pod multiplies by the number of pods.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **A health check that checks too much.** A `/healthz` that queries Postgres fails on every backend at once when the database is slow, and the balancer empties the whole pool. Users get `503` from the balancer instead of a slow answer from the api. Check what the backend itself needs to serve, and watch shared dependencies with alerts instead.
+- **A health check that checks too little.** A `/healthz` that answers while the work loop hangs keeps a broken backend in the pool. Week 15 makes `/healthz` report whether the loop has made a pass recently.
+- **No draining.** A pod that exits on `SIGTERM` while the endpoints still list it cuts off requests in flight and receives new ones for a moment. Users see `502`. Pause in a `preStop` hook, then finish open requests before exiting.
+- **Trusting `X-Forwarded-For` from anyone.** A client can send the header with any address in it. Trust only the entries your own proxies append, from the right end of the list.
+- **Idle timeouts in the wrong order.** When the backend closes idle keep-alive connections sooner than the balancer does, the balancer sends a request down a connection the backend just closed and returns `502`. Set the backend idle timeout longer than the balancer idle timeout.
+- **State in one backend.** Sessions, caches or rate limit counters kept in the memory of one pod disappear when it restarts and differ between pods. Keep shared state in Postgres or another shared store, or accept the difference on purpose, as the per-pod rate limit of Week 17 does.
 
 ## Going Deeper
 
-This section is not written yet.
+- **Consistent hashing.** It moves only a small share of keys when a backend joins or leaves, which matters for caches and for sharded data. Google Maglev is a well-known design.
+- **Client-side load balancing.** gRPC clients and service meshes such as Linkerd pick a backend themselves from a list of endpoints, which removes the extra hop and balances long-lived HTTP/2 connections per request.
+- **Gateway API.** The successor to the Kubernetes Ingress object, with separate objects for cluster operators and app teams, and routes for gRPC as well as HTTP. Traefik 3 in k3s supports it once you turn it on in a `HelmChartConfig`.
+- **Global load balancing.** DNS answers that differ by region and anycast addresses, which many sites announce at once, spread users across data centers before any connection opens.
+- **The PROXY protocol.** A layer 4 balancer can prepend the original client address to the connection, which keeps it intact without HTTP headers.
 
 ## Further Reading
 
-This section is not written yet.
+- [nginx: Using nginx as HTTP Load Balancer](https://nginx.org/en/docs/http/load_balancing.html): round robin, least connections, hashing and passive health checks in one short page.
+- [Envoy: Supported Load Balancers](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/load_balancing/load_balancers): weighted round robin, least request with power of two choices, ring hash and Maglev, explained by the proxy that implements them.
+- [Kubernetes: Service](https://kubernetes.io/docs/concepts/services-networking/service/): endpoints, the `LoadBalancer` type and `externalTrafficPolicy`.
+- [K3s: Networking Services](https://docs.k3s.io/networking/networking-services): how ServiceLB creates its DaemonSet, picks nodes and forwards traffic, and how k3s installs Traefik.
