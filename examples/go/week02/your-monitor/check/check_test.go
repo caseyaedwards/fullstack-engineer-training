@@ -108,6 +108,9 @@ func TestURLAgainstATestServer(t *testing.T) {
 			if got.Err != nil {
 				t.Fatalf("Err = %v, want nil", got.Err)
 			}
+			if got.URL != srv.URL {
+				t.Errorf("URL = %q, want %q", got.URL, srv.URL)
+			}
 			if got.Status != tt.status {
 				t.Errorf("Status = %d, want %d", got.Status, tt.status)
 			}

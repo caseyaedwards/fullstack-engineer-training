@@ -290,13 +290,13 @@ $ ./your-monitor
 your-monitor: starting
 ```
 
-`go build` writes a file named `your-monitor`, after the last part of the module name. It is about 2 MB: the Go runtime and every package the program uses, in one file. Add a line `/your-monitor` to `.gitignore` when it is not there yet, because build output does not belong in Git.
+`go build` writes a file named `your-monitor`, after the last part of the module name. It is about 2 MB: the Go runtime and every package the program uses, in one file. The `/your-monitor` line in the `.gitignore` from Week 0 keeps it out of Git, because build output does not belong there.
 
 Now meet the strict compiler. Add `url := "https://example.com"` as the first line of `main`, and run it again:
 
 ```txt
 $ go run .
-# github.com/your-user/your-monitor
+# github.com/<user>/your-monitor
 ./main.go:6:2: declared and not used: url
 ```
 
@@ -396,10 +396,10 @@ Try `./your-monitor -h` for the help text alone. Then try `./your-monitor -url h
 
 ### Step 7: Commit and Open a Pull Request
 
-Commit the program and the `.gitignore` change, then push the branch:
+Commit the program, then push the branch. `git status` lists only `main.go`: the `.gitignore` from Week 0 already hides the `your-monitor` binary.
 
 ```sh
-git add main.go .gitignore
+git add main.go
 git commit -m "Check one URL and print status and latency"
 git push -u origin week-01
 ```
