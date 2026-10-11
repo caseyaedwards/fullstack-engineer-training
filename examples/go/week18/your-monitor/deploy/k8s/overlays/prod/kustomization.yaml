@@ -1,0 +1,39 @@
+# region: kustomization
+# The live overlay. Week 16 sets the namespace and adds the Ingress;
+# Week 17 adds everything under "Week 17".
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: your-monitor # contract stub: week 16
+resources:
+  - ../../base
+  - ingress.yaml # contract stub: week 16
+  # Week 17
+  - hpa.yaml
+  - ratelimit.yaml
+  - backup.yaml
+patches:
+  # Week 17: how each Deployment rolls out, the api limits, and no
+  # replicas field where an HPA sets the count.
+  - path: rollout.yaml
+    target:
+      kind: Deployment
+      name: api|worker|web
+  - path: singletons.yaml
+    target:
+      kind: Deployment
+      name: scheduler|alerter
+  - path: api.yaml
+  - path: ingress-middleware.yaml
+  - target:
+      kind: Deployment
+      name: api|worker
+    patch: |-
+      - op: remove
+        path: /spec/replicas
+configMapGenerator:
+  # Week 17: the backup and restore-drill scripts, mounted into the CronJobs.
+  - name: backup-scripts
+    files:
+      - backup/backup.sh
+      - backup/restore-drill.sh
+# endregion: kustomization

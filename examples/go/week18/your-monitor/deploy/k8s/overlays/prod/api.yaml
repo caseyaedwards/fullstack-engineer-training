@@ -1,0 +1,28 @@
+# region: api-patch
+# The api in production: the client limits, the proxies it trusts, and a
+# pause before it stops.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: api
+          env:
+            # The k3s pod network: Traefik and nginx connect from it.
+            - name: TRUSTED_PROXIES
+              value: 10.42.0.0/16
+            - name: RATE_LIMIT
+              value: "10"
+            - name: RATE_BURST
+              value: "40"
+          lifecycle:
+            # Keep serving for 5 seconds after the pod is told to stop,
+            # while Traefik and nginx learn that it is going away.
+            preStop:
+              sleep:
+                seconds: 5
+# endregion: api-patch

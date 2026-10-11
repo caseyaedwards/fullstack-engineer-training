@@ -1,0 +1,46 @@
+# contract stub: week 15.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: worker
+          image: your-monitor-worker
+          args: ["-debug-addr", ":6060"]
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres
+                  key: password
+            - name: DATABASE_URL
+              value: postgres://monitor:$(POSTGRES_PASSWORD)@postgres:5432/monitor?sslmode=disable
+          ports:
+            - containerPort: 6060
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 6060
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 6060
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

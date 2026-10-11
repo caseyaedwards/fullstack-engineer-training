@@ -1,0 +1,24 @@
+# contract stub: week 16. Traefik routes the status page to web, and
+# cert-manager gets its certificate from the letsencrypt ClusterIssuer.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: your-monitor
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [status.example.com]
+      secretName: status-tls
+  rules:
+    - host: status.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 8080

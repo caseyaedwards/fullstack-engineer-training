@@ -1,0 +1,41 @@
+package obs
+
+// region: tracing
+
+import (
+	"context"
+	"os"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+)
+
+// StartTracing sets up tracing for the program named service. When
+// OTEL_EXPORTER_OTLP_ENDPOINT is empty, tracing stays off: spans cost
+// next to nothing and go nowhere. Otherwise, spans go in batches to that
+// endpoint over OTLP/HTTP. Call the returned function before the program
+// exits: it sends the spans still waiting in the batch.
+func StartTracing(ctx context.Context, service string) (shutdown func(context.Context) error, err error) {
+	// Read and write the W3C traceparent header, which carries a trace
+	// from one program to the next.
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" {
+		return func(context.Context) error { return nil }, nil
+	}
+	exporter, err := otlptracehttp.New(ctx) // reads OTEL_EXPORTER_OTLP_ENDPOINT
+	if err != nil {
+		return nil, err
+	}
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(resource.NewSchemaless(attribute.String("service.name", service))),
+	)
+	otel.SetTracerProvider(tp)
+	return tp.Shutdown, nil
+}
+
+// endregion: tracing

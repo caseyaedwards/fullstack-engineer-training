@@ -1,0 +1,93 @@
+# Alertmanager receives every firing alert from Prometheus and decides who
+# hears about it, how, and how often. Secrets never appear in this file:
+# each *_file setting names a file that Compose or Kubernetes mounts from
+# outside Git.
+
+# region: route
+# Every alert enters the tree at the top and goes to the first child route
+# whose matchers it meets. An alert that meets none stays at the top and
+# goes to its receiver, ticket.
+route:
+  receiver: ticket
+  # One notification per alert name and SLO. A fast burn of availability
+  # and a fast burn of freshness arrive as two messages.
+  group_by: [alertname, slo]
+  # Wait 30 seconds after the first alert of a group, to collect others
+  # that fire with it into one message.
+  group_wait: 30s
+  # After that, send a group again only when it changes, at most every 5m.
+  group_interval: 5m
+  # Remind about an unchanged group that still fires.
+  repeat_interval: 12h
+  routes:
+    # The dead man's switch: ping the heartbeat check every 5 minutes.
+    - receiver: heartbeat
+      matchers: ['alertname = "Watchdog"']
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 5m
+    # Pages ring your phone, and only while you are on call. A page that
+    # fires at 03:00 waits, and rings at 07:00 if it still fires.
+    - receiver: page
+      matchers: ['severity = "page"']
+      active_time_intervals: [on-call]
+      repeat_interval: 1h
+    # Tickets arrive without a sound, once a day while they fire.
+    - receiver: ticket
+      matchers: ['severity = "ticket"']
+      repeat_interval: 24h
+# endregion: route
+
+# region: inhibit
+# While a page fires for an SLO, its ticket stays quiet: the page already
+# covers the same budget.
+inhibit_rules:
+  - source_matchers: ['severity = "page"']
+    target_matchers: ['severity = "ticket"']
+    equal: [slo]
+# endregion: inhibit
+
+# region: on-call
+# Your on-call hours, in your time zone. Put the IANA name of your zone in
+# location, for example America/New_York or Asia/Tokyo.
+time_intervals:
+  - name: on-call
+    time_intervals:
+      - weekdays: ['monday:friday']
+        times:
+          - start_time: '07:00'
+            end_time: '22:00'
+        location: Europe/London
+      - weekdays: ['saturday', 'sunday']
+        times:
+          - start_time: '09:00'
+            end_time: '22:00'
+        location: Europe/London
+# endregion: on-call
+
+# region: receivers
+receivers:
+  # A Telegram message from your bot, with sound.
+  - name: page
+    telegram_configs:
+      - bot_token_file: /etc/alertmanager/secrets/telegram-bot-token
+        chat_id_file: /etc/alertmanager/secrets/telegram-chat-id
+        message: &message |-
+          [{{ .Status | toUpper }}] {{ .CommonLabels.alertname }} {{ .CommonLabels.slo }}
+          {{ range .Alerts }}{{ .Annotations.summary }}
+          Runbook: {{ .Annotations.runbook_url }}
+          {{ end }}
+  # The same bot and chat, without sound: Telegram shows the message
+  # with no notification sound, and you read it when you next open the chat.
+  - name: ticket
+    telegram_configs:
+      - bot_token_file: /etc/alertmanager/secrets/telegram-bot-token
+        chat_id_file: /etc/alertmanager/secrets/telegram-chat-id
+        disable_notifications: true
+        message: *message
+  # A plain POST to the ping URL of your heartbeat check.
+  - name: heartbeat
+    webhook_configs:
+      - url_file: /etc/alertmanager/secrets/heartbeat-url
+        send_resolved: false
+# endregion: receivers

@@ -1,0 +1,46 @@
+# contract stub: week 15.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scheduler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: scheduler
+  template:
+    metadata:
+      labels:
+        app: scheduler
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: scheduler
+          image: your-monitor-scheduler
+          args: ["-metrics-addr", ":2112"]
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres
+                  key: password
+            - name: DATABASE_URL
+              value: postgres://monitor:$(POSTGRES_PASSWORD)@postgres:5432/monitor?sslmode=disable
+          ports:
+            - containerPort: 2112
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 2112
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 2112
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

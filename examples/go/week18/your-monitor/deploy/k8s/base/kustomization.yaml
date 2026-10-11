@@ -1,0 +1,11 @@
+# contract stub: week 15. The smallest base that the Week 17 overlay
+# needs: the five Deployments, their Services, and Postgres.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - postgres.yaml
+  - api.yaml
+  - worker.yaml
+  - scheduler.yaml
+  - alerter.yaml
+  - web.yaml

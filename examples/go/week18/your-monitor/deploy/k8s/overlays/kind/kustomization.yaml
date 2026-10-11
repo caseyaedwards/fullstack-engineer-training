@@ -1,0 +1,6 @@
+# contract stub: week 15. The laptop overlay: the base as it is.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: your-monitor
+resources:
+  - ../../base

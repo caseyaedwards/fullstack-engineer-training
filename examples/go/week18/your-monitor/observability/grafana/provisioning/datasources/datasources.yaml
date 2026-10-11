@@ -1,0 +1,19 @@
+# region: datasources
+# Grafana reads this file at start and adds both data sources, which saves
+# clicking through Connections > Data sources by hand.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy # the Grafana server sends the queries, not your browser
+    url: http://prometheus:9090
+    isDefault: true
+
+  - name: Jaeger
+    uid: jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+# endregion: datasources
