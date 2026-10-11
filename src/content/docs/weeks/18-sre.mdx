@@ -84,9 +84,9 @@ sched: scheduler
 worker: worker
 prom: Prometheus
 
-bb -> traefik: "GET https://status.example.com/api/monitors"
+bb -> traefik: public URL
 traefik -> web
-bb -> web: "GET http://web.your-monitor.svc:8080/api/monitors"
+bb -> web: Service URL
 web -> api: proxy /api
 api -> pg: SQL
 sched -> pg: queue jobs
@@ -392,10 +392,7 @@ A **runbook** tells the person holding the pager what to do first, written while
 
 The runbook says **mitigate** first: restore the service by rollback, restart or scale, before you understand the cause. A rollback that fixes the symptom in two minutes beats a root cause found in forty.
 
-Prometheus cannot see the backups of <a href={weekHref(17)}>Week 17</a>: the CronJob runs once a day, and the drill runs on your laptop. Two more healthchecks.io checks watch them, and the runbook section `Backups` says what to do when one alerts:
-
-1. `pg-backup`, with the cron schedule `17 3 * * *`, time zone UTC and a grace time of 2 hours: the 1-hour start deadline, the 30-minute run limit and the retries of the CronJob. `backup.sh` reads its ping URL from the `offsite` Secret, pings `/fail` first thing in `fail()`, which alerts you at once on a failed run, and pings the URL itself as its last line. The backup image gains `curl` for it: push, and CI builds the image.
-2. `restore-drill`, with a period of 7 days and a grace time of 1 day. Append `&& curl -fsS -m 10 --retry 3 https://hc-ping.com/<uuid>` to the drill command of Week 17: the ping goes out only when the drill passes.
+Prometheus cannot see the backups of <a href={weekHref(17)}>Week 17</a>: the CronJob runs once a day, and the drill runs on your laptop. Two more healthchecks.io checks watch them, and the runbook section `Backups` says what to do when one alerts. Create `pg-backup` with the cron schedule `17 3 * * *`, time zone UTC and a grace time of 2 hours: the 1-hour start deadline, the 30-minute run limit and the retries of the CronJob. `backup.sh` reads its ping URL from the `offsite` Secret, pings `/fail` first thing in `fail()`, which alerts you at once on a failed run, and pings the URL itself as its last line. The backup image gains `curl` for it: push, and CI builds the image. Create `restore-drill` with a period of 7 days and a grace time of 1 day, and append `&& curl -fsS -m 10 --retry 3 https://hc-ping.com/<uuid>` to the drill command of Week 17: the ping goes out only when the drill passes.
 
 ```sh
 kubectl -n your-monitor patch secret offsite --type=merge -p '{"stringData":{"BACKUP_PING_URL":"https://hc-ping.com/<uuid>"}}'
@@ -409,28 +406,28 @@ A **drill** is an incident you start on purpose, at a time you choose, to test t
 kubectl -n your-monitor scale statefulset postgres --replicas=0
 ```
 
-Postgres shuts down cleanly, and its volume stays. The api keeps answering, with `500` for every read. The workers cannot claim jobs, and the scheduler rounds fail. Now play the responder: when the page rings, open the runbook link and follow it. A test run of the same rules, the same Alertmanager routes and the same programs, outside Kubernetes, with Postgres stopped after one hour of healthy history and started again 11 minutes later, gave this timeline in UTC:
+Postgres shuts down cleanly, and its volume stays. The api keeps answering, with `500` for every read. The workers cannot claim jobs, and the scheduler rounds fail. Now play the responder: when the page rings, open the runbook link and follow it. A test run of these rules, Alertmanager routes and programs, outside Kubernetes, with one hour of healthy history before Postgres stopped and 11 minutes of outage, gave this timeline in UTC:
 
 ```txt
-10:14:06  Postgres stopped
-10:15:33  ticket    ErrorBudgetTicket availability
-10:17:03  page      ErrorBudgetSlowBurn availability
-10:17:03  ticket    ErrorBudgetTicket freshness
-10:17:18  page      StatusPageDown
-10:19:03  page      ErrorBudgetFastBurn availability
-10:20:03  page      ErrorBudgetSlowBurn freshness
-10:25:03  page      ErrorBudgetFastBurn freshness
-10:25:09  Postgres started
-10:27:18  resolved  StatusPageDown
-10:30:03  resolved  ErrorBudgetFastBurn freshness
-10:34:03  resolved  ErrorBudgetFastBurn availability
-10:55:03  resolved  ErrorBudgetSlowBurn freshness
-10:57:03  resolved  ErrorBudgetSlowBurn availability
+12:44:00  Postgres stopped
+12:45:03  ticket    ErrorBudgetTicket availability
+12:46:33  page      ErrorBudgetSlowBurn availability
+12:46:48  page      StatusPageDown
+12:47:03  ticket    ErrorBudgetTicket freshness
+12:49:03  page      ErrorBudgetFastBurn availability
+12:50:03  page      ErrorBudgetSlowBurn freshness
+12:55:03  page      ErrorBudgetFastBurn freshness
+12:55:14  Postgres started
+12:56:48  resolved  StatusPageDown
+13:00:03  resolved  ErrorBudgetFastBurn freshness
+13:04:03  resolved  ErrorBudgetFastBurn availability
+13:25:03  resolved  ErrorBudgetSlowBurn freshness
+13:26:33  resolved  ErrorBudgetSlowBurn availability
 ```
 
-The fast-burn page for availability rang 5 minutes after the trigger: the 4.3 minutes from Concepts, plus up to 30 seconds to the next rule evaluation and 30 seconds of `group_wait`. Freshness took 11 minutes: a step counts as late only once no check has finished for 2 minutes, and against a 1% budget, the one-hour window needs 8.6 late minutes to reach 14.4.
+`StatusPageDown` rang 2 minutes and 48 seconds after the trigger, at the end of its 2 minutes pending. The fast burn for availability rang 5 minutes after the trigger: the 4.3 minutes from Concepts, plus the next rule evaluation and 30 seconds of `group_wait`. Freshness took 11 minutes: a step counts as late once no check has finished for 2 minutes, and the one-hour window then needs 8.6 late minutes to reach 14.4 against a 1% budget.
 
-The slow-burn pages and the tickets fired first because Prometheus held one hour of data: a 6-hour or 3-day window over one hour of history reads close to the 1-hour window. With 6 hours of history, a total outage needs 0.03 × 360 = 10.8 minutes to fire the slow-burn page for availability, and with 3 days, the ticket needs 0.005 × 4,320 = 21.6 minutes. On a box you deployed this week, expect the order of this test run. The tickets stayed open after the last resolve, until the outage leaves the 6-hour window, and they arrived without a sound: a ticket asks for the postmortem, not for action now.
+The slow burns and the tickets rang early because Prometheus held one hour of data, and a 6-hour or 3-day window over one hour of history reads close to the 1-hour window. With full history, a total outage needs 0.03 × 360 = 10.8 minutes to fire the slow burn for availability, after the fast burn, which then mutes it through the second inhibit rule. The ticket needs 0.005 × 4,320 = 21.6 minutes, and the page mutes it too. On a box you deployed this week, expect the order of this test run. The tickets stay open until the outage leaves the 6-hour window: a ticket asks for the postmortem, not for action now.
 
 Runbook step 5 finds the cause: `kubectl -n your-monitor get statefulset postgres` shows `0/1`. Mitigate with the runbook line:
 
@@ -439,7 +436,7 @@ kubectl -n your-monitor scale statefulset postgres --replicas=1
 kubectl -n your-monitor rollout status statefulset postgres
 ```
 
-The api, the scheduler and the workers reconnect on their next query, with no restart. Watch the alerts resolve on `localhost:9093` and on your phone. A resolve message arrives at the next `group_interval` of its group, up to 5 minutes after the alert ends. Then read what the drill cost in `slo:error_budget:remaining`. With 30 days of history, 11 minutes of total outage cost 11 ÷ 216 = 5% of the availability budget. With less history, the 30-day window holds only what Prometheus has, and the number drops far lower: the test run read −19 for availability: 20 budgets spent.
+The api, the scheduler and the workers reconnect on their next query, with no restart. Watch the alerts resolve on `localhost:9093` and on your phone. A resolve message arrives at the next `group_interval` of its group, up to 5 minutes after the alert ends. Then read what the drill cost in `slo:error_budget:remaining`. With 30 days of history, 11 minutes of total outage cost 11 ÷ 216 = 5% of the availability budget. With less history, the 30-day window holds only what Prometheus has, and the number drops far lower: the test run read −19.9 for availability: about 21 budgets spent.
 
 ### Step 10: Write the Postmortem
 
