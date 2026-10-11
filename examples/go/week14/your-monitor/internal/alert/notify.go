@@ -99,8 +99,8 @@ type Log struct {
 }
 
 func (l Log) Notify(ctx context.Context, e Event) error {
-	l.Logger.WarnContext(ctx, "alert", "kind", string(e.Kind), "incident", e.IncidentID,
-		"monitor", e.MonitorID, "url", e.URL, "cause", e.Cause)
+	l.Logger.WarnContext(ctx, "alert", "kind", string(e.Kind), "incident_id", e.IncidentID,
+		"monitor_id", e.MonitorID, "url", e.URL, "cause", e.Cause)
 	return nil
 }
 

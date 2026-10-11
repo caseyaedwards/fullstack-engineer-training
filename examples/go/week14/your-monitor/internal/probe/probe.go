@@ -64,12 +64,16 @@ func Check(ctx context.Context, url string) (Timings, int, error) {
 	// The Connect hooks fire once per address tried (Go may race IPv4
 	// and IPv6, "Happy Eyeballs"), so Connect may reflect only the last.
 	trace := &httptrace.ClientTrace{
-		DNSStart:             func(httptrace.DNSStartInfo) { begin(&dnsStart) },
-		DNSDone:              func(httptrace.DNSDoneInfo) { end(&t.DNS, &dnsStart) },
-		ConnectStart:         func(string, string) { begin(&connectStart) },
-		ConnectDone:          func(string, string, error) { end(&t.Connect, &connectStart) },
-		TLSHandshakeStart:    func() { begin(&tlsStart) },
-		TLSHandshakeDone:     func(tls.ConnectionState, error) { end(&t.TLS, &tlsStart) },
+		// DNS: from the question to the answer.
+		DNSStart: func(httptrace.DNSStartInfo) { begin(&dnsStart) },
+		DNSDone:  func(httptrace.DNSDoneInfo) { end(&t.DNS, &dnsStart) },
+		// Connect: from the SYN to the SYN-ACK.
+		ConnectStart: func(string, string) { begin(&connectStart) },
+		ConnectDone:  func(string, string, error) { end(&t.Connect, &connectStart) },
+		// TLS: from the ClientHello to the Finished.
+		TLSHandshakeStart: func() { begin(&tlsStart) },
+		TLSHandshakeDone:  func(tls.ConnectionState, error) { end(&t.TLS, &tlsStart) },
+		// First byte: from the start of the request.
 		GotFirstResponseByte: func() { end(&t.FirstByte, &start) },
 	}
 	// endregion: timings

@@ -19,11 +19,11 @@ func (f fakeIncidents) List(ctx context.Context, openOnly bool) ([]alert.Inciden
 	*f.askedOpenOnly = openOnly
 	start := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
 	end := start.Add(5 * time.Minute)
-	open := alert.Incident{ID: 2, MonitorID: 1, URL: "https://example.com", StartedAt: start.Add(time.Hour), Cause: "status 503"}
+	open := alert.Incident{ID: 2, MonitorID: 1, StartedAt: start.Add(time.Hour), Cause: "status 503"}
 	if openOnly {
 		return []alert.Incident{open}, nil
 	}
-	return []alert.Incident{open, {ID: 1, MonitorID: 1, URL: "https://example.com", StartedAt: start, ResolvedAt: &end, Cause: "status 500"}}, nil
+	return []alert.Incident{open, {ID: 1, MonitorID: 1, StartedAt: start, ResolvedAt: &end, Cause: "status 500"}}, nil
 }
 
 // region: incidents-test
@@ -36,13 +36,13 @@ func TestListIncidents(t *testing.T) {
 		wantBody     string
 	}{
 		{"", 200, false, `"resolved_at":"2026-10-11T09:05:00Z"`},
-		{"?open=true", 200, true, `[{"id":2,"monitor_id":1,"url":"https://example.com","started_at":"2026-10-11T10:00:00Z","resolved_at":null,"cause":"status 503"}]`},
+		{"?open=true", 200, true, `[{"id":2,"monitor_id":1,"started_at":"2026-10-11T10:00:00Z","resolved_at":null,"cause":"status 503"}]`},
 		{"?open=false", 200, false, `"id":1`},
 		{"?open=yes", 400, false, `{"error":"open must be true or false"}`},
 	}
 	for _, tt := range tests {
 		var openOnly bool
-		h := NewHandler(nil, nil, fakeIncidents{askedOpenOnly: &openOnly}, nil)
+		h := NewHandler(nil, nil, fakeIncidents{askedOpenOnly: &openOnly}, fakeAuth{})
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/incidents"+tt.query, nil))
 
@@ -62,7 +62,7 @@ func TestListIncidents(t *testing.T) {
 // endregion: incidents-test
 
 func TestListIncidentsIsAnEmptyArrayNotNull(t *testing.T) {
-	h := NewHandler(nil, nil, emptyIncidents{}, nil)
+	h := NewHandler(nil, nil, emptyIncidents{}, fakeAuth{})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/incidents?open=true", nil))
 	if got := strings.TrimSpace(rec.Body.String()); got != "[]" {

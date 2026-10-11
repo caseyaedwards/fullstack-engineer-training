@@ -2,6 +2,7 @@ package alert
 
 import (
 	"testing"
+	"time"
 
 	"fsp/examples/week14/your-monitor/internal/monitor"
 )
@@ -38,10 +39,24 @@ func TestDecide(t *testing.T) {
 // endregion: rule-test
 
 func TestCause(t *testing.T) {
-	if got := Cause(monitor.Result{StatusCode: 503}); got != "status 503" {
+	code, msg := 503, "no such host"
+	if got := Cause(monitor.Result{StatusCode: &code}); got != "status 503" {
 		t.Errorf("Cause = %q, want status 503", got)
 	}
-	if got := Cause(monitor.Result{Error: "no such host"}); got != "no such host" {
+	if got := Cause(monitor.Result{Error: &msg}); got != "no such host" {
 		t.Errorf("Cause = %q, want the error", got)
+	}
+}
+
+func TestFirstUp(t *testing.T) {
+	at := func(m int) time.Time { return time.Date(2026, 10, 11, 9, m, 0, 0, time.UTC) }
+	recent := []monitor.Result{ // newest first
+		{Up: true, CheckedAt: at(3)}, {Up: true, CheckedAt: at(2)}, {Up: false, CheckedAt: at(1)},
+	}
+	if got := FirstUp(recent).CheckedAt; !got.Equal(at(2)) {
+		t.Errorf("FirstUp = %v, want %v: the first success after the failure", got, at(2))
+	}
+	if got := FirstUp(recent[:1]).CheckedAt; !got.Equal(at(3)) {
+		t.Errorf("FirstUp of one result = %v, want %v", got, at(3))
 	}
 }

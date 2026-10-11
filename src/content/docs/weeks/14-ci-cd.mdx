@@ -219,15 +219,15 @@ make lint
 On the Week 13 code of the site examples, the first run reports nine findings. The output below keeps the first line of each. Your code differs from the examples, which gives your run other lines and numbers, but the same kinds of finding:
 
 ```txt
-cmd/api/main.go:86:16: Error return value is not checked (errcheck)
-cmd/worker/main.go:67:16: Error return value is not checked (errcheck)
+cmd/api/main.go:107:16: Error return value is not checked (errcheck)
+cmd/worker/main.go:80:16: Error return value is not checked (errcheck)
 internal/alert/notify.go:82:9: Error return value of `io.Copy` is not checked (errcheck)
-internal/db/db.go:38:17: Error return value of `conn.Exec` is not checked (errcheck)
-cmd/api/main.go:136:46: G114: Use of net/http serve function that has no support for setting timeouts (gosec)
-cmd/scheduler/main.go:47:48: G114: Use of net/http serve function that has no support for setting timeouts (gosec)
-cmd/worker/main.go:22:2: G108: Profiling endpoint is automatically exposed on /debug/pprof (gosec)
-cmd/worker/main.go:72:46: G114: Use of net/http serve function that has no support for setting timeouts (gosec)
-cmd/worker/main.go:107:22: G115: integer overflow conversion int -> int32 (gosec)
+internal/db/migrate.go:41:17: Error return value of `conn.Exec` is not checked (errcheck)
+cmd/api/main.go:155:46: G114: Use of net/http serve function that has no support for setting timeouts (gosec)
+cmd/scheduler/main.go:52:48: G114: Use of net/http serve function that has no support for setting timeouts (gosec)
+cmd/worker/main.go:20:2: G108: Profiling endpoint is automatically exposed on /debug/pprof (gosec)
+cmd/worker/main.go:86:46: G114: Use of net/http serve function that has no support for setting timeouts (gosec)
+cmd/worker/main.go:122:22: G115: integer overflow conversion int -> int32 (gosec)
 9 issues:
 * errcheck: 4
 * gosec: 5
@@ -249,7 +249,7 @@ Then replace each `http.ListenAndServe(addr, mux)` with `obs.NewServer(addr, mux
 - `io.Copy(io.Discard, ...)` in the webhook notifier: a failed read changes nothing. Write `_, _ = io.Copy(...)`, which tells the next reader of the code that you ignore the error on purpose.
 - `defer conn.Exec(..., pg_advisory_unlock ...)` in `Migrate`: when the unlock fails, the pool gets back a connection that still holds the migration lock, and the `Migrate` of every other program waits until the pool drops that connection, up to an hour later. Close the connection instead, which releases the lock:
 
-<CodeFrom file="go/week14/your-monitor/internal/db/db.go" region="unlock" lang="go" title="internal/db/db.go" />
+<CodeFrom file="go/week14/your-monitor/internal/db/migrate.go" region="unlock" lang="go" title="internal/db/migrate.go" />
 
 **G115, an integer that wraps.** `int32(workers)` turns a number above 2,147,483,647 into a negative one. Check the range before the conversion and return an error outside it:
 

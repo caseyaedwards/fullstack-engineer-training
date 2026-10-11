@@ -1,8 +1,11 @@
-// Command api is the HTTP API of the uptime monitor. It reads the Postgres
-// connection string from DATABASE_URL. Run it from the examples/go
-// directory:
+// Command api is the HTTP API of the uptime monitor. Week 6 made it a stub
+// with GET /healthz; Week 7 serves the REST API for monitors from
+// internal/api; Week 8 keeps the monitors and their check results in
+// Postgres; Week 9 adds the incidents that cmd/alerter opens; Week 11
+// adds logins. Run it from the examples/go directory:
 //
-//	DATABASE_URL=postgres://... go run ./week14/your-monitor/cmd/api -addr 127.0.0.1:8080
+//	DATABASE_URL=postgres://monitor:changeme@127.0.0.1:5432/monitor?sslmode=disable \
+//	    go run ./week14/your-monitor/cmd/api -addr 127.0.0.1:8080
 //
 // With -healthcheck, it checks a running api instead of starting one.
 // The Compose healthcheck uses that mode, because the container image
@@ -44,15 +47,28 @@ import (
 // region: handler
 
 // newHandler builds the api the program serves: the routes of internal/api
-// over the stores in Postgres and the auth service. Around them, from the
-// outside in: a span, a log line, and the request metrics, for every
-// request.
-// contract stub: week 08 (the Postgres stores); alert.Store is Week 9.
+// over the Postgres stores and the auth service. Around them, from the
+// outside in: a span, a log line and the request metrics, for every
+// request. api.NewHandler adds the security headers, Cache-Control and
+// the same-origin check inside them.
 func newHandler(pool *pgxpool.Pool, users *auth.Service, metrics *api.Metrics) http.Handler {
 	h := api.NewHandler(db.NewMonitorStore(pool), db.NewResultStore(pool), alert.Store{DB: pool}, users)
 	h = metrics.Instrument(h)
 	h = api.LogRequests(slog.Default(), h)
 	return api.Trace(h)
+}
+
+// openDB connects to Postgres and brings the schema up to date.
+func openDB(ctx context.Context, url string) (*pgxpool.Pool, error) {
+	pool, err := db.Connect(ctx, url)
+	if err != nil {
+		return nil, err
+	}
+	if err := db.Migrate(ctx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
 }
 
 // endregion: handler
@@ -63,6 +79,7 @@ func main() {
 	addr := flag.String("addr", ":8080", "address to listen on; :8080 means port 8080 on every network interface")
 	metricsAddr := flag.String("metrics-addr", "", "address for the Prometheus /metrics endpoint, for example 127.0.0.1:2112; empty turns it off")
 	healthcheck := flag.String("healthcheck", "", "URL of a running api's /healthz: exit with 0 if it answers 200, 1 otherwise")
+	databaseURL := flag.String("database-url", os.Getenv("DATABASE_URL"), "Postgres connection string; defaults to $DATABASE_URL")
 	newUser := flag.String("create-user", "", "add a user with this email, with the password read from stdin, then exit")
 	flag.Parse()
 
@@ -72,6 +89,10 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	}
+	if *databaseURL == "" {
+		fmt.Fprintln(os.Stderr, "missing -database-url or DATABASE_URL")
+		os.Exit(2)
 	}
 
 	// region: setup
@@ -93,15 +114,13 @@ func main() {
 		go serveMetrics(*metricsAddr)
 	}
 
-	pool, err := connect(ctx)
+	pool, err := openDB(ctx, *databaseURL)
 	if err != nil {
 		obs.Fatal(err)
 	}
-	// endregion: setup
 	defer pool.Close()
-	if err := db.Migrate(ctx, pool); err != nil {
-		obs.Fatal(err)
-	}
+	// endregion: setup
+
 	// region: create-user-flag
 	users := auth.NewService(db.NewAuthStore(pool))
 	if *newUser != "" {
@@ -142,21 +161,6 @@ func serveMetrics(addr string) {
 }
 
 // endregion: metrics-server
-
-// region: connect
-
-// connect opens the Postgres pool that DATABASE_URL names, with a span for
-// each statement that runs inside a request.
-func connect(ctx context.Context) (*pgxpool.Pool, error) {
-	cfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
-	if err != nil {
-		return nil, err
-	}
-	cfg.ConnConfig.Tracer = obs.QueryTracer{}
-	return pgxpool.NewWithConfig(ctx, cfg)
-}
-
-// endregion: connect
 
 // region: serve
 

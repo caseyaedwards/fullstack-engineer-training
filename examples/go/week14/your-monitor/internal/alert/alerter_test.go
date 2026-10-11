@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"fsp/examples/week14/your-monitor/internal/db"
-	"fsp/examples/week14/your-monitor/internal/dbtest"
+	"fsp/examples/week14/your-monitor/internal/db/dbtest"
 )
 
 // recorder is a Notifier that keeps every event it gets. With fail set,
@@ -47,7 +47,7 @@ var t0 = time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
 
 // setup adds one monitor and returns an alerter for it.
 func setup(t *testing.T, n Notifier) (*pgxpool.Pool, *Alerter) {
-	db0 := dbtest.New(t)
+	db0 := dbtest.Pool(t, dbtest.URL(t), db.Migrate)
 	dbtest.Exec(t, db0, `INSERT INTO monitors (url, interval_seconds) VALUES ('https://example.com', 60)`)
 	return db0, &Alerter{DB: db0, Results: db.NewResultStore(db0), Notifier: n, Threshold: 3}
 }
