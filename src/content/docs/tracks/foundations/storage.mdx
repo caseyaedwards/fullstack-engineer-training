@@ -1,36 +1,171 @@
 ---
 title: "Storage"
+description: How data gets from a write call to the disk, from filesystems, inodes and the page cache to fsync and atomic renames, and how block, file and object storage differ, with a tested atomic file write in Go.
 track: storage
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+A `write` call that returns without an error does not mean the data is on the disk. Between your program and the disk sit a filesystem and a cache in memory, and a power cut at the wrong moment loses what the cache still holds. Databases, configuration files and backups all depend on knowing which writes survive a crash. This page follows a write from your code to the disk, and compares the three kinds of storage a cloud server offers.
+
 ## What It Is
 
-This section is not written yet.
+### Disks and Block Devices
+
+A disk stores data in fixed-size **blocks**, 512 bytes or 4 KiB each, addressed by number. Linux shows a disk as a **block device**, such as `/dev/sda` or `/dev/nvme0n1`, which reads and writes whole blocks at any position. A spinning hard disk moves a head to each position, which costs about 10 ms per random read. An NVMe SSD, short for Non-Volatile Memory Express solid-state drive, has no moving parts and answers a random read in under 0.1 ms.
+
+A disk splits into **partitions**, and each partition holds one filesystem. `lsblk` lists the disks and partitions of a Linux machine.
+
+### Filesystems, Inodes and Directories
+
+A **filesystem** turns a block device into named files and folders. Ubuntu formats its disks with ext4 by default, and XFS is common on servers. The filesystem keeps one **inode** per file: a record of the size, the owner, the permissions, the timestamps and the list of blocks that hold the content. An inode has no name. A **directory** is a special file that maps names to inode numbers, and each mapping is a **directory entry**. `ls -i` prints the inode number next to each name.
+
+That split explains three behaviors you meet in practice:
+
+- **Rename is cheap.** `mv` inside one filesystem changes only directory entries: no data moves, whatever the size of the file.
+- **A deleted file can still fill the disk.** Deleting removes the directory entry, but the inode and its blocks stay until the last process closes the file. A log file deleted while a program writes to it keeps growing. `lsof +L1` lists open files with no name left.
+- **A disk can run out of inodes.** ext4 fixes the number of inodes when it formats the disk, and XFS allocates them as it needs them, up to a share of the space. Millions of tiny files use them up, and creating a file fails with `No space left on device` while `df -h` shows free space. `df -i` shows the inodes.
+
+ext4 and XFS keep a **journal**: before they change their own structures, such as an inode or a directory, they write the change to a log on the disk. After a crash, the filesystem replays the journal and comes back consistent. The journal protects the structure of the filesystem, not the content of your files.
+
+### The Page Cache
+
+Linux keeps recently read and written file content in memory, in the **page cache**. A `read` of a cached page returns from memory without touching the disk. A `write` copies the data into the page cache, marks the page **dirty**, and returns at once. A kernel thread writes dirty pages to the disk later: by default, it checks every 5 seconds and writes pages that have been dirty for 30 seconds or more.
+
+That delay makes writes fast, and it makes them fragile. A program that writes a file and exits has handed the data to the kernel, not to the disk. A crash or a power cut in the next 30 seconds loses it. A process crash alone loses nothing: the kernel still holds the page and writes it out.
+
+### Flushing to the Disk
+
+`fsync` is the system call that closes the gap. It returns only once the dirty pages of one file, and its inode, are on the disk, including the write cache inside the drive. In Go, `f.Sync()` calls it. `fdatasync` skips inode fields that do not matter for reading the data back, such as the modification time.
+
+`fsync` on a file does not cover the directory entry that names it. A new file, or a file renamed into place, needs an `fsync` on its directory too, or a crash can leave the data on the disk with no name pointing at it.
+
+Durability has a price. An `fsync` waits for the disk, from well under a millisecond on an NVMe SSD with a power-loss-protected cache to 10 ms or more on a spinning disk. Databases group many commits into one `fsync` and pay that price once per group.
+
+### Atomic Replacement
+
+A program that rewrites a file in place with `os.WriteFile` first truncates it to zero bytes, then writes the new content. A reader in between sees an empty or half-written file, and a crash in between leaves one on the disk.
+
+`rename` is atomic on Linux and macOS: when the source and the target sit on the same filesystem, every other process sees either the old file or the new file at the target name, never a mix and never nothing. The safe pattern builds on that: write the new content to a temp file in the same directory, `fsync` it, rename it over the target, and `fsync` the directory. A rename across filesystems fails with `EXDEV`, which is why the temp file goes in the same directory.
+
+### Block, File and Object Storage
+
+Cloud providers sell storage in three shapes:
+
+- **Block storage**, such as an AWS EBS volume, short for Amazon Web Services Elastic Block Store: a virtual disk attached to one server, which formats it with a filesystem. Fast, and attached to one machine at a time. Databases run on it, and a Kubernetes PersistentVolume wraps it.
+- **File storage**, such as NFS, the Network File System: a filesystem served over the network that many servers mount at once. Familiar paths and permissions, with a network round trip in each operation.
+- **Object storage**, such as Amazon S3, short for Simple Storage Service: a flat store of whole objects addressed by key over HTTP. Cheap per gigabyte and practically unlimited, with no directories, no partial writes and no `fsync`: an upload either completes or does not exist. Backups and static files go there.
 
 ## Diagrams
 
-This section is not written yet.
+A write with and without `fsync`, and what a power cut loses:
+
+<Diagram
+  id="write-path"
+  title="From write to the disk, with and without fsync"
+  code={`shape: sequence_diagram
+app: "your program"
+cache: "page cache\\nin memory"
+disk: disk
+
+app -> cache: "write: data copied, page dirty"
+cache -> app: "write returns"
+app -> cache: "fsync"
+cache -> disk: "dirty pages and inode"
+disk -> cache: "on stable storage"
+cache -> app: "fsync returns"
+cache -> disk: "without fsync: writeback after 30 s"
+`}
+  steps={[
+    { hl: ['app', 'cache', 'app->cache'], caption: 'write copies the data into the page cache and marks the page dirty. No disk is involved yet.' },
+    { hl: ['cache', 'app', 'cache->app'], caption: 'write returns success within microseconds. A power cut now loses the data, even though your program saw no error.' },
+    { hl: ['app', 'cache', 'app->cache#1'], caption: 'The program calls fsync on the file, f.Sync in Go, and blocks.' },
+    { hl: ['cache', 'disk', 'cache->disk', 'disk->cache'], caption: 'The kernel writes the dirty pages and the inode, then asks the drive to flush its own write cache, and waits for the drive to confirm.' },
+    { hl: ['cache', 'app', 'cache->app#1'], caption: 'fsync returns. From here on, the data survives a power cut. A rename or a new file still needs an fsync on the directory.' },
+    { hl: ['cache', 'disk', 'cache->disk#1'], caption: 'Without fsync, the kernel writes the page on its own schedule: after it has been dirty for 30 seconds, by default. Until then, the data lives only in memory.' },
+  ]}
+/>
+
+The three kinds of storage, side by side:
+
+<Diagram
+  id="storage-kinds"
+  title="Block, file and object storage"
+  code={`direction: right
+block: "block storage" {
+  vm: "one server"
+  fs: "its filesystem"
+  vol: "virtual disk\\nnumbered blocks"
+  vm -> fs -> vol
+}
+file: "file storage" {
+  a: "server A"
+  b: "server B"
+  nfs: "NFS server\\npaths and files"
+  a -> nfs
+  b -> nfs
+}
+object: "object storage" {
+  c: "any client"
+  s3: "bucket\\nkeys to whole objects"
+  c -> s3: "PUT, GET over HTTP"
+}
+`}
+/>
 
 ## Example
 
-This section is not written yet.
+`WriteFileAtomic` replaces a file with the pattern from What It Is: temp file, write, `fsync`, rename, `fsync` the directory.
+
+<CodeFrom file="go/tracks/storage/atomic.go" region="atomic" lang="go" title="atomic.go" />
+
+`os.CreateTemp` creates a file with a random name in the target directory, with mode `0600`, and fails when the directory does not exist. The name starts with a dot, which keeps it out of a plain `ls` and out of tools that read every file in the folder. `f.Sync` flushes the content before the rename, because a rename that reaches the disk before the data leaves an empty file under the real name after a crash. `os.Chmod` sets the final mode before the rename, which means no reader ever sees the file with the wrong permissions.
+
+The named result `err` drives the cleanup: on any failure, the deferred function closes and removes the temp file, and the target keeps its old content. The last `Sync`, on the directory, makes the new directory entry durable. On Linux, opening a directory read-only and calling `fsync` on it is the documented way to do that.
+
+The tests run in `t.TempDir`, a fresh directory per test that Go removes afterward:
+
+<CodeFrom file="go/tracks/storage/atomic_test.go" region="test" lang="go" title="atomic_test.go" />
+
+The first test replaces a file of mode `0644` and checks the content, the new mode `0600`, and that the directory holds nothing but the target. The second points at a directory that does not exist, checks for `fs.ErrNotExist`, and checks that nothing appears in the parent. Two more tests in the file cover a rename that fails, because a directory sits at the target path, and a reader that reads the file 100 times while a writer replaces it 20 times: every read returns one complete version. Run against a version built on `os.WriteFile`, that last test fails with a read of `0` bytes.
+
+The tests cannot prove durability: that needs a power cut. They prove the atomicity and the cleanup, and the code carries the two `Sync` calls that durability needs.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={3} anchor="the-files-a-service-touches">Week 3</WeekLink> places the monitor on the Linux filesystem: the binary in `/usr/local/bin`, the URL list in `/etc/your-monitor`, the journal in `/var/log/journal`. Its <WeekLink n={3} anchor="users-and-permissions">users and permissions</WeekLink> section sets the mode `640` on the URL file, permission bits of the same form as the `0600` that `WriteFileAtomic` sets, and its file descriptor leak shows how open files hold kernel resources.
+
+<WeekLink n={8} anchor="transactions-and-the-write-ahead-log">Week 8</WeekLink> moves the data into Postgres, which applies this page at scale. Each `COMMIT` appends to the write-ahead log and waits for `fsync`. Changed table pages stay in memory until a checkpoint writes them, and after a crash, Postgres replays the log. The same week fills a disk on purpose in <WeekLink n={8} anchor="operate-it">Operate It</WeekLink>, and Postgres stops because it cannot append to the log.
+
+The <TrackLink slug="databases">Databases track</TrackLink> continues with how Postgres lays out tables and indexes on the disk, and the <TrackLink slug="backups">Backups track</TrackLink> with copies of that data on other disks and in object storage.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **Rewriting a file in place.** `os.WriteFile` truncates first, which gives readers an empty file for a moment and leaves one behind after a crash. Write a temp file and rename it, as `WriteFileAtomic` does.
+- **Renaming without `fsync`.** Without an `fsync`, the filesystem can write the rename to the disk before the data it points at, and a power cut leaves an empty file under the real name. `Sync` the temp file before the rename, and the directory after it.
+- **Putting the temp file in `/tmp`.** On Fedora and Arch Linux, `/tmp` is a separate `tmpfs` filesystem in memory, and many servers mount it from its own partition. A rename from there fails with `EXDEV`. Create the temp file next to the target.
+- **Retrying `fsync` after it fails.** On Linux, a failed `fsync` can mark the dirty pages clean, and a second `fsync` then succeeds with the data gone. For that reason, Postgres has stopped the whole server with a PANIC on an `fsync` error since 2019. Treat a failed `fsync` as lost data.
+- **Watching only free space.** A disk with free space and no free inodes fails every file creation. Watch `df -i` next to `df -h`, and alert at 80% of either.
+- **Deleting a log file to free space.** When a process still holds the file open, deleting it frees nothing. Truncate it with `truncate -s 0 app.log`, or restart the process after the delete.
 
 ## Going Deeper
 
-This section is not written yet.
+- **Write-ahead logging:** the technique behind Postgres, SQLite and every journaling filesystem, and the reason a database survives a crash with all committed data.
+- **Direct input and output with `O_DIRECT`:** reads and writes that bypass the page cache, which MySQL uses for its InnoDB tables to manage its own cache.
+- **Copy-on-write filesystems:** ZFS and Btrfs never overwrite data in place, which gives cheap snapshots and checksums of every block.
+- **RAID, short for redundant array of independent disks:** combines disks for speed, for survival of a failed disk, or both. It protects against hardware failure, not against deletion, which is the job of backups.
+- **Kubernetes storage:** PersistentVolumes, StorageClasses and the local-path provisioner that k3s ships, which keeps volumes on the disk of one node.
 
 ## Further Reading
 
-This section is not written yet.
+- [The Linux fsync man page](https://man7.org/linux/man-pages/man2/fsync.2.html): what `fsync` and `fdatasync` guarantee on Linux, including the note that a directory needs its own `fsync`.
+- [The Linux rename man page](https://man7.org/linux/man-pages/man2/rename.2.html): the atomic replacement guarantee and the `EXDEV` error for a rename across filesystems.
+- [Reliability and the Write-Ahead Log](https://www.postgresql.org/docs/17/wal-reliability.html): how Postgres 17 depends on `fsync`, drive caches and power-loss protection for durable commits.
+- [Fsync Errors on the PostgreSQL wiki](https://wiki.postgresql.org/wiki/Fsync_Errors): the 2018 discovery that a failed `fsync` can lose data, and how Postgres changed in response.
+- [The os package](https://pkg.go.dev/os): the reference for `File.Sync`, `CreateTemp`, `Rename` and `Chmod`, and the platform notes on each.

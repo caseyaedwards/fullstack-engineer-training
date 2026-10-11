@@ -1,36 +1,172 @@
 ---
 title: "Operating Systems"
+description: What the kernel does for a running program, from system calls and processes to threads, memory and signals, with a tested Go function that runs a child process under a deadline.
 track: operating-systems
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+Every program in the uptime monitor runs as a Linux process: on your laptop, in a container and on the server. The operating system decides when it runs, how much memory it gets, which files and sockets it can touch, and how it stops. When a service hangs at shutdown, runs out of memory or leaks connections, the answer sits in this layer, and this page gives you the words and the tools to find it.
+
 ## What It Is
 
-This section is not written yet.
+### The Kernel and System Calls
+
+The **kernel** is the core of the operating system. It runs with full access to the hardware, in **kernel space**. Your programs run in **user space**, where they cannot touch a disk, a network card or another program directly. To do any of that, a program asks the kernel through a **system call**, or syscall: `openat` opens a file, `read` and `write` move bytes, `connect` opens a TCP connection, `clone` starts a process or a thread.
+
+Every Go function that talks to the outside world ends in system calls. `fmt.Println` ends in `write(1, ...)`, a write to file descriptor `1`. `strace -f ./your-monitor` on Linux prints every system call the monitor makes, with its arguments and its result, which makes it the tool of choice when a program fails with no useful log line.
+
+### Processes
+
+A **process** is one running copy of a program, together with everything the kernel tracks for it: its memory, its open files, its user, its current folder and its environment variables. The kernel gives each process a number, its **process ID** or PID. `/proc/<pid>/` on Linux shows that state as files.
+
+A process starts a program in two steps. **fork** copies the calling process into a child, which then calls **exec** to replace its own program with a new one. The child keeps what it inherited: open file descriptors, environment variables and current folder. That inheritance is how a redirect in the shell reaches the program: the shell points file descriptor `1` of the child at the file between fork and exec. Go on Linux uses a variant of fork that shares memory until exec, which avoids copying a large parent, but the two steps stay the same.
+
+A process ends by calling **exit** with an **exit status**, a number from `0` to `255`, where `0` means success. A signal can also end it. Either way, the kernel keeps a small record until the parent collects it with a **wait** system call. Until then, the dead child is a **zombie**: it holds no memory, only its PID and its status, and `ps` shows it with the state `Z` and the word `<defunct>`. A parent that never waits leaks zombies, and a machine that runs out of PIDs cannot start new processes. When a parent exits first, its children become **orphans**, and PID 1 adopts them and waits for them.
+
+<Diagram
+  id="process-tree"
+  title="A process tree, and the three file descriptors each process starts with"
+  code={`direction: down
+init: "systemd\\nPID 1"
+sh: "bash\\nPID 2050"
+mon: "your-monitor\\nPID 2107"
+child: "sh -c ...\\nPID 2140"
+term: terminal
+log: monitor.log
+init -> sh: starts
+sh -> mon: "fork, exec"
+mon -> child: "exec.Command"
+mon -> term: "fd 0 stdin"
+mon -> log: "fd 1 stdout"
+mon -> term: "fd 2 stderr"
+`}
+/>
+
+In the diagram, bash starts the monitor with `> monitor.log`, which points file descriptor `1` at the file and leaves `0` and `2` on the terminal. The monitor starts a child of its own through `os/exec`, as the Example below does. That child inherits the environment and the current folder of the monitor, but gets no open file descriptor it does not ask for: `exec.Cmd` connects its stdin, stdout and stderr to `/dev/null` unless the code sets `Stdin`, `Stdout` and `Stderr`.
+
+### Threads and Scheduling
+
+A **thread** is one line of execution inside a process. All threads of a process share its memory and its file descriptors. The kernel **scheduler** picks which thread runs on each core of the CPU, short for central processing unit, and for how long. Since Linux 6.6, that scheduler is EEVDF, short for Earliest Eligible Virtual Deadline First, which replaced the older Completely Fair Scheduler. Switching a core from one thread to another is a **context switch**: the kernel saves the registers of one thread and loads those of the next, at a cost of a few microseconds.
+
+A Go program runs several kernel threads from the start: `ps` marks it with `l` in the `STAT` column. The Go runtime runs its goroutines on those threads with a scheduler of its own, and `GOMAXPROCS` sets how many threads run Go code at the same instant. Week 5 covers the Go side of that split.
+
+### Memory
+
+Each process sees its own **virtual address space**: addresses that the kernel maps to real memory in **pages** of 4 KiB on x86-64 Linux. Two processes can use the same address and see different data. The kernel hands out pages only when the program first touches them, which is why a Go program can reserve far more address space than it uses. The number that matters is the **resident set size**, or RSS: the memory a process holds right now, in the `RSS` column of `ps`.
+
+When the machine runs out of memory, or a container reaches the memory limit of its **cgroup**, short for control group, the kernel feature that caps the memory and CPU time of a group of processes, the kernel **out-of-memory killer** picks a process and ends it with `SIGKILL`. No handler runs and no log line appears from the process. The only traces are a kernel message in `dmesg`, exit code `137`, and `OOMKilled` in Docker or Kubernetes.
+
+### Signals
+
+A **signal** is a short notice the kernel delivers to a process. `SIGTERM` asks a process to exit, and a program can catch it and clean up first. `SIGKILL` ends a process at once, and nothing can catch, block or ignore it. `SIGINT` comes from Ctrl+C. `SIGCHLD` tells a parent that a child has changed state, which is the cue to wait for it. A process can also set a signal to be ignored, and that setting survives exec: a child started with `SIGTERM` ignored ignores it too.
+
+Every service manager stops a program the same way: `SIGTERM`, a grace period, then `SIGKILL`. systemd waits 90 seconds by default, Docker 10 and Kubernetes 30. A program that handles `SIGTERM` finishes its current work and exits cleanly. A program that ignores it loses its in-flight work when the `SIGKILL` arrives.
 
 ## Diagrams
 
-This section is not written yet.
+The life of one child process, from the fork that starts it to the wait that removes its last trace:
+
+<Diagram
+  id="process-life"
+  title="The life of a child process, from fork to exit and reaping"
+  code={`shape: sequence_diagram
+parent: "your-monitor\\nparent"
+kernel: kernel
+child: child
+
+parent -> kernel: fork
+kernel -> child: "new PID, copy of fds"
+child -> kernel: "exec sleep 10"
+parent -> kernel: "wait for PID"
+kernel -> child: SIGTERM
+child -> kernel: "exits: signal 15"
+kernel -> parent: "SIGCHLD, status"
+`}
+  steps={[
+    { hl: ['parent', 'kernel', 'parent->kernel'], caption: 'The parent asks the kernel for a new process. In Go, cmd.Start makes this call.' },
+    { hl: ['kernel', 'child', 'kernel->child'], caption: 'The kernel creates the child with a new PID. The child starts with copies of the parent file descriptors, environment and current folder.' },
+    { hl: ['child', 'kernel', 'child->kernel'], caption: 'The child calls exec. The kernel replaces its program with sleep and keeps the PID and the file descriptors the parent set up.' },
+    { hl: ['parent', 'kernel', 'parent->kernel#1'], caption: 'The parent calls wait and blocks until the child changes state. In Go, cmd.Wait makes this call.' },
+    { hl: ['kernel', 'child', 'kernel->child#1'], caption: 'The deadline passes. The Cancel function sends SIGTERM through the kernel to the child.' },
+    { hl: ['child', 'kernel', 'child->kernel#1'], caption: 'sleep has no handler for SIGTERM, and the default action ends it. The child is now a zombie: no memory, only its PID and its status.' },
+    { hl: ['kernel', 'parent', 'kernel->parent'], caption: 'The kernel sends SIGCHLD and returns the status to the waiting parent. The zombie is gone. Without this wait, it stays in the process table until the parent exits.' },
+  ]}
+/>
+
+The same shutdown, seen from a service manager, with a child that ignores the first signal:
+
+<Diagram
+  id="term-then-kill"
+  title="SIGTERM, a grace period, then SIGKILL"
+  code={`shape: sequence_diagram
+mgr: "service manager"
+proc: process
+
+mgr -> proc: SIGTERM
+proc -> proc: "handler: finish work, exit 0"
+mgr -> proc: "SIGKILL after the grace period"
+`}
+  steps={[
+    { hl: ['mgr', 'proc', 'mgr->proc'], caption: 'The service manager sends SIGTERM: systemctl stop, docker stop and a Kubernetes pod deletion all start this way.' },
+    { hl: ['proc', 'proc->proc'], caption: 'A program with a handler finishes the work in flight and exits on its own. The manager records a clean stop.' },
+    { hl: ['mgr', 'proc', 'mgr->proc#1'], caption: 'A program that ignores SIGTERM, or blocks for longer than the grace period, gets SIGKILL. It ends mid-step. systemd logs that SIGKILL ended the service, and Docker and Kubernetes report exit code 137.' },
+  ]}
+/>
 
 ## Example
 
-This section is not written yet.
+`Run` starts a program as a child process and gives it a deadline. It follows the same pattern as a service manager, in miniature: `SIGTERM` when the time is up, one second of grace, then `SIGKILL`.
+
+<CodeFrom file="go/tracks/operatingsystems/run.go" region="run" lang="go" title="run.go" />
+
+`exec.CommandContext` ties the child to a context. When the context ends, the command calls its `Cancel` function. The default `Cancel` sends `SIGKILL`, which gives the child no chance to clean up, and `Run` replaces it with a `SIGTERM`. `WaitDelay` bounds what happens next: one second after the context ends, `Wait` sends `SIGKILL` to a child that still runs, and closes any pipes the child holds open.
+
+A child that exits with a non-zero status returns an `*exec.ExitError`, and `Run` turns it into a plain exit code with a `nil` error: for a caller that runs a health script, exit code `3` is an answer, not a failure of `Run`. A timeout is a failure, and `Run` returns an error that wraps the context error, which callers test with `errors.Is`. A child that a signal ends has no exit code. When the signal does not come from `Run`, as with a `SIGKILL` from the out-of-memory killer or a `SIGSEGV`, the signal for an invalid memory access, `Run` returns `-1` and an error that wraps the `*exec.ExitError`, with a message such as `signal: killed`.
+
+The tests start real processes with `sh` and `sleep`, which every Linux and macOS machine has:
+
+<CodeFrom file="go/tracks/operatingsystems/run_test.go" region="test" lang="go" title="run_test.go" />
+
+The second test checks three things: `Run` returns well within two seconds of a 100 ms timeout, the error wraps `context.DeadlineExceeded`, and the message holds `signal: terminated`, which proves the child got `SIGTERM` and not the default `SIGKILL`. The other tests in the file cover a child that ignores `SIGTERM` and dies from `SIGKILL` once the second of grace runs out, a child that ends itself with `SIGKILL`, a parent context cancelled from outside, and a program that does not exist, which returns `exec.ErrNotFound`.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={3} anchor="processes-pids-and-parents">Week 3</WeekLink> turns the monitor into a service. It covers PIDs, parents, `/proc`, file descriptors and signals, then runs the monitor under systemd, which stops it with `SIGTERM`. <WeekLink n={3} anchor="step-5-test-the-shutdown-end-to-end">Step 5 of that week</WeekLink> starts the monitor binary from a test with `exec.CommandContext`, the same function as in the Example, and sends it real signals.
+
+<WeekLink n={5} anchor="the-scheduler">Week 5</WeekLink> runs 100 checks at once on a few kernel threads. The Go scheduler parks a goroutine that waits on a socket and hands its thread to another, and each open connection holds one file descriptor, which is why the pool has a fixed size.
+
+<WeekLink n={12} anchor="how-delve-stops-a-program">Week 12</WeekLink> debugs the monitor at the operating system level. Delve stops a program through the `ptrace` system call on Linux, and the CPU profile counts a `SIGPROF` signal after every 10 ms of CPU time. The same week reads CPU use from `ps` to find a worker that spins with nothing to do.
+
+The <TrackLink slug="storage">Storage track</TrackLink> continues with files, the page cache and `fsync`, and the <TrackLink slug="containers">Containers track</TrackLink> shows how namespaces and cgroups turn an ordinary process into a container.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **Running a service behind a shell that swallows signals.** A container that starts `sh -c "./migrate && ./worker"` makes `sh` PID 1, with the worker as its child. `sh` does not pass `SIGTERM` on. The worker never hears it, and every stop takes the full grace period and ends in `SIGKILL`. Start the program directly, or put `exec` in front of the last command: `sh -c "./migrate && exec ./worker"`.
+- **Never waiting for a child.** A program that calls `cmd.Start` and forgets `cmd.Wait` leaves a zombie per child. Over weeks, the process table fills. Pair every `Start` with a `Wait`, or call `Run`, which does both.
+- **Using `exec.CommandContext` without `WaitDelay`.** When a child starts a grandchild that inherits its stdout pipe, `Wait` blocks until that pipe closes, long after the child has exited. Set `WaitDelay` to bound the wait.
+- **Treating every non-zero exit as an exception.** `grep` exits `1` when it finds nothing. A health script exits `2` for a warning. Read `ExitCode()` and decide what each code means for your program.
+- **Reading a memory limit from the host.** Inside a container, `free` and `/proc/meminfo` show the memory of the whole machine, not the cgroup limit. A program that sizes its caches from them grows past the limit, and the out-of-memory killer ends it with `SIGKILL`. Read `/sys/fs/cgroup/memory.max`, or set `GOMEMLIMIT` for a Go program.
+- **Catching `SIGTERM` and then doing nothing.** A handler that only logs the signal keeps the program running until `SIGKILL`. The handler has to cancel the work and return from `main`.
 
 ## Going Deeper
 
-This section is not written yet.
+- **Process groups and sessions:** the terminal sends Ctrl+C to a whole process group, which explains why one Ctrl+C stops every command of a pipeline, and why `nohup` keeps a program alive after you close the terminal.
+- **cgroups v2:** the kernel feature that limits CPU time, memory and disk traffic for a group of processes, and the base of every container limit in Weeks 6 and 15.
+- **Namespaces:** they give a process its own view of PIDs, the network and the filesystem. A container is a process in its own set of namespaces.
+- **Virtual memory and the page cache:** knowing how the kernel maps files into memory explains RSS numbers, slow first reads and why `fsync` exists.
+- **eBPF, short for extended Berkeley Packet Filter:** small programs that run inside the kernel and trace system calls, scheduling and network events with little overhead.
 
 ## Further Reading
 
-This section is not written yet.
+- [The Linux fork man page](https://man7.org/linux/man-pages/man2/fork.2.html): exactly what a child inherits from its parent on Linux, and what it does not.
+- [The Linux wait man page](https://man7.org/linux/man-pages/man2/wait.2.html): how a parent collects a child, what a zombie is, and the status macros behind an exit code.
+- [The Linux signal overview man page](https://man7.org/linux/man-pages/man7/signal.7.html): every signal with its number and default action, and how dispositions survive fork and exec.
+- [Operating Systems: Three Easy Pieces](https://pages.cs.wisc.edu/~remzi/OSTEP/): a free textbook by Remzi and Andrea Arpaci-Dusseau on processes, scheduling, memory and persistence.
+- [The os/exec package](https://pkg.go.dev/os/exec): the reference for `Cmd`, including the full rules for `Cancel`, `WaitDelay` and the errors `Wait` returns.

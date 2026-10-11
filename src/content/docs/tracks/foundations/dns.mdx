@@ -1,36 +1,197 @@
 ---
 title: "DNS"
+description: How the Domain Name System turns a name into records, from the name tree, zones and record types to caching and the bytes of a query, with a tested UDP client in Go.
 track: dns
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+DNS, the Domain Name System, is the first step of every check whose URL holds a name instead of an address, and the first thing that breaks when a domain expires or a record has a typo. It also decides how fast a change of address reaches the world: a record cached for a day keeps sending visitors to the old server for a day. This page covers how names are organized, what a DNS message holds, and how caches decide what to keep.
+
 ## What It Is
 
-This section is not written yet.
+### The Name Tree and Zones
+
+DNS names form a tree. You read a name from right to left, from the root down: `www.example.com.` is the label `www` under `example` under `com` under the root, which the final dot stands for. Each label is at most 63 bytes, and a whole name at most 255.
+
+A **zone** is a part of the tree that one party manages. The root zone holds only pointers to the top-level domains, the TLDs, such as `com` and `org`. The `com` zone holds a pointer for each `.com` domain. The `example.com` zone holds the real records of the domain, and can hand a subtree such as `eu.example.com` to someone else. Handing over a subtree is **delegation**: the parent zone stores `NS` records, short for name server, that name the servers of the child zone.
+
+The servers that hold a zone are its **authoritative servers**. Your laptop never asks them directly. Its **stub resolver**, the small DNS client in the operating system or in Go, asks one **recursive resolver**, which follows the delegations from the root down and caches every answer. The root zone has 13 named servers, `a.root-servers.net` to `m.root-servers.net`, and each name answers from many machines around the world through **anycast**: one address announced from many places, with the network delivering each packet to the closest one.
+
+<Diagram
+  id="name-tree"
+  title="The name tree from the root to www.example.com"
+  code={`direction: down
+root: "root zone\\n."
+com: "com zone\\nNS records for each domain"
+org: "org zone"
+ex: "example.com zone\\nSOA, NS, A, MX, TXT"
+www: "www.example.com\\nCNAME example.com"
+api: "api.example.com\\nA 203.0.113.20"
+root -> com: delegates
+root -> org: delegates
+com -> ex: delegates
+ex -> www
+ex -> api
+`}
+/>
+
+### Record Types
+
+A **resource record** has a name, a type, a class, a TTL, short for time to live, and data. The class is always `IN`, for internet, in practice. The types you meet most:
+
+| Type | Holds | Example data |
+| --- | --- | --- |
+| `A` | an IPv4 address | `203.0.113.10` |
+| `AAAA` | an IPv6 address | `2001:db8::10` |
+| `CNAME` | another name: this name is an alias for it | `example.com.` |
+| `NS` | a name server for the zone | `ns1.example.com.` |
+| `MX` | a mail server, with a priority | `10 mail.example.com.` |
+| `TXT` | free text, used for domain ownership checks and email policy | `"v=spf1 -all"` |
+| `SOA` | the start of authority: zone settings, including the negative cache TTL | `ns1.example.com. ...` |
+| `CAA` | which certificate authorities can issue for the name | `0 issue "letsencrypt.org"` |
+| `PTR` | the name for an address, in reverse lookups | `host.example.com.` |
+
+A **CNAME**, short for canonical name, makes one name an alias for another. A resolver that finds a CNAME starts over with the target name. A name with a CNAME cannot hold any other record, which rules out a CNAME at the top of a zone, the **apex**, such as `example.com` itself: the apex always holds `SOA` and `NS` records. DNS providers work around this with their own record types, under names such as `ALIAS` or `ANAME`, which they resolve on their side and serve as plain `A` records.
+
+### Messages
+
+A DNS query and its reply share one message format. A message starts with a 12-byte **header**, followed by four sections:
+
+- **Header:** a 16-bit **ID** that the reply copies from the query, and single bits: QR marks a response, RD asks for recursion, RA says the server offers it, and TC marks a truncated message. A 4-bit **response code**, RCODE, says how it went: `0` is NOERROR, `3` is NXDOMAIN, short for non-existent domain, `2` is SERVFAIL, short for server failure.
+- **Question:** the name, the type and the class asked about.
+- **Answer:** the records that answer the question, including any CNAME records on the way.
+- **Authority:** `NS` records in a **referral**, the answer a server gives when it does not hold the records but knows the servers that do, or the `SOA` record in a negative answer.
+- **Additional:** extra records that save a lookup, such as the addresses of the name servers in a referral.
+
+DNS travels over UDP, the User Datagram Protocol, on port `53`: one datagram out, one back. A plain DNS message over UDP is limited to 512 bytes. **EDNS**, short for Extension Mechanisms for DNS, raises the limit: the client adds a record that states the largest reply it accepts, and 1,232 bytes is the common value since 2020. A server with a longer answer sets the TC bit, and the client asks again over TCP, the Transmission Control Protocol. Zone transfers between servers always use TCP.
+
+### TTLs and Caching
+
+Every record carries a **TTL**: the number of seconds a resolver can keep it. A recursive resolver serves a cached record until its TTL runs out, and counts the TTL down in the answers it gives: `dig` against your resolver shows a TTL that drops between two runs.
+
+The TTL is the price of every change. With a TTL of `86400`, one day, a new address takes up to a day to reach everyone who asked the day before. A short TTL such as `300` makes changes fast and costs more queries. Lower the TTL a full old-TTL period before a planned move, then move.
+
+A **negative answer** is cached too. NXDOMAIN means the name does not exist. **NODATA** means the name exists but has no record of the type asked: the response code is NOERROR, and the answer section is empty. Both carry the `SOA` record of the zone, and resolvers cache them for the lower of the `SOA` TTL and its minimum field. A name you look up before you create it stays missing for that long.
+
+### Resolvers on Your Machines
+
+Go has its own stub resolver. On Linux, the pure Go resolver reads `/etc/resolv.conf` for the recursive resolver address and `/etc/hosts` for local names. On macOS, Go calls the system resolver, which follows the macOS settings. `GODEBUG=netdns=go` forces the pure Go resolver, and `GODEBUG=netdns=cgo` the system one. Go itself caches nothing: every `net.LookupHost` asks again, and a cache on the machine, such as `systemd-resolved` on Ubuntu, answers repeat questions.
+
+Inside Kubernetes, CoreDNS is the recursive resolver for every pod, and `/etc/resolv.conf` in a pod lists search domains with `ndots:5`. A name with fewer than five dots gets each search domain tried first: `example.com` goes out as `example.com.your-monitor.svc.cluster.local`, then with each other search domain, and only then as itself. A trailing dot, `example.com.`, skips the search.
 
 ## Diagrams
 
-This section is not written yet.
+The resolver gets a CNAME and follows it to the address:
+
+<Diagram
+  id="cname-chain"
+  title="Resolving www.example.com through a CNAME"
+  code={`shape: sequence_diagram
+stub: "stub resolver"
+rec: "recursive resolver"
+auth: "example.com\\nauthoritative"
+
+stub -> rec: "www.example.com A?"
+rec -> auth: "www.example.com A?"
+auth -> rec: "CNAME example.com, TTL 3600\\nA 203.0.113.10, TTL 300"
+rec -> stub: "CNAME, TTL 3600\\nA, TTL 300"
+stub -> rec: "www.example.com A?, 10 minutes later"
+rec -> auth: "example.com A?"
+auth -> rec: "A 203.0.113.10, TTL 300"
+`}
+  steps={[
+    { hl: ['stub', 'rec', 'stub->rec'], caption: 'Your monitor asks for the A record of www.example.com. The stub resolver sends one question to the recursive resolver, with the RD bit set.' },
+    { hl: ['rec', 'auth', 'rec->auth'], caption: 'The resolver already holds the com and example.com referrals in its cache. It asks the authoritative server directly.' },
+    { hl: ['auth', 'rec', 'auth->rec'], caption: 'www.example.com holds a CNAME, not an A record. The authoritative server serves the target zone too, and adds the A record of example.com to the same answer section.' },
+    { hl: ['rec', 'stub', 'rec->stub'], caption: 'The resolver caches both records, each with its own TTL, and passes the chain on. The address is valid for 300 seconds, the lowest TTL in the chain: ParseA in the Example reports exactly that number.' },
+    { hl: ['stub', 'rec', 'auth', 'stub->rec#1', 'rec->auth#1'], caption: 'Ten minutes later, the CNAME is still in the cache, but the A record has expired. The resolver serves the CNAME from memory and asks only for example.com.' },
+    { hl: ['auth', 'rec', 'auth->rec#1'], caption: 'A fresh A record arrives with a full TTL of 300 seconds. Changing the address of example.com reaches this resolver within five minutes. Changing the CNAME target takes up to an hour.' },
+  ]}
+/>
+
+What a stub resolver does with each answer it can get:
+
+<Diagram
+  id="answers"
+  title="Four answers to one question"
+  code={`direction: right
+q: "example.com A?"
+ok: "NOERROR\\nwith A records"
+nodata: "NOERROR\\nempty answer: NODATA"
+nx: "NXDOMAIN\\nno such name"
+tc: "TC bit set\\nretry over TCP"
+q -> ok
+q -> nodata
+q -> nx
+q -> tc
+`}
+/>
 
 ## Example
 
-This section is not written yet.
+The example builds a query, sends it over UDP and parses the reply, with the `golang.org/x/net/dns/dnsmessage` package, maintained by the Go team, for the message format. Go programs call `net.LookupHost` or `net.Resolver` in real code. Writing the client by hand shows every field that the standard library hides.
+
+`BuildQuery` packs a header and one question:
+
+<CodeFrom file="go/tracks/dns/dns.go" region="query" lang="go" title="dns.go" />
+
+The ID ties the reply to the question. `RecursionDesired` sets the RD bit, which asks the recursive resolver to do the full walk, as every stub resolver does.
+
+`ParseA` reads the response code first, then walks the answer section:
+
+<CodeFrom file="go/tracks/dns/dns.go" region="parse" lang="go" title="dns.go" />
+
+`ErrSectionDone` marks the end of the answer section. A CNAME record counts toward the TTL, and `ParseA` skips its data, because the A record of its target follows in the same section. An empty answer with NOERROR returns no addresses and no error: NODATA, not NXDOMAIN.
+
+`Lookup` sends the query and waits for the matching reply:
+
+<CodeFrom file="go/tracks/dns/dns.go" region="lookup" lang="go" title="dns.go" />
+
+`DialContext` with `"udp"` sends no packet: it fixes the server address on the socket, and the kernel then delivers only datagrams from that address. The loop drops any reply whose ID differs from the question. Together with a random source port, which the kernel picks, a random ID makes a forged reply hard to guess. `context.AfterFunc` moves the deadline to now when `ctx` is cancelled, which ends the `Read` at once. When `ctx` ends first, the error wraps `ctx.Err()` as well as the socket error, and a caller counts DNS timeouts with `errors.Is(err, context.DeadlineExceeded)`, as Week 5 does for checks. `contextErr` covers the instant when the socket deadline fires a moment before the context timer.
+
+The tests run a fake DNS server on a free UDP port of `127.0.0.1`. It parses each query, copies its ID and question, and answers with whatever the test asks for:
+
+<CodeFrom file="go/tracks/dns/dns_test.go" region="test" lang="go" title="dns_test.go" />
+
+The first test gets `example.com A 203.0.113.10` with a TTL of `300` and checks both. The second gets response code `3` and checks for `ErrNXDomain` with `errors.Is`. The other tests in the file send a reply with the wrong ID before the right one, stay silent until a 100 ms context runs out or a cancel arrives, follow the CNAME chain from the walkthrough, and parse a NODATA answer.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={4} anchor="dns-from-a-name-to-an-address">Week 4</WeekLink> times the DNS lookup of every check and walks a lookup that misses every cache, from the root to the authoritative server. Its side lab runs `dig +trace` to watch each referral, and its Operate It section reads an NXDOMAIN as `no such host`, with only the DNS row timed.
+
+<WeekLink n={16} anchor="step-6-point-the-name-at-the-box">Week 16</WeekLink> creates the first record of your own: an A record for `status.example.com` with a TTL of `300`, short enough to move the name to a new server within five minutes. It skips the AAAA record on purpose, because Let's Encrypt connects over IPv6 first when one exists. In the same week, <WeekLink n={16} anchor="the-path-of-a-request">the path of a request</WeekLink> starts with that DNS answer, and the cluster runs CoreDNS for the names inside it.
+
+The <TrackLink slug="networking">Networking track</TrackLink> covers UDP and TCP underneath, and the <TrackLink slug="tls-pki">TLS and PKI track</TrackLink>, short for Transport Layer Security and public key infrastructure, covers how a certificate authority uses DNS to check that you control a name.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **Changing a record without lowering its TTL first.** With a TTL of one day, some visitors reach the old address for a day after the change. Lower the TTL to `300` a day ahead, change the record, and raise the TTL again once traffic has moved.
+- **Looking up a name before creating it.** The NXDOMAIN answer stays cached for the negative TTL from the `SOA` record: an hour when that TTL is `3600`. Create the record first, then test it, or test against the authoritative server with `dig @ns1.example.com`.
+- **A CNAME at the apex, or next to other records.** DNS forbids both, and DNS providers reject the record. Use an `A` record at the apex, or the `ALIAS` record type of your provider.
+- **Reading NODATA as NXDOMAIN.** A name with an `A` record and no `AAAA` record answers an `AAAA` question with NOERROR and no records. The name exists. Treat the two answers differently in code and in alerts.
+- **Testing a fresh record only from your own machine.** Your resolver and your operating system cache old answers. Ask a public resolver, `dig @1.1.1.1 status.example.com`, or the authoritative server.
+- **Blocking DNS over TCP in a firewall.** Large answers, such as `TXT` records with long policies or answers signed with DNSSEC, DNS Security Extensions, fall back to TCP. Open port `53` for UDP and TCP.
 
 ## Going Deeper
 
-This section is not written yet.
+- **DNSSEC:** signatures on records that let a resolver prove an answer comes from the zone owner, and the chain of trust from the root key down.
+- **DNS over HTTPS and DNS over TLS:** they encrypt the path from the stub resolver to the recursive resolver, which hides your lookups from the local network.
+- **Anycast:** the same address announced from many places, which is how root servers and public resolvers such as `1.1.1.1` answer in a few milliseconds from anywhere.
+- **CoreDNS and service discovery:** how Kubernetes turns a Service name into a cluster address, and why `ndots` matters for lookups from pods.
+- **Split-horizon DNS:** one name with different answers inside and outside a network, common in companies and a frequent cause of works-on-my-laptop bugs.
 
 ## Further Reading
 
-This section is not written yet.
+- [RFC 1034: Domain Names, Concepts and Facilities](https://www.rfc-editor.org/rfc/rfc1034): the name tree, zones, delegation and how a resolver walks them.
+- [RFC 1035: Domain Names, Implementation and Specification](https://www.rfc-editor.org/rfc/rfc1035): the message format, the header bits and the record types that the Example packs and parses.
+- [RFC 2308: Negative Caching of DNS Queries](https://www.rfc-editor.org/rfc/rfc2308): how resolvers cache NXDOMAIN and NODATA, and the `SOA` rule for how long.
+- [RFC 6891: Extension Mechanisms for DNS](https://www.rfc-editor.org/rfc/rfc6891): EDNS, the record that raises the UDP size limit above 512 bytes.
+- [RFC 9499: DNS Terminology](https://www.rfc-editor.org/rfc/rfc9499): precise definitions of referral, NODATA, apex and the other terms on this page.
+- [The dnsmessage package](https://pkg.go.dev/golang.org/x/net/dns/dnsmessage): the reference for the builder and parser in the Example, maintained by the Go team.
