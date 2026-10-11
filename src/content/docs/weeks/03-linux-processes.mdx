@@ -1,17 +1,22 @@
 ---
 title: "Week 3: Linux and Processes"
+description: Turn your monitor into a long-running Linux process that logs to stdout and shuts down cleanly on SIGTERM, inspect it with ps and /proc, and run it as a systemd service.
 week: 3
 phase: foundations
-hours: [5, 8]
+hours: [6, 8]
 aiStage: 1
 tracks: [operating-systems, storage]
 done:
-  - id: item-1
-    text: "Placeholder item 1: this week is not written yet"
-  - id: item-2
-    text: "Placeholder item 2: this week is not written yet"
-  - id: item-3
-    text: "Placeholder item 3: this week is not written yet"
+  - id: runs-until-sigterm
+    text: Your monitor checks its URL file again every -interval, logs one line per check to stdout, and exits with 0 after SIGTERM or Ctrl+C.
+  - id: signal-tests-pass
+    text: go test -race ./... passes in your-monitor, including the run tests with a fake check and the test that sends SIGTERM, SIGINT and SIGKILL to the built binary.
+  - id: inspect-with-proc
+    text: Given the PID of your running monitor, you can find its parent, command line, environment, user and open file descriptors with ps, lsof and /proc.
+  - id: runs-under-systemd
+    text: Your monitor runs as a systemd service under its own user. journalctl -u shows its checks, and systemctl stop ends it with a stopped line in the journal.
+  - id: explain-sigkill
+    text: You have sent SIGKILL to the running monitor and can explain, from the log and the exit status, what it skips that SIGTERM does not.
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -21,43 +26,542 @@ import AiThisWeek from '../../../components/AiThisWeek.astro';
 import SideLab from '../../../components/SideLab.astro';
 import ReadWith from '../../../components/ReadWith.astro';
 import DoneWhen from '../../../components/DoneWhen.astro';
+import Diagram from '../../../components/Diagram.astro';
+import CodeFrom from '../../../components/CodeFrom.astro';
+import { weekHref, trackHref } from '../../../lib/links';
 
 <WeekHeader />
 
+At the end of <a href={weekHref(2)}>Week 2</a>, `your-monitor` checks a list of URLs once and exits. A monitor has to keep watching. This week, you turn it into a **long-running process**: a program that starts once, checks every URL again at a fixed interval, writes one log line per check, and shuts down cleanly when asked.
+
+To run a program like that, you need to know what Linux keeps for every running program and how to look at it. You learn processes, file descriptors, environment variables, users and signals, then hand your monitor to systemd, the program that starts and stops services on Ubuntu and most other Linux systems. The <a href={trackHref('operating-systems')}>Operating Systems track</a> goes deeper on each idea.
+
 ## Goals
 
-This section is not written yet.
+- Explain processes, PIDs, parents and children, and find them with `ps`, `top` and `/proc`.
+- Redirect stdin, stdout and stderr, and list the open file descriptors of a running process.
+- Explain what SIGINT, SIGTERM, SIGKILL and SIGHUP mean for a service, and send each one with `kill`.
+- Make your monitor check its list every `-interval`, log to stdout, and exit with `0` on SIGTERM.
+- Run your monitor as a systemd service under its own user, and read its log with `journalctl`.
 
 ## Concepts
 
-This section is not written yet.
+### Where to Run the Commands
+
+Linux is the target: from <a href={weekHref(16)}>Week 16</a>, your monitor runs on a Linux server. Every command on this page works in an Ubuntu 24.04 shell. On Ubuntu, use your own terminal.
+
+On macOS, `ps`, `kill`, `lsof` and the shell redirects work in your own terminal. macOS has no `/proc` folder and no systemd, which means you run those parts in Linux:
+
+- For Step 6 and the file descriptor leak in Operate It, a Docker container is enough. Build a Linux binary first, as in the Week 1 side lab, then start Ubuntu with your repository mounted at `/src`:
+
+  ```sh
+  CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) go build -o your-monitor-linux .
+  docker run -it --rm -v "$PWD:/src" -w /src ubuntu:24.04
+  apt-get update && apt-get install -y procps lsof python3
+  ```
+
+  The Ubuntu image ships without `ps`, `lsof` and Python: the last line installs them. Inside the container, you are `root`, and the binary is `./your-monitor-linux`. For a second shell in the same container, find its name with `docker ps` on your Mac and run `docker exec -it <name> bash`.
+
+- For systemd, from Step 7 to the end of Operate It, use a virtual machine (VM): a whole Linux computer that runs inside your Mac. The VM runs every other command on this page too. A container runs one program, not systemd, and `systemctl` in the container stops with `System has not been booted with systemd as init system (PID 1). Can't operate.` Multipass, from Canonical, starts an Ubuntu VM and shares your repository with it:
+
+  ```sh
+  brew install --cask multipass
+  multipass launch 24.04 --name lab
+  multipass mount "$PWD" lab:/home/ubuntu/your-monitor
+  multipass shell lab
+  ```
+
+### Processes, PIDs and Parents
+
+The **kernel** is the core of the operating system: it runs programs, hands out memory and talks to the hardware. A **process** is one running copy of a program, together with everything the kernel tracks for it. Every process has a number, its **process ID** or PID.
+
+Every process also has a **parent**: the process that started it. A Linux process starts a program in two steps. It calls **fork**, which makes a copy of itself, the child. The child then calls **exec**, which replaces its own program with the new one. The child keeps what it copied from the parent: the environment variables, the current folder, the user and the open files. That is why your monitor prints to your terminal: it inherits the terminal from your shell. The first process, PID 1, starts everything else. On Ubuntu, PID 1 is systemd. When a parent exits before its child, the child becomes an **orphan**, and PID 1 adopts it.
+
+<Diagram
+  id="process-tree"
+  title="Two ways your monitor runs: from your shell and as a service"
+  code={`direction: down
+init: "systemd\\nPID 1"
+term: "terminal app\\nPID 2041"
+sh: "bash\\nPID 2050"
+mon: "your-monitor\\nPID 2107"
+svc: "your-monitor\\nPID 812"
+journal: journal
+
+init -> term: starts
+term -> sh: starts
+sh -> mon: fork, exec
+init -> svc: starts from the unit file
+svc -> journal: stdout and stderr
+`}
+  steps={[
+    { hl: ['init'], caption: 'PID 1 starts first, when the machine boots. Every other process descends from it. On Ubuntu, PID 1 is systemd.' },
+    { hl: ['term', 'sh', 'mon', 'term->sh', 'sh->mon'], caption: 'You type ./your-monitor in bash. bash forks a child, and the child execs your binary. The monitor inherits its environment, its current folder and its stdin, stdout and stderr from bash: all three point at your terminal.' },
+    { hl: ['sh', 'mon', 'sh->mon'], caption: 'Ctrl+C in the terminal sends SIGINT to the monitor. Closing the terminal window sends SIGHUP. A monitor started from a terminal ends when you close that terminal.' },
+    { hl: ['init', 'svc', 'journal', 'init->svc', 'svc->journal'], caption: 'As a service, systemd is the parent. No terminal is involved: systemd connects stdout and stderr to the journal, restarts the monitor when it fails, and sends SIGTERM to stop it.' },
+  ]}
+/>
+
+`ps` lists processes. `pgrep -x your-monitor` prints the PID of every process named exactly `your-monitor`. Pass that PID to `ps` and pick the columns:
+
+```txt
+$ ps -o pid,ppid,user,stat,etime,rss,args -p 2107
+    PID    PPID USER     STAT     ELAPSED   RSS COMMAND
+   2107    2050 casey    Sl+        02:13  7952 ./your-monitor -file urls.txt -interval 10s
+```
+
+- `PPID`: the parent PID, here bash.
+- `STAT`: the state. `S` means sleeping: the process waits for a timer or the network, which is where a monitor spends nearly all its time. `R` means running. `l` marks a process with several threads, which every Go program has. `+` marks the foreground program of a terminal.
+- `ELAPSED`: the time since the process started.
+- `RSS`: resident set size, the memory the process holds right now, in KiB.
+
+`ps -ef` lists every process on the machine. `top` shows the busiest processes and refreshes every three seconds. `top -p 2107` watches one. Press `q` to quit. `htop` is a friendlier version with a tree view on the **F5** key: install it with `sudo apt install htop`.
+
+### What the Kernel Keeps for Each Process
+
+`/proc` is a folder that the kernel generates as you read it: nothing in it is on disk. Each running process has a folder named after its PID. `ps` and `top` read their numbers from here, and you can read them directly:
+
+| Path | What it holds |
+| --- | --- |
+| `/proc/<pid>/cmdline` | the command line, with a zero byte between arguments |
+| `/proc/<pid>/status` | the name, state, parent PID, user IDs, thread count and memory |
+| `/proc/<pid>/environ` | the environment variables the process started with |
+| `/proc/<pid>/cwd` and `/proc/<pid>/exe` | links to the current folder and to the binary |
+| `/proc/<pid>/fd/` | one link per open file descriptor |
+| `/proc/<pid>/limits` | the limits on the process, such as `Max open files` |
+
+### Standard Streams and File Descriptors
+
+A **file descriptor**, or fd, is a small number a process uses to refer to something it has open. The kernel keeps a table of them for each process. An fd points at a file, a terminal, a pipe between two programs, or a **socket**: one end of a network connection.
+
+Every process starts with three: `0` is stdin, where it reads input, `1` is stdout, where it writes its results, and `2` is stderr, where it writes messages about itself, as Week 1 showed. Your shell sets these up before it execs a program. A redirect changes where one of them points:
+
+| You type | What the shell does before it starts the command |
+| --- | --- |
+| `cmd > out.log` | points fd `1` at `out.log`, emptying the file first |
+| `cmd >> out.log` | points fd `1` at `out.log`, and writes go to its end |
+| `cmd 2> err.log` | points fd `2` at `err.log` |
+| `cmd > all.log 2>&1` | points fd `1` at `all.log`, then fd `2` at wherever fd `1` points |
+| `cmd < in.txt` | points fd `0` at `in.txt` |
+
+The order matters: `cmd 2>&1 > all.log` points stderr at the terminal, because fd `1` still points there when the shell copies it. A pipe, `cmd1 | cmd2`, connects fd `1` of the first command to fd `0` of the second.
+
+<Diagram
+  id="fd-table"
+  title="The file descriptor table of your monitor during a check, started with > monitor.log"
+  code={`direction: right
+mon: your-monitor
+fd0: "fd 0\\nstdin"
+fd1: "fd 1\\nstdout"
+fd2: "fd 2\\nstderr"
+fd3: "fd 3\\nsocket"
+term: terminal
+log: monitor.log
+site: "example.com:443"
+mon -> fd0 -> term
+mon -> fd1 -> log
+mon -> fd2 -> term
+mon -> fd3
+fd3 -> site: TCP connection
+`}
+/>
+
+Every network connection your monitor opens takes one fd until it closes. A process can hold a limited number of fds, set on the `Max open files` line of `/proc/<pid>/limits`. Once a process reaches it, opening one more file or connection fails with `too many open files`.
+
+That limit is why Week 1 and Week 2 insist on `defer resp.Body.Close()`. The Go HTTP client keeps the connection under a response open for as long as you can still read the body. Close the body, and Go gives the connection back for reuse or closes it. Forget, and each check holds one more socket. A one-shot CLI exits before that matters, because the kernel closes every fd of a process when it exits. A monitor that runs for weeks keeps them. [Operate It](#operate-it) shows the leak.
+
+`lsof -p <pid>` lists the open files of a process, with the type of each one and, for a socket, both addresses and the TCP state.
+
+### Environment Variables
+
+An **environment variable** is a `NAME=value` pair that a process carries. A child gets a copy of the environment of its parent when it starts. Changes in the child never reach the parent.
+
+`env` prints the environment of your shell. `export NAME=value` sets a variable for the shell and every program it starts afterward. `NAME=value ./your-monitor` sets it for that one command only. In Go, `os.Getenv("NAME")` reads one. The Go `time` package reads `TZ` to pick the time zone, and the `log` package prints local time: `TZ=UTC ./your-monitor -file urls.txt` logs in UTC, whatever zone your machine uses. A service under systemd does not inherit your shell environment. It starts with a small one of its own, and the unit file adds variables with `Environment=`.
+
+### Users and Permissions
+
+Every process runs as a user, identified by a number, the UID. `root` is UID `0` and passes every permission check. `id` prints your own user and groups.
+
+Every file has an owner, a group and three sets of permissions. `ls -l` shows them:
+
+```txt
+-rw-r----- 1 root your-monitor 64 Oct 11 14:00 /etc/your-monitor/urls.txt
+```
+
+The first character is the type: `-` for a file, `d` for a folder. Then come three groups of three: `rw-` for the owner `root`, `r--` for the group `your-monitor`, and `---` for everyone else. `r` is read, `w` is write, and `x` is execute, or enter for a folder. `chmod 640 urls.txt` sets the three groups as digits, adding 4 for read, 2 for write and 1 for execute. `chown root:your-monitor urls.txt` sets the owner and the group. `sudo` runs one command as `root`.
+
+A service runs as its own user with only the permissions it needs. When a bug or an attacker takes over your monitor, they get its user: it can read its URL file and nothing of yours, such as your SSH keys.
+
+### Signals
+
+A **signal** is a short notice that the kernel delivers to a process: a number with a name. A process can install a handler that catches most signals and decides what to do. A signal with no handler gets its default action, and for the four below, the default action ends the process.
+
+| Signal | Number | Sent by | What it means for a service |
+| --- | --- | --- | --- |
+| SIGINT | `2` | Ctrl+C in a terminal | The person at the terminal wants it to stop. |
+| SIGTERM | `15` | `kill <pid>`, `systemctl stop`, `docker stop`, Kubernetes | Shut down cleanly: finish or drop the current work, then exit. |
+| SIGKILL | `9` | `kill -9 <pid>`, systemd after its stop timeout, the kernel when memory runs out | The process ends at once. Nothing can catch, block or ignore SIGKILL. |
+| SIGHUP | `1` | the terminal closing | Hang up: the terminal is gone. Many servers, such as nginx, reload their configuration on SIGHUP instead. |
+
+`kill` sends any signal, not only SIGKILL. `kill 2107` sends SIGTERM. `kill -INT 2107`, `kill -HUP 2107` and `kill -9 2107` send the others. `kill -l` lists every signal with its number. When a signal ends a process, the shell reports exit status 128 plus the signal number: `130` after Ctrl+C, `143` after SIGTERM, `137` after SIGKILL and `129` after SIGHUP. A process that catches the signal and exits on its own picks its exit code, as your monitor does with `0`. The pattern of SIGTERM first and SIGKILL later is the same everywhere. `docker stop` waits 10 seconds before SIGKILL. Kubernetes waits 30 seconds by default. systemd waits 90 seconds by default.
+
+<Diagram
+  id="shutdown"
+  title="systemctl stop: SIGTERM, a clean exit, and SIGKILL as the fallback"
+  code={`shape: sequence_diagram
+sd: systemd
+mon: your-monitor
+site: a site
+
+mon -> site: GET, check 1 of 3
+sd -> mon: SIGTERM
+site -> mon: 200 OK
+mon -> sd: exit code 0
+sd -> mon: SIGKILL, only if still running after 90 s
+`}
+  steps={[
+    { hl: ['mon', 'site', 'mon->site'], caption: 'A round of checks is under way. The monitor has sent the first request of three and waits for the answer.' },
+    { hl: ['sd', 'mon', 'sd->mon'], caption: 'You run systemctl stop. systemd sends SIGTERM. The Go runtime catches it and cancels the context your loop watches. Nothing else happens yet: the check in flight carries on.' },
+    { hl: ['site', 'mon', 'sd', 'site->mon', 'mon->sd'], caption: 'The answer arrives, and the monitor logs it. Before the next check, the loop sees the cancelled context, logs the two checks it skips, returns from main and exits with 0. systemd records a clean stop.' },
+    { hl: ['sd', 'mon', 'sd->mon#1'], caption: 'When the process is still running 90 seconds after SIGTERM, systemd sends SIGKILL. The process ends mid-step, with no log line and no cleanup.' },
+  ]}
+/>
+
+### Service Managers
+
+A **service** is a long-running process that the machine runs with no person at a terminal. Something has to start it at boot, restart it when it fails, collect its output and stop it at shutdown. That program is a **service manager**. On Ubuntu, the service manager is systemd, PID 1. Kubernetes plays the same role for containers in <a href={weekHref(15)}>Week 15</a>.
+
+You describe a service to systemd in a **unit file**: a short text file of `Key=value` lines in sections, kept in `/etc/systemd/system`. `systemctl` sends commands to systemd: `start`, `stop`, `restart`, `status`, and `enable` to start the service at every boot.
+
+systemd connects stdout and stderr of a service to the **journal**, its log store, and `journalctl` reads it. That is why your monitor logs to stdout: it needs no log file, no file path and no code to rotate old logs. Docker and Kubernetes collect stdout the same way.
+
+### The Files a Service Touches
+
+A service on Linux reads and writes in a few standard places. The <a href={trackHref('storage')}>Storage track</a> covers disks and filesystems in depth.
+
+| Path | What goes there |
+| --- | --- |
+| `/usr/local/bin` | programs you install by hand, such as your monitor |
+| `/etc/your-monitor` | configuration for one program, such as `urls.txt` |
+| `/etc/systemd/system` | unit files you write |
+| `/var/log/journal` | the journal. On Ubuntu, it survives a reboot. |
+| `/tmp` | scratch files. Ubuntu empties it at every boot. |
 
 ## Build
 
-This section is not written yet.
+By the end of this section, `your-monitor` runs until you stop it, checks its list every `-interval`, logs each check to stdout, and exits with `0` on SIGTERM or **Ctrl+C**. Then it runs as a systemd service. The code comes from the site examples, which the site tests on every change. The folder `examples/go/week03/your-monitor` holds the new `main.go`, its tests and the unit file. It imports the `check` package from the Week 2 example, at `fsp/examples/week02/your-monitor/check`. In your code, the import path stays `github.com/your-user/your-monitor/check`.
+
+```txt
+your-monitor/
+├── go.mod
+├── main.go               flags, signals and the check loop
+├── run_test.go           tests for run with a fake check
+├── signal_test.go        sends signals to the built binary
+├── your-monitor.service  the systemd unit file
+├── urls.txt
+└── check/                unchanged from Week 2
+```
+
+Start a branch first: `git switch main`, `git pull`, then `git switch -c week-03`.
+
+### Step 1: Add an Interval and Log to Stdout
+
+Replace the imports of `main.go`. Four are new: `context`, `log`, `os/signal` and `syscall`.
+
+<CodeFrom file="go/week03/your-monitor/main.go" region="imports" lang="go" title="main.go" />
+
+Then replace `main`. `readList` stays as it is.
+
+<CodeFrom file="go/week03/your-monitor/main.go" region="main" lang="go" title="main.go" />
+
+- `-interval` sets the time from the start of one round of checks to the start of the next. A zero or negative interval exits with `2`, because the ticker in Step 2 panics on one with `non-positive interval for NewTicker`.
+- The `log` package prints each line with the date and time in front. It writes to stderr until you call `log.SetOutput(os.Stdout)`, and the monitor logs to stdout from that line on. The mistakes before that line, a missing or broken URL file, still go to stderr with exit code `2`, as in Week 2: they are about the command, not about the sites.
+- The first log line names the PID, from `os.Getpid()`: the number you need for `ps`, `kill` and `/proc`.
+- `checkOne` is a **function value**: a function stored in a variable, like an arrow function in TypeScript. Its type is `func(string) check.Result`. `run` calls it for each URL, and the tests in Step 4 pass a fake in its place. Week 2 used an interface as its seam. For a single operation, a function value is enough.
+
+### Step 2: Check the List Again Every Interval
+
+<CodeFrom file="go/week03/your-monitor/main.go" region="run" lang="go" title="main.go" />
+
+`time.NewTicker(interval)` starts a **ticker**: it sends the current time on its channel, `ticker.C`, once per interval. A **channel** is a pipe between parts of a Go program, and `<-ticker.C` waits until a value arrives. <a href={weekHref(5)}>Week 5</a> covers channels in depth. `defer ticker.Stop()` releases the ticker when `run` returns.
+
+`select` waits on several channels and runs the case of whichever is ready first. Here, it waits for either the next tick or `ctx.Done()`, the channel that closes when the context is cancelled. A signal that arrives between rounds ends the wait at once.
+
+When a round takes longer than the interval, the ticker drops the ticks it missed, and the next round starts as soon as the last one ends. In a test run for this page, one URL that took 3 seconds to answer, checked with `-interval 2s`, gave a round every 3 seconds.
+
+### Step 3: Shut Down on SIGTERM and SIGINT
+
+Two lines in `main` do the signal handling: the call to `signal.NotifyContext` and `defer stop()`. `signal.NotifyContext` returns a context that it cancels when SIGINT or SIGTERM arrives. While it is registered, the Go runtime catches those two signals instead of applying the default action: the process keeps running, and your code decides when to exit. `stop` removes the handler, and `defer stop()` calls it when `main` returns.
+
+A **context**, from the `context` package, carries a cancellation signal through a program. Week 4 adds deadlines to it. Code that holds a context checks it in two ways. `ctx.Err()` returns `nil` until the context is cancelled, which suits a check between steps. `ctx.Done()` returns a channel that closes on cancellation, which suits a `select`.
+
+`run` checks `ctx.Err()` before each check, not during one. `check.URL` takes no context, which leaves a check in flight to run to its end: at most the `-timeout` of 5 seconds. The rest of that round is skipped and logged. `run` returns, `main` logs `stopped` and returns, and the exit code is `0`. Never call `os.Exit` on this path: it ends the process at once and skips every deferred call. <a href={weekHref(4)}>Week 4</a> passes the context into each check, which cancels the check in flight too.
+
+### Step 4: Test the Loop with a Fake Check
+
+Create `run_test.go` next to `main.go`, with `package main`. A test in `package main` can call the unexported `run`. Start with a helper that captures the log:
+
+<CodeFrom file="go/week03/your-monitor/run_test.go" region="helpers" lang="go" title="run_test.go" />
+
+The first test runs three rounds. The fake check records each URL, and cancels the context on its sixth call, as SIGTERM does. With an interval of 1 ms, the test takes no time:
+
+<CodeFrom file="go/week03/your-monitor/run_test.go" region="rounds" lang="go" title="run_test.go" />
+
+Two more tests cover the shutdown paths: a signal during a check, and a signal between rounds. `time.AfterFunc` calls `cancel` once 50 ms pass, while `run` waits for a tick an hour away:
+
+<CodeFrom file="go/week03/your-monitor/run_test.go" region="shutdown" lang="go" title="run_test.go" />
+
+Break the code to see the tests work. Delete the `if ctx.Err() != nil` block in `run`, and `TestRunSkipsTheRestOfTheRound` fails with all three URLs checked. Put it back.
+
+### Step 5: Test the Shutdown End to End
+
+The tests in Step 4 cancel a context. They do not prove that a real SIGTERM reaches it. Create `signal_test.go`, which builds the binary, starts it against a test server, and sends it a real signal once it has logged two checks:
+
+<CodeFrom file="go/week03/your-monitor/signal_test.go" region="signals" lang="go" title="signal_test.go" />
+
+`exec.CommandContext` builds the command, and sends SIGKILL to it when the 10-second context runs out: a monitor that ignores the signal fails the test instead of hanging it. `cmd.StdoutPipe()` connects the stdout of the child to a pipe that the test reads line by line with a `bufio.Scanner`. `cmd.Process.Signal(tt.sig)` sends the signal, as `kill` does. `cmd.ProcessState.ExitCode()` returns the exit code, or `-1` when a signal ended the process.
+
+The SIGKILL row expects `-1` and no `stopped` line, because no handler runs. This test needs Linux or macOS: Windows has no SIGTERM to send.
+
+Prove the test catches a real mistake. Remove `syscall.SIGTERM` from the `signal.NotifyContext` call, and run `go test ./...`. The SIGTERM row fails with `exit code = -1 (signal: terminated), want 0`. Put it back, and run the whole suite with the race detector:
+
+```sh
+go test -race ./...
+```
+
+### Step 6: Run It and Look Inside
+
+Use three terminals. In the first, start a local site, as in Week 2:
+
+```sh
+python3 -m http.server 8000
+```
+
+Put `http://127.0.0.1:8000/` and `https://example.com` in `urls.txt`. In the second terminal, build and start the monitor with a short interval. The outputs in this step are examples from an Ubuntu 24.04 machine, and your PIDs and numbers differ:
+
+```txt
+$ go build
+$ ./your-monitor -file urls.txt -interval 10s
+2026/10/11 14:21:06 started pid=2107 urls=2 interval=10s
+2026/10/11 14:21:06 up url=http://127.0.0.1:8000/ status=200 latency_ms=1
+2026/10/11 14:21:06 up url=https://example.com status=200 latency_ms=118
+```
+
+In the third terminal, look at it:
+
+```txt
+$ pgrep -x your-monitor
+2107
+$ ls -l /proc/2107/fd
+lrwx------ 1 casey casey 64 Oct 11 14:21 0 -> /dev/pts/0
+lrwx------ 1 casey casey 64 Oct 11 14:21 1 -> /dev/pts/0
+lrwx------ 1 casey casey 64 Oct 11 14:21 2 -> /dev/pts/0
+lrwx------ 1 casey casey 64 Oct 11 14:21 4 -> anon_inode:[eventpoll]
+lrwx------ 1 casey casey 64 Oct 11 14:21 5 -> anon_inode:[eventfd]
+$ tr '\0' ' ' < /proc/2107/cmdline
+./your-monitor -file urls.txt -interval 10s
+$ grep -E '^(State|PPid|Uid|Threads)' /proc/2107/status
+State:	S (sleeping)
+PPid:	2050
+Uid:	1000	1000	1000	1000
+Threads:	8
+```
+
+fds `0`, `1` and `2` all point at your terminal, `/dev/pts/0`. fd `3` held `urls.txt` while `readList` read it, until `defer f.Close()` closed it. The kernel hands out the lowest free number, which gives the socket of the next check fd `3`. `eventpoll` and `eventfd` are how the Go runtime waits for network events. `cmdline` separates arguments with a zero byte, and `tr` turns each one into a space.
+
+Run `ps -o pid,ppid,user,stat,etime,rss,args -p 2107` and `lsof -p 2107` too. `lsof` cuts the command name to nine characters, `your-moni`. Then try the environment: stop the monitor with **Ctrl+C**, start it again as `TZ=UTC ./your-monitor -file urls.txt -interval 10s`, and read `tr '\0' '\n' < /proc/<pid>/environ | grep TZ`.
+
+Now send SIGTERM from the third terminal with `kill <pid>`. The second terminal shows the shutdown:
+
+```txt
+2026/10/11 14:23:40 stopped
+$ echo $?
+0
+```
+
+Start it once more and press **Ctrl+C**. The terminal echoes `^C`, and the log ends with `stopped`: SIGINT takes the same path.
+
+### Step 7: Write the Unit File
+
+Create `your-monitor.service` in your repository:
+
+<CodeFrom file="go/week03/your-monitor/your-monitor.service" region="unit" lang="ini" title="your-monitor.service" />
+
+- `[Unit]`: `Description` names the service in `systemctl status` and the journal. `After` and `Wants` start it once the network is up.
+- `ExecStart`: the command, with an absolute path to the binary. `User` and `Group`: the user the process runs as, which you create in Step 8.
+- `Restart=on-failure` and `RestartSec=5s`: start the process again 5 seconds after it fails, which means a non-zero exit code, a signal such as SIGKILL, or a timeout. `systemctl stop` does not count as a failure.
+- `[Install]`: `WantedBy=multi-user.target` makes `systemctl enable` start the service at every boot.
+
+The unit sets no stop options, which leaves the defaults: SIGTERM, then SIGKILL after 90 seconds.
+
+### Step 8: Run It as a Service
+
+On an Ubuntu machine with systemd, or in the Multipass VM after `cd ~/your-monitor`, install the files. On a Mac, use `your-monitor-linux` in place of `your-monitor` in the second command.
+
+```sh
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin your-monitor
+sudo install -m 755 your-monitor /usr/local/bin/your-monitor
+sudo install -d -m 755 /etc/your-monitor
+sudo install -m 640 -o root -g your-monitor urls.txt /etc/your-monitor/urls.txt
+sudo cp your-monitor.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now your-monitor
+```
+
+`useradd --system` creates a user for a service, with no home folder and no login shell, and a group of the same name. `install` copies a file and sets its mode, owner and group in one command, and `-d` creates a folder instead. The URL file gets mode `640`: `root` can write it, and the `your-monitor` group can only read it. `daemon-reload` makes systemd read the unit files again: run it after every change to a unit file. `enable --now` starts the service at every boot, and starts it now.
+
+Check it. This is an example of the output, trimmed:
+
+```txt
+$ systemctl status your-monitor
+● your-monitor.service - your-monitor uptime checks
+     Loaded: loaded (/etc/systemd/system/your-monitor.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-10-11 14:30:02 UTC; 41s ago
+   Main PID: 812 (your-monitor)
+     CGroup: /system.slice/your-monitor.service
+             └─812 /usr/local/bin/your-monitor -file /etc/your-monitor/urls.txt -interval 30s
+```
+
+Read the log with `journalctl -u your-monitor`. Add `-f` to follow new lines, `-n 20` for the last 20, or `--since "1 hour ago"`. The journal puts its own time, the host name and the PID before each line:
+
+```txt
+Oct 11 14:30:02 lab your-monitor[812]: 2026/10/11 14:30:02 started pid=812 urls=2 interval=30s
+Oct 11 14:30:02 lab your-monitor[812]: 2026/10/11 14:30:02 up url=https://example.com status=200 latency_ms=121
+```
+
+Run `ps -o user,args -p 812` to see the process run as `your-monitor`, not as you. Then stop it with `sudo systemctl stop your-monitor`, and read the last lines of the journal:
+
+```txt
+Oct 11 14:35:10 lab systemd[1]: Stopping your-monitor.service - your-monitor uptime checks...
+Oct 11 14:35:10 lab your-monitor[812]: 2026/10/11 14:35:10 stopped
+Oct 11 14:35:10 lab systemd[1]: your-monitor.service: Deactivated successfully.
+Oct 11 14:35:10 lab systemd[1]: Stopped your-monitor.service - your-monitor uptime checks.
+```
+
+The `stopped` line is the proof that your handler ran. systemd counts an exit caused by SIGTERM as a clean stop too: a program without a handler also shows `Deactivated successfully`. Start the service again with `sudo systemctl start your-monitor`.
+
+### Step 9: Commit and Open a Pull Request
+
+```sh
+git add main.go run_test.go signal_test.go your-monitor.service
+git commit -m "Run the monitor until SIGTERM, log to stdout, add a systemd unit"
+git push -u origin week-03
+```
+
+Open a pull request from `week-03` into `main`, read the diff once more, and merge it. Week 4 starts from this code.
 
 ## Observe It
 
 <ObserveIt>
-This section is not written yet.
+
+A service that runs for weeks fails slowly: a few more open files each hour, a few more megabytes. Measure the process itself, not only the sites it checks. **Count its file descriptors and memory.** With the service running, record both numbers every 10 minutes for an hour:
+
+```sh
+pid=$(systemctl show -p MainPID --value your-monitor)
+ls /proc/$pid/fd | wc -l
+ps -o rss= -p $pid
+```
+
+`systemctl show -p MainPID --value` prints the PID alone. In a healthy monitor, both numbers rise during the first rounds and then stay flat. A count that climbs by one per check is a leak, as in Operate It.
+
+**Read the rounds from the log.** Each round starts one interval after the one before. A gap between rounds longer than the interval means a round took longer than the interval: as in Week 2, one slow site holds up every URL after it. Count the failures in the last hour:
+
+```sh
+journalctl -u your-monitor --since "1 hour ago" | grep -c ' down '
+```
+
 </ObserveIt>
 
 ## Operate It
 
 <OperateIt>
-This section is not written yet.
+
+**SIGKILL.** Run the monitor in a terminal, and send SIGKILL from another one with `kill -9 <pid>`:
+
+```txt
+2026/10/11 14:40:12 up url=http://127.0.0.1:8000/ status=200 latency_ms=1
+Killed
+$ echo $?
+137
+```
+
+`Killed` comes from bash. The exit status is `137`: 128 plus 9. The log stops after the last check, with no `shutting down` line and no `stopped` line. The kernel ends the process without running any of its code: no handler, no deferred calls, no rest of the check in flight. The kernel still closes every fd and frees all memory of the process, which means a leak never outlives it. For your monitor, SIGKILL loses one check and nothing else, because it keeps no state. From <a href={weekHref(8)}>Week 8</a>, the monitor writes to Postgres, and a process that ends mid-write leaves work half done. That is why databases use transactions, and why a service gets SIGTERM and time to finish before SIGKILL.
+
+Under systemd, send it with `sudo systemctl kill --signal=SIGKILL your-monitor`. The journal records the failure, and `Restart=on-failure` brings the process back after 5 seconds with a new PID:
+
+```txt
+your-monitor.service: Main process exited, code=killed, status=9/KILL
+your-monitor.service: Failed with result 'signal'.
+your-monitor.service: Scheduled restart job, restart counter is at 1.
+```
+
+**A shutdown slower than the stop timeout.** `systemctl stop` waits 90 seconds before SIGKILL, and your shutdown waits for at most one check, the 5-second `-timeout`. Keep `-timeout` well under the stop timeout. To see what happens when it is not, run `nc -l 8080` in the VM as a site that never answers, and put `http://127.0.0.1:8080/` on the first line of `/etc/your-monitor/urls.txt`. In `/etc/systemd/system/your-monitor.service`, add `-timeout 60s` to `ExecStart` and `TimeoutStopSec=3s` to the `[Service]` section. Run `sudo systemctl daemon-reload`, restart the service, and stop it during the check. The journal shows `State 'stop-sigterm' timed out. Killing.`, the SIGKILL, and `Failed with result 'timeout'`. Undo all three changes.
+
+**A file descriptor leak.** Comment out `defer resp.Body.Close()` in `check/check.go` and build. In one terminal, start a site that keeps connections open: `python3 -m http.server 8002 -p HTTP/1.1`. In another, check it every second with no timeout:
+
+```sh
+echo http://127.0.0.1:8002/ > leak.txt
+./your-monitor -file leak.txt -interval 1s -timeout 0
+```
+
+In a third terminal, run `ls /proc/$(pgrep -x your-monitor)/fd | wc -l` every few seconds. In a test run for this page, the count went 7, 8, 9, 10, 11 and on, one more per check, and `lsof -p` listed a TCP connection in state `ESTABLISHED` for every check so far. Stop the monitor, lower the limit for this shell with `ulimit -n 16`, and start it again. After 11 checks, a site that is up shows as down:
+
+```txt
+2026/10/11 14:52:53 down url=http://127.0.0.1:8002/ latency_ms=0 error="Get \"http://127.0.0.1:8002/\": dial tcp 127.0.0.1:8002: socket: too many open files"
+```
+
+Close that shell, open a new one, and run the leaky build with the default `-timeout 5s`. The count stops near 10: an `http.Client` with a `Timeout` cancels the request when the timeout runs out, and that closes the connection under an unread body. The timeout hides the leak at one check per second, and a monitor with many URLs still holds one socket per check for 5 seconds. Put the `defer` back. Without it, `go test ./check` fails, through the spy body from Week 2.
+
+**A permission mistake.** Run `sudo chmod 600 /etc/your-monitor/urls.txt`, then `sudo systemctl restart your-monitor`. The monitor runs as `your-monitor`, which can no longer read the file. The journal shows `open /etc/your-monitor/urls.txt: permission denied`, then `Main process exited, code=exited, status=2/INVALIDARGUMENT`. systemd restarts it every 5 seconds, and it fails every time, with `activating (auto-restart)` in `systemctl status`. Run `sudo chmod 640 /etc/your-monitor/urls.txt` to fix it.
+
 </OperateIt>
 
 ## AI This Week
 
 <AiThisWeek>
-This section is not written yet.
+
+Stage 1, explain only: ask an assistant to explain errors, concepts and documentation, and to give hints. Do not paste code it writes into your project.
+
+**Do:** paste the output of `cat /proc/<pid>/status` or `systemctl status your-monitor`, and ask what each line means. Then check two of its answers yourself: `man 5 proc` documents `/proc`, and `man systemd.service` documents the unit file options.
+
+**Do not:** ask it to write `run`, the signal handling or the unit file. Typing them yourself, then watching SIGTERM and SIGKILL take different paths, is how the difference sticks. When you are stuck, ask for a hint, such as which package turns a signal into a context, then read `go doc os/signal.NotifyContext`.
+
 </AiThisWeek>
 
 ## Side Lab
 
-<SideLab title="Optional lab: not written yet">
-This section is not written yet.
+<SideLab title="Make an orphan and a zombie, and watch who cleans up">
+
+When a process exits, the kernel keeps its exit code until the parent reads it with a system call named **wait**. Until then, the dead process is a **zombie**: it holds no memory and no files, only its PID and its exit code. Run this lab on Ubuntu or in the Multipass VM, where systemd is PID 1.
+
+**1. Make an orphan.** Start a `sleep` in the background from a shell that exits at once:
+
+```txt
+$ bash -c 'sleep 300 > /dev/null & echo $!'
+23293
+$ ps -o pid,ppid,stat,args -p 23293
+    PID    PPID STAT COMMAND
+  23293       1 S    sleep 300
+```
+
+The parent bash is gone, and PID 1 adopts the child. On an Ubuntu desktop, a `systemd --user` process adopts it instead.
+
+**2. Make a zombie.** In the next command, a subshell starts `sleep 1` in the background, then replaces itself with `sleep 60` through `exec`. The new program never calls wait, and the `sleep 1` child stays a zombie after it exits:
+
+```txt
+$ (sleep 1 & exec sleep 60) &
+[1] 23114
+$ sleep 2; ps -o pid,ppid,stat,args --ppid $!
+    PID    PPID STAT COMMAND
+  23116   23114 Z    [sleep] <defunct>
+```
+
+`Z` and `<defunct>` mark the zombie. `kill -9 23116` changes nothing: the process has already exited.
+
+**3. Clean up.** Send SIGTERM to the parent with `kill $!`, then run `ps -p 23116`. The zombie is gone: PID 1 adopts it and calls wait at once.
+
+A service that starts child processes must wait for each one, or zombies pile up and hold PIDs. In a container that starts your program as its first process, your program is PID 1 and inherits that job. `docker run --init` starts a small init program as PID 1 to do it instead.
+
 </SideLab>
 
 ## Done When
