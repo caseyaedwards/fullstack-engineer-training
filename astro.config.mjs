@@ -40,7 +40,11 @@ export default defineConfig({
       title: 'Full-Stack Engineer Path',
       sidebar,
       plugins: [starlightLinksValidator()],
-      customCss: ['./src/styles/diagrams.css', './src/styles/custom.css'],
+      customCss: ['./src/styles/theme.css', './src/styles/diagrams.css', './src/styles/custom.css'],
+      // Expressive Code lifts token colours to this contrast against its own theme
+      // background (#23262f in dark mode). The code blocks sit on the lighter nori
+      // surface (--sl-color-gray-6), so 7:1 there keeps every token above 4.5:1 here.
+      expressiveCode: { minSyntaxHighlightingColorContrast: 7 },
     }),
   ],
 });

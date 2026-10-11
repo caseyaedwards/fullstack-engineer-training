@@ -6,9 +6,12 @@
  * follow the site theme with no light/dark duplication here.
  *
  * Roles in D2's default theme: N1 text, N2 secondary text (edge labels),
- * N3-N6 neutral greys, N7 canvas; B1/B2 strokes, B3-B6 container/shape fills
- * (B6 = plain shapes, B4/B5 = nested containers, sequence actors);
- * AA/AB accents.
+ * N3-N6 neutral greys, N7 canvas; B1 shape and edge strokes, B2 sequence
+ * lifelines, B3-B6 container/shape fills (B6 = plain shapes, B4/B5 = nested
+ * containers, sequence actors); AA/AB accents.
+ *
+ * Strokes take the accent green. Lifelines are a quieter mix of the accent and
+ * the page, so the messages between them carry the eye.
  */
 .dg {
   --d2-N1: var(--sl-color-white);
@@ -19,7 +22,7 @@
   --d2-N6: var(--sl-color-gray-6);
   --d2-N7: var(--sl-color-bg);
   --d2-B1: var(--sl-color-accent);
-  --d2-B2: var(--sl-color-accent);
+  --d2-B2: color-mix(in srgb, var(--sl-color-accent) 40%, var(--sl-color-bg));
   --d2-B3: var(--sl-color-gray-5);
   --d2-B4: var(--sl-color-gray-5);
   --d2-B5: var(--sl-color-gray-6);
@@ -66,14 +69,48 @@
   color: var(--sl-color-gray-3);
 }
 
-/* Walkthrough (src/scripts/walkthrough.ts) */
+/*
+ * Walkthrough (src/scripts/walkthrough.ts). A step lights some elements and dims
+ * the rest. Dimmed elements are context, so they fade (opacity) and lose the
+ * accent (neutral strokes), but their labels keep at least 3:1 against the page:
+ * full-strength text at 65% opacity. Lit elements keep full opacity, a thicker
+ * accent stroke, an accent-tinted shape fill and the brightest text colour.
+ */
 .dg .dg-dim {
-  opacity: 0.25;
+  opacity: 0.65;
+}
+
+.dg .dg-dim text {
+  fill: var(--sl-color-gray-2);
+}
+
+.dg .dg-dim :is(rect, path, ellipse, polygon, circle) {
+  stroke: var(--sl-color-gray-4);
+}
+
+/*
+ * D2 draws every arrowhead in a diagram from one shared <marker>, so a rule on
+ * one edge's arrowhead would recolour them all. context-stroke paints each
+ * arrowhead in the stroke of the line that uses it: green when lit, neutral when
+ * dimmed. Browsers without context-stroke keep the accent fill.
+ */
+.dg .dg-svg marker :is(polygon, path) {
+  fill: var(--sl-color-accent);
+  fill: context-stroke;
+  stroke: context-stroke;
 }
 
 .dg .dg-hl :is(rect, path, ellipse, polygon, circle) {
   stroke: var(--sl-color-accent);
-  stroke-width: 2;
+  stroke-width: 2.5;
+}
+
+.dg .dg-hl > .shape > :is(rect, ellipse, polygon, path) {
+  fill: var(--sl-color-accent-low);
+}
+
+.dg .dg-hl text {
+  fill: var(--sl-color-white);
 }
 
 .dg-nav {
@@ -93,14 +130,26 @@
 
 .dg-nav button {
   padding: 0.25rem 0.75rem;
-  border: 1px solid var(--sl-color-gray-4);
+  border: 1px solid var(--sl-color-accent);
   border-radius: 0.25rem;
   background: var(--sl-color-bg-nav);
-  color: var(--sl-color-text);
+  color: var(--sl-color-text-accent);
   cursor: pointer;
 }
 
+.dg-nav button:hover:enabled {
+  background: var(--sl-color-accent-low);
+}
+
+.dg-nav button:focus-visible {
+  outline: 2px solid var(--sl-color-accent);
+  outline-offset: 2px;
+}
+
+/* Disabled reads as inactive through a neutral border and text, not opacity, so its label keeps 4.5:1. */
 .dg-nav button:disabled {
-  opacity: 0.4;
+  border-color: var(--sl-color-gray-5);
+  background: transparent;
+  color: var(--sl-color-gray-3);
   cursor: default;
 }
