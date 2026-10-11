@@ -77,6 +77,7 @@ test('week 16 closes the ports that ufw cannot see and enforces restricted Pod S
   const yaml = blocks('yaml').join('\n');
   assert.match(yaml, /kind: ValidatingAdmissionPolicy\n/);
   assert.match(yaml, /expression: object\.spec\.type == 'ClusterIP'/);
+  assert.ok(yaml.includes('!has(object.spec.externalIPs) || size(object.spec.externalIPs) == 0'), 'the policy must refuse externalIPs');
   assert.match(yaml, /validationActions: \[Deny\]/);
   for (const label of ['enforce: restricted', 'enforce-version: v1.36', 'warn: restricted', 'warn-version: v1.36']) {
     assert.ok(yaml.includes(`pod-security.kubernetes.io/${label}`), `the namespace lacks ${label}`);

@@ -761,8 +761,18 @@ func TestServicesStayClusterIP(t *testing.T) {
 	if policy.Spec.FailurePolicy != "Fail" {
 		t.Errorf("failurePolicy is %q, want Fail", policy.Spec.FailurePolicy)
 	}
-	if v := policy.Spec.Validations; len(v) != 1 || v[0].Expression != "object.spec.type == 'ClusterIP'" {
-		t.Errorf("the policy validates %+v, want object.spec.type == 'ClusterIP'", v)
+	var exprs []string
+	for _, v := range policy.Spec.Validations {
+		exprs = append(exprs, v.Expression)
+	}
+	// The type alone is not enough: a ClusterIP Service with externalIPs
+	// takes traffic for the public address of the VPS, past ufw.
+	want := []string{
+		"object.spec.type == 'ClusterIP'",
+		"!has(object.spec.externalIPs) || size(object.spec.externalIPs) == 0",
+	}
+	if !slices.Equal(exprs, want) {
+		t.Errorf("the policy validates %q, want %q", exprs, want)
 	}
 
 	b, ok := find(objs, "ValidatingAdmissionPolicyBinding", "clusterip-services-only")
@@ -786,9 +796,17 @@ func TestServicesStayClusterIP(t *testing.T) {
 		if o.Kind != "Service" {
 			continue
 		}
-		s := as[struct{ Spec struct{ Type string } }](t, o)
+		s := as[struct {
+			Spec struct {
+				Type        string
+				ExternalIPs []string `yaml:"externalIPs"`
+			}
+		}](t, o)
 		if s.Spec.Type != "" && s.Spec.Type != "ClusterIP" {
 			t.Errorf("Service %s has type %s: the policy refuses it", o.Metadata.Name, s.Spec.Type)
+		}
+		if len(s.Spec.ExternalIPs) > 0 {
+			t.Errorf("Service %s sets externalIPs %v: the policy refuses it", o.Metadata.Name, s.Spec.ExternalIPs)
 		}
 	}
 }
