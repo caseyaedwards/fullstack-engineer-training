@@ -40,7 +40,7 @@ test('week 0 has two inline-SVG diagrams with walkthrough steps', () => {
 });
 
 test('week 0 shows a version check for every tool in the toolchain', () => {
-  for (const cmd of ['git --version', 'go version', 'node --version', 'gh --version', 'curl --version', 'docker --version', 'docker compose version', 'code --version', 'docker run hello-world']) {
+  for (const cmd of ['git --version', 'go version', 'node --version', 'gh --version', 'curl --version', 'gcc --version', 'docker --version', 'docker compose version', 'code --version', 'docker run hello-world']) {
     assert.ok(code.includes(cmd), `no code block shows ${cmd}`);
   }
 });
@@ -55,7 +55,7 @@ test('week 0 creates the repository that Week 1 starts from', () => {
 });
 
 test('week 0 walks through the weekly rhythm: branch, commit, push, pull request, merge, pull', () => {
-  for (const cmd of ['git switch -c week-00', 'git commit -m', 'git push -u origin week-00', 'git switch main', 'git pull', 'git branch -d week-00']) {
+  for (const cmd of ['git switch -c week-00', 'git commit -m', 'git push -u origin week-00', 'git switch main', 'git pull', 'git branch -d week-00', 'git fetch --prune']) {
     assert.ok(code.includes(cmd), `no code block shows ${cmd}`);
   }
   for (const ui of ['Compare & pull request', 'Create pull request', 'Files changed', 'Merge pull request', 'Confirm merge']) {
@@ -71,7 +71,8 @@ test('week 0 links Week 1 and the AI track from its text, with the site base', (
   assert.ok(count('tracks/working/ai-assisted-dev/') >= 3, 'no link to the AI-Assisted Development track in the page text');
 });
 
-test('week 0 sets up what Week 1 relies on: format and organize imports on save, and a running Docker engine', () => {
+test('week 0 sets up what Week 1 relies on: format and organize imports on save, gcc for -race, and a running Docker engine', () => {
+  assert.ok(code.includes('sudo apt install -y gcc'), 'no gcc install for go test -race on Linux');
   assert.match(prose, /format on save/);
   assert.match(prose, /organize imports on save/);
   assert.match(prose, /removes every import that your code does not use/);
@@ -84,5 +85,7 @@ test('week 0 states the AI ladder and points Windows readers to WSL 2', () => {
     assert.ok(prose.includes(stage), `the AI ladder is missing stage ${stage}`);
   }
   assert.match(prose, /WSL 2/);
+  assert.match(prose, /ms-vscode-remote\.remote-wsl/);
+  assert.match(prose, /WSL integration/);
   assert.match(prose, /editor\.inlineSuggest\.enabled/);
 });
