@@ -81,9 +81,9 @@ The alert design comes from the workbook chapter Alerting on SLOs. It judges an 
 | Page | 6 hours | 30 minutes | 6 | 5% |
 | Ticket | 3 days | 6 hours | 1 | 10% |
 
-Budget spent = burn rate × long window ÷ SLO window: 14.4 × 1 hour ÷ 720 hours = 2%. These parameters depend on the share of budget spent, not on the target, which makes them fit any SLO with a 30-day window. A **page** interrupts a person now. A **ticket** waits for working hours. The <TrackLink slug="observability">Observability track</TrackLink> covers the metrics and PromQL underneath.
+Budget spent = burn rate × long window ÷ SLO window: 14.4 × 1 hour ÷ 720 hours = 2%. These parameters depend on the share of budget spent, not on the target, which makes them fit any SLO with a 30-day window. A **page** interrupts a person now. A **ticket** waits for working hours. The <TrackLink slug="observability">Observability track</TrackLink> covers the metrics underneath and PromQL, the query language of Prometheus, the metrics server of the monitor.
 
-A service with little traffic breaks this arithmetic: at 10 requests an hour, one failure is a 10% error ratio and a burn rate of 20 against a 0.5% budget. Probes add a steady floor of valid events, which is why Week 18 sends 8 a minute.
+A service with little traffic breaks this arithmetic: at ten requests an hour, one failure is a 10% error ratio and a burn rate of 20 against a 0.5% budget. Probes add a steady floor of valid events, which is why Week 18 sends eight a minute.
 
 ### Incidents and Roles
 
@@ -114,7 +114,7 @@ The SRE book names triggers for a postmortem: user-visible downtime past a thres
 
 ## Diagrams
 
-The walkthrough follows one incident from the page to the postmortem, with every role filled:
+The walkthrough follows one incident from the page to the postmortem, with every role filled. Alertmanager, the Prometheus program that routes firing alerts to people, sends the page:
 
 <Diagram
   id="incident-flow"
@@ -197,7 +197,7 @@ Divide by `good` instead of `total` in `BudgetLeft`, and the 99,950-of-100,000 c
 
 ## In the Uptime Monitor
 
-<WeekLink n={18} anchor="slis-slos-and-error-budgets">Week 18</WeekLink> builds everything on this page into the monitor, with `promtool` tests for each alert. <WeekLink n={18} anchor="two-slos-for-your-monitor">Two SLOs for Your Monitor</WeekLink> picks the SLIs: status page availability at 99.5%, counted in requests, and check freshness at 99%, counted in 30-second steps. Blackbox exporter probes the status page every 15 seconds through two paths, which covers what the api counter cannot see. <WeekLink n={18} anchor="burn-rate-alerts-on-two-windows">Burn-Rate Alerts on Two Windows</WeekLink> turns the alert table into recording rules and alerts, and <WeekLink n={18} anchor="step-4-unit-test-the-alerts">Step 4</WeekLink> proves with `promtool test rules` that a total outage pages within 5 minutes and a two-minute blip does not page.
+<WeekLink n={18} anchor="slis-slos-and-error-budgets">Week 18</WeekLink> builds everything on this page into the monitor, with tests for each alert in `promtool`, the rule checker that ships with Prometheus. <WeekLink n={18} anchor="two-slos-for-your-monitor">Two SLOs for Your Monitor</WeekLink> picks the SLIs: status page availability at 99.5%, counted in requests, and check freshness at 99%, counted in 30-second steps. Blackbox exporter, a small Prometheus program that sends probes, loads the status page every 15 seconds through two paths, which covers what the api counter cannot see. <WeekLink n={18} anchor="burn-rate-alerts-on-two-windows">Burn-Rate Alerts on Two Windows</WeekLink> turns the alert table into recording rules, which store the result of a PromQL expression as a new series on a schedule, and alert rules, and <WeekLink n={18} anchor="step-4-unit-test-the-alerts">Step 4</WeekLink> proves with `promtool test rules` that a total outage pages within 5 minutes and a two-minute blip does not page.
 
 The incident side follows. <WeekLink n={18} anchor="step-8-on-call-and-the-runbook">Step 8</WeekLink> writes the on-call hours for one person and a runbook section for every alert, mitigation first. <WeekLink n={18} anchor="step-9-run-the-incident-drill">Step 9</WeekLink> runs a drill: you stop Postgres on the live box and play every role at once, commander, operations and communications, with a timeline written as you go. <WeekLink n={18} anchor="step-10-write-the-postmortem">Step 10</WeekLink> writes the blameless postmortem from the template, with prevent, detect and mitigate actions. A test keeps every postmortem on the sections of the template.
 
