@@ -78,6 +78,25 @@ test('figcaption is the last child of every figure', () => {
   assert.ok(flow.indexOf('</ol>') < flow.indexOf('<figcaption>'), 'figcaption must follow the ol');
 });
 
+test('walkthrough script ships a Play control with a Pause label and a step interval', () => {
+  // Astro inlines a small script into the page; a larger one lands in dist/_astro.
+  const dir = join(root, 'dist/_astro');
+  const js =
+    html +
+    readdirSync(dir)
+      .filter((f) => f.endsWith('.js'))
+      .map((f) => readFileSync(join(dir, f), 'utf8'))
+      .join('\n');
+  assert.match(js, /["'`]Play["'`]/, 'walkthrough script has no Play label');
+  assert.match(js, /["'`]Pause["'`]/, 'walkthrough script has no Pause label');
+  assert.match(js, /2500/, 'walkthrough script has no 2.5 s step interval');
+});
+
+test('walkthrough controls are added by script, so the no-JS page has only the step list', () => {
+  const flow = figures.find((f) => /<ol class="dg-steps"/.test(f));
+  assert.doesNotMatch(flow, /<button|Play/, 'static markup must not contain the controls');
+});
+
 test('sequence lifelines carry no data-k', () => {
   const seq = figures.find((f) => !/<ol class="dg-steps"/.test(f));
   assert.doesNotMatch(seq, /data-k="\([^"]* -- \)/);
