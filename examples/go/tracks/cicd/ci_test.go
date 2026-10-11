@@ -37,15 +37,21 @@ type step struct {
 
 // region: checks
 
-// pinned matches an action reference with a version tag that starts with v
-// and a digit, or with a full 40-character commit SHA. A branch, such as
-// @main, or no ref at all, does not match.
-var pinned = regexp.MustCompile(`^[\w.-]+/[\w./-]+@(v\d[\w.-]*|[0-9a-f]{40})$`)
+// pinned matches an action reference to a full 40-character commit SHA.
+// A tag such as @v7, a branch such as @main and a short SHA do not match.
+var pinned = regexp.MustCompile(`^[\w.-]+/[\w./-]+@[0-9a-f]{40}$`)
+
+// release matches the comment that names the release behind a SHA pin.
+var release = regexp.MustCompile(`^# v\d`)
 
 // problems returns every rule that the workflow in src breaks.
 func problems(src []byte) []string {
 	var w workflow
-	if err := yaml.Unmarshal(src, &w); err != nil {
+	var root yaml.Node
+	if err := yaml.Unmarshal(src, &root); err != nil {
+		return []string{err.Error()}
+	}
+	if err := root.Decode(&w); err != nil {
 		return []string{err.Error()}
 	}
 	var out []string
@@ -55,12 +61,8 @@ func problems(src []byte) []string {
 	out = append(out, readOnly("the workflow", w.Permissions, true)...)
 	for name, j := range w.Jobs {
 		out = append(out, readOnly("job "+name, j.Permissions, false)...)
-		for _, s := range j.Steps {
-			if s.Uses != "" && !pinned.MatchString(s.Uses) {
-				out = append(out, fmt.Sprintf("job %s: %s is not pinned to a version tag or a commit SHA", name, s.Uses))
-			}
-		}
 	}
+	out = append(out, pins(&root)...)
 	if !slices.Contains(needs(w.Jobs["build"]), "test") {
 		out = append(out, "job build does not need test")
 	}
@@ -73,18 +75,45 @@ func problems(src []byte) []string {
 	return out
 }
 
-// readOnly checks a permissions block: a mapping in which every scope is
-// read or none. A missing block passes for a job, which then inherits the
-// workflow block, and fails for the workflow, whose token then gets the
-// repository default, which can be read and write.
+// pins walks the YAML tree and checks every uses: value. It must name a
+// full commit SHA, and the comment on the same line must name the release,
+// such as # v7.0.1. The YAML parser keeps that comment on the value node.
+func pins(n *yaml.Node) []string {
+	var out []string
+	if n.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			key, v := n.Content[i], n.Content[i+1]
+			if key.Value != "uses" {
+				continue
+			}
+			switch {
+			case !pinned.MatchString(v.Value):
+				out = append(out, v.Value+" is not pinned to a full commit SHA")
+			case !release.MatchString(v.LineComment):
+				out = append(out, v.Value+" has no release comment, such as # v7.0.1")
+			}
+		}
+	}
+	for _, c := range n.Content {
+		out = append(out, pins(c)...)
+	}
+	return out
+}
+
+// readOnly checks a permissions block: read-all, or a mapping in which every
+// scope is read or none. A missing block passes for a job, which then
+// inherits the workflow block, and fails for the workflow, whose token then
+// gets the repository default, which can be read and write.
 func readOnly(where string, p yaml.Node, required bool) []string {
 	switch {
 	case p.Kind == 0 && !required:
 		return nil
 	case p.Kind == 0:
 		return []string{where + " sets no permissions"}
+	case p.Kind == yaml.ScalarNode && p.Value == "read-all":
+		return nil
 	case p.Kind != yaml.MappingNode:
-		return []string{fmt.Sprintf("%s sets permissions to %q, want a list of read scopes", where, p.Value)}
+		return []string{fmt.Sprintf("%s sets permissions to %q, want read-all or a list of read scopes", where, p.Value)}
 	}
 	var out []string
 	for i := 0; i+1 < len(p.Content); i += 2 {
@@ -149,10 +178,12 @@ func TestChecksCatchMistakes(t *testing.T) {
 	}{
 		{"push only", "on:\n  pull_request:\n", "on:\n  push:\n", "the workflow does not run on pull_request"},
 		{"write token", "  contents: read\n", "  contents: write\n", "the workflow grants contents: write"},
-		{"write-all", "permissions:\n  contents: read\n", "permissions: write-all\n", `the workflow sets permissions to "write-all", want a list of read scopes`},
+		{"write-all", "permissions:\n  contents: read\n", "permissions: write-all\n", `the workflow sets permissions to "write-all", want read-all or a list of read scopes`},
 		{"no permissions", "permissions:\n  contents: read\n", "", "the workflow sets no permissions"},
-		{"branch ref", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "actions/upload-artifact@main", "job build: actions/upload-artifact@main is not pinned to a version tag or a commit SHA"},
-		{"short SHA", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "actions/upload-artifact@043fb46", "job build: actions/upload-artifact@043fb46 is not pinned to a version tag or a commit SHA"},
+		{"branch ref", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "actions/upload-artifact@main", "actions/upload-artifact@main is not pinned to a full commit SHA"},
+		{"tag ref", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "actions/upload-artifact@v7", "actions/upload-artifact@v7 is not pinned to a full commit SHA"},
+		{"short SHA", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "actions/upload-artifact@043fb46", "actions/upload-artifact@043fb46 is not pinned to a full commit SHA"},
+		{"no release comment", "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1", "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a has no release comment, such as # v7.0.1"},
 		{"no needs", "    needs: test\n", "", "job build does not need test"},
 		{"no race", "go test -race ./...", "go test ./...", "job test does not run go test -race ./..."},
 	}
@@ -168,11 +199,11 @@ func TestChecksCatchMistakes(t *testing.T) {
 		})
 	}
 
-	// A job may set its own read-only permissions, needs: takes a list, and a
-	// version tag passes too.
+	// A job may set its own read-only permissions, needs: takes a list, and
+	// read-all is read-only too.
 	ok := strings.Replace(src, "    needs: test\n", "    needs: [test]\n    permissions:\n      contents: read\n", 1)
-	ok = strings.Replace(ok, "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "actions/upload-artifact@v7", 1)
+	ok = strings.Replace(ok, "permissions:\n  contents: read\n", "permissions: read-all\n", 1)
 	if got := problems([]byte(ok)); len(got) != 0 {
-		t.Errorf("a list in needs, a job token of its own and a tag pin give problems %q, want none", got)
+		t.Errorf("a list in needs, a job token of its own and read-all give problems %q, want none", got)
 	}
 }

