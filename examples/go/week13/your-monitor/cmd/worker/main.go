@@ -251,7 +251,7 @@ func logCheck(ctx context.Context, job queue.Job, r check.Result) {
 	slog.InfoContext(ctx, "check", attrs...)
 }
 
-// ms turns d into milliseconds, rounded to a tenth.
+// ms turns d into milliseconds, truncated to a tenth.
 func ms(d time.Duration) float64 {
 	return float64(d.Microseconds()/100) / 10
 }

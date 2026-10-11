@@ -400,7 +400,7 @@ Read the dashboard from the top. The queries are the ones in `your-monitor.json`
 Watch for these patterns:
 
 - **The `error` line rises for every monitor at once.** The worker lost its network or its DNS resolver, not the sites. Compare with the `down` line, which moves per site.
-- **Check p95 sits at or above `-timeout`.** At least one site in twenty never answers, and each of its checks takes the full 5 seconds. The worker histogram has bounds at 5 and 6 seconds for this reason: a timed-out check lands between them. Find it with the `check` spans in Jaeger: search the `worker` service for the tag `check.result=error`.
+- **Check p95 sits at or above `-timeout`.** More than one site in twenty never answers, and each of its checks takes the full 5 seconds. The worker histogram has bounds at 5 and 6 seconds for this reason: a timed-out check lands between them. Find it with the `check` spans in Jaeger: search the `worker` service for the tag `check.result=error`.
 - **API p95 rises on one route only.** Open a slow trace of that route in Jaeger: the SQL span inside it shows whether Postgres takes the time.
 - **`monitor_jobs_oldest_seconds` grows round after round.** The workers fall behind. See [Operate It](#operate-it).
 

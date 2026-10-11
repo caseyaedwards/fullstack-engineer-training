@@ -24,8 +24,8 @@ func newCheckMetrics(reg prometheus.Registerer) *checkMetrics {
 			Help: "Checks run, by result: up, down (the site answered with an error status) or error (no answer).",
 		}, []string{"result"}),
 		duration: prometheus.NewHistogram(prometheus.HistogramOpts{
-			Name:    "monitor_check_duration_seconds",
-			Help:    "Time taken by one check, from the DNS lookup to the end of the body, or to the error.",
+			Name: "monitor_check_duration_seconds",
+			Help: "Time taken by one check, from the DNS lookup to the end of the body, or to the error.",
 			// Bounds at 5 s, the default -timeout, and at 6 s: a check that
 			// times out takes just over 5 s and lands in (5, 6], which keeps
 			// a p95 of timeouts near 5 s instead of anywhere up to 10 s.
