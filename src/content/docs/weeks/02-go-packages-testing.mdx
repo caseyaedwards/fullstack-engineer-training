@@ -1,17 +1,22 @@
 ---
 title: "Week 2: Go Packages, Interfaces and Testing"
+description: Move the URL check into a package of its own, put an interface between it and the network, test it with table-driven tests, and check a whole list of URLs read from a file.
 week: 2
 phase: foundations
-hours: [5, 8]
+hours: [6, 8]
 aiStage: 1
 tracks: [programming, testing]
 done:
-  - id: item-1
-    text: "Placeholder item 1: this week is not written yet"
-  - id: item-2
-    text: "Placeholder item 2: this week is not written yet"
-  - id: item-3
-    text: "Placeholder item 3: this week is not written yet"
+  - id: check-package
+    text: Your monitor has a check package with URL, ParseList and Result, and main.go imports it by its full import path.
+  - id: table-tests-pass
+    text: go test -race ./... passes in your-monitor, with table-driven tests for Result and ParseList that run each row as a t.Run subtest.
+  - id: two-test-doubles
+    text: You have tested check.URL against an httptest server and with a fake Getter, and the fake proves that URL closes the response body.
+  - id: checks-a-file
+    text: Your monitor, run with -file urls.txt, prints one line per URL, exits with 1 when any site is down, and names the line number of every invalid line.
+  - id: explain-interfaces
+    text: Without notes, you can explain how a *http.Client satisfies your Getter interface without naming it, and how a test passes a fake in its place.
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -21,43 +26,536 @@ import AiThisWeek from '../../../components/AiThisWeek.astro';
 import SideLab from '../../../components/SideLab.astro';
 import ReadWith from '../../../components/ReadWith.astro';
 import DoneWhen from '../../../components/DoneWhen.astro';
+import Diagram from '../../../components/Diagram.astro';
+import CodeFrom from '../../../components/CodeFrom.astro';
+import { weekHref, trackHref } from '../../../lib/links';
 
 <WeekHeader />
 
+At the end of <a href={weekHref(1)}>Week 1</a>, `your-monitor` is one `main.go` that checks one URL. This week, you split it in two: a `check` package that does the work, and a thin `main` that reads command-line flags and prints. Then you test the `check` package without touching the real internet, and teach the monitor to read its URLs from a file.
+
+You already know how to design tests: equivalence classes, boundary values, test doubles. This page does not teach those ideas again. It shows how Go expresses them: test files and `go test`, tables of cases, subtests, a real HTTP server inside a test, and interfaces, the Go feature that makes a fake possible. The <a href={trackHref('testing')}>Testing track</a> goes deeper on test design.
+
 ## Goals
 
-This section is not written yet.
+- Split a Go program into packages, and explain modules, import paths and exported names.
+- Define an interface, and explain how a type satisfies it without declaring that it does.
+- Write table-driven tests with `t.Run` subtests, and run them with `go test`, `-run`, `-race` and `-cover`.
+- Test HTTP code against an `httptest` server and against a hand-written fake.
+- Finish with a monitor that checks every URL in a file and reports each invalid line by its number.
 
 ## Concepts
 
-This section is not written yet.
+### Modules, Packages and Import Paths
+
+Week 1 introduced the three layers. This week, you use all of them:
+
+- A **module** is your whole project, named by the first line of `go.mod`: `module github.com/your-user/your-monitor`. The name is the **module path**.
+- A **package** is one folder of `.go` files. Every file in the folder starts with the same `package` line, and the files share one namespace: a function in `list.go` calls a function in `check.go` with no import.
+- An **import path** finds a package: the module path plus the folder. The `check` folder in your module has the import path `github.com/your-user/your-monitor/check`. Standard library packages have short paths, such as `net/http`, because they belong to Go itself.
+
+The `package` line names the package. By convention, the name is the last part of the import path: the files in `check/` start with `package check`. Code that imports the package uses that name as a prefix, as in `check.URL`. The prefix is part of the name every caller reads, which is why Go code avoids stutter: `check.URL` reads well, and `check.CheckURL` repeats itself.
+
+From outside a package, you reach only its **exported** names, the ones that start with a capital letter. Week 1 named the function `checkURL` because it lived in `package main` and nothing else called it. Moved into `check`, it becomes `URL`, exported, because `main` calls it from another package. A lowercase helper such as `valid` stays private: a call to `check.valid` from `main.go` stops the build with `undefined: check.valid`.
+
+Imports run in one direction. `main` imports `check`, and `check` never imports `main`. Go refuses an import cycle at build time, with `import cycle not allowed`. That rule keeps the packages a tree you can read from the top down.
+
+<Diagram
+  id="packages"
+  title="The packages in your-monitor and what each one imports"
+  code={`direction: down
+main: "main.go\\npackage main"
+check: "check/check.go, check/list.go\\npackage check"
+tests: "check/*_test.go\\npackage check_test"
+std: "standard library\\nnet/http, bufio, io, fmt"
+
+main -> check: "imports .../your-monitor/check"
+tests -> check: imports
+main -> std
+check -> std
+`}
+  steps={[
+    { hl: ['main', 'check', 'main->check'], caption: 'main.go imports the check package by its import path: the module path plus the folder name. It calls only exported names: check.URL, check.ParseList and check.Result.' },
+    { hl: ['check', 'std', 'check->std'], caption: 'The check package imports what it needs from the standard library by short paths: net/http for requests, bufio and io to read the URL file.' },
+    { hl: ['tests', 'check', 'tests->check'], caption: 'The test files sit in the check folder but declare package check_test. They import check exactly as main does, which makes them black-box tests: they see only the exported names.' },
+    { hl: ['main', 'std', 'main->std'], caption: 'main keeps the parts that touch the outside world: command-line flags, opening the file, printing and the exit code. Everything worth testing lives in check.' },
+  ]}
+/>
+
+### Methods
+
+A **method** is a function attached to a type. In `func (r Result) Up() bool`, the extra parameter before the name, the **receiver**, names the value the method works on. Call it as `r.Up()`, like a method on a TypeScript class. Go has no classes: any type you define can have methods, and each method is declared next to the type, not inside a class body. A receiver written `(r Result)` gets a copy of the value. A receiver written with a pointer, such as `(b *spyBody)`, works on the original and can change it. You write one of each this week.
+
+### Interfaces
+
+An **interface** type lists methods. Any type that has those methods, with the same names, parameters and results, **satisfies** the interface. The type never mentions the interface: Go has no `implements` keyword. TypeScript works the same way, because it also compares shapes instead of declarations. Two differences matter. A Go interface lists only methods, never fields. And the Go compiler checks the match where you pass or assign a value, and stops the build when a method is missing.
+
+You have used one interface since Week 1: `error` is an interface with one method, `Error() string`. Three more come up this week:
+
+| Interface | Method | Types that have it |
+| --- | --- | --- |
+| `io.Reader` | `Read(p []byte) (n int, err error)` | an open file, a response body, `strings.NewReader("...")` |
+| `fmt.Stringer` | `String() string` | your `Result`: `fmt.Println` calls `String` to print it |
+| `check.Getter` | `Get(url string) (*http.Response, error)` | `*http.Client`, and the fake in your tests |
+
+`Getter` is yours. The `check` package defines it, and the `net/http` package has never heard of it. `*http.Client` satisfies it anyway, because its `Get` method has exactly that signature. Go code defines a small interface like this one where it is used, not where it is implemented, with only the methods the user needs. `check.URL` needs one method from a client, which makes `Getter` one method long.
+
+That one change makes `check.URL` testable without a network. In Week 1, `checkURL` took a `*http.Client`, a concrete type: only a real client fits. `URL` takes a `Getter`, and any value with the right `Get` method fits.
+
+<Diagram
+  id="getter"
+  title="One interface, two types that satisfy it"
+  code={`direction: right
+url: check.URL
+getter: "Getter\\nGet(url) (*http.Response, error)"
+client: "*http.Client\\nfrom main.go"
+fake: "fakeGetter\\nfrom check_test.go"
+net: the network
+
+url -> getter: calls Get
+client -> getter: satisfies
+fake -> getter: satisfies
+client -> net: real request
+`}
+  steps={[
+    { hl: ['url', 'getter', 'url->getter'], caption: 'check.URL asks for a Getter and calls its Get method. It knows nothing else about the value it receives.' },
+    { hl: ['client', 'getter', 'net', 'client->getter', 'client->net'], caption: 'In the monitor, main passes a *http.Client with a timeout. Its Get method sends a real request over the network. The compiler accepts it because the method signature matches.' },
+    { hl: ['fake', 'getter', 'fake->getter'], caption: 'In a test, you pass a fakeGetter: a small struct whose Get method returns the response or error the test puts in it. There is no network and no waiting, and the test controls every detail of the response.' },
+  ]}
+/>
+
+### How Go Runs Tests
+
+Tests live in files whose names end in `_test.go`, next to the code they test. `go build` ignores those files. `go test` compiles them together with the package into a separate test binary, runs it, and reports the result. Nothing needs installing: the `testing` package in the standard library is the framework.
+
+A test is a function whose name starts with `Test` and that takes one parameter, `t *testing.T`. There is no `expect` and no assertion library. You compare with a plain `if`, and report a problem through `t`:
+
+- `t.Errorf`: records a failure with a message and carries on, to report every broken check in one run.
+- `t.Fatalf`: records a failure and stops the current test at once. Use it when the rest of the test makes no sense, such as after an unexpected error.
+
+By convention, the message names what you got and what you wanted: `Status = 404, want 200`.
+
+A test file declares one of two packages. `package check` puts the tests inside the package: they can call unexported names such as `valid`, which makes them white-box tests. `package check_test` makes them a separate package that imports `check` as any caller does: black-box tests. This page uses `check_test`, because the exported names are the contract that `main` relies on.
+
+`go test ./...` tests every package in and below the current folder, and runs several packages at once. Inside one package, the tests run one at a time, in the order they appear in the source files. Before it runs them, `go test` also runs a short list of `go vet` checks, which catch mistakes such as a `Printf` verb that does not match its argument. When nothing has changed since a passing run, `go test` prints the stored result with `(cached)` instead of running the tests again.
+
+### Table-Driven Tests and Subtests
+
+Most Go tests are **table-driven**: a slice of cases, one struct per row, and one loop that runs the same checks on each row. It is the Go form of `test.each` in Vitest and Jest. A new case is a new row, and the table reads like the equivalence classes and boundary values you design anyway.
+
+Inside the loop, `t.Run(name, func(t *testing.T) { ... })` runs each row as a **subtest**. A subtest reports on its own line, fails on its own, and runs on its own when you ask for it by name. A `t.Fatalf` inside a subtest stops only that row: the loop carries on with the next one.
+
+The rows use an anonymous struct type: `[]struct{ name string; ... }` declares the type and the slice in one go, because no other code needs the type. Each pass of the loop gets its own copy of the loop variable `tt`, which is why the function passed to `t.Run` can use it safely. Go 1.22 made that the rule. Older Go code copies the variable first, with `tt := tt`.
+
+### Test Doubles: Test Servers and Fakes
+
+This week tests HTTP code in two ways. The `net/http/httptest` package starts a real HTTP server inside your test process, on `127.0.0.1` and a free port that the operating system picks. `srv.URL` holds its address, such as `http://127.0.0.1:38417`. Your code sends real requests over a real connection, and the test decides what the server answers. The tests run in milliseconds and need no internet.
+
+A **fake** is a type you write that satisfies an interface, here `Getter`. Go programmers write fakes by hand: a struct and one method, with no mocking library. A fake reaches cases a server cannot. It returns an error without waiting for a timeout, and it hands back a response body that records whether your code closed it, which is the leak Week 1 warns about.
+
+Two methods of `t` keep test helpers short:
+
+- `t.Helper()`: marks a function as a test helper. When a check inside it fails, the failure message names the line in your test that called the helper, not the line inside the helper.
+- `t.Cleanup(f)`: runs `f` after the test and all its subtests finish. A helper that starts a server registers `srv.Close` with it, and the caller cannot forget to stop the server.
 
 ## Build
 
-This section is not written yet.
+By the end of this section, `your-monitor` has a `check` package with its tests, and a `main.go` that reads a list of URLs from the file named by `-file`, checks each one in turn and prints one line per URL. <a href={weekHref(3)}>Week 3</a> turns it into a process that runs for days.
+
+The code comes from the site examples, which the site tests on every change. The example folder `examples/go/week02/your-monitor` mirrors your repository, with one difference: the examples live in a module named `fsp/examples`, which gives them the import path `fsp/examples/week02/your-monitor/check`. In your code, the path is `github.com/your-user/your-monitor/check`, with your GitHub user name in place of `your-user`.
+
+```txt
+your-monitor/
+├── go.mod          module github.com/your-user/your-monitor
+├── main.go         reads -file, checks each URL, prints one line each
+├── urls.txt        the URLs to check
+└── check/
+    ├── check.go        Getter, Result and URL
+    ├── check_test.go
+    ├── list.go         ParseList
+    ├── list_test.go
+    └── testdata/
+        └── urls.txt    a URL file for the tests
+```
+
+Start a branch first, as every week: `git switch main`, `git pull`, then `git switch -c week-02`.
+
+### Step 1: Move the Check Into Its Own Package
+
+Create the folder `check` and the file `check/check.go`. Start it with a comment for the package, the package line and the imports:
+
+<CodeFrom file="go/week02/your-monitor/check/check.go" region="imports" lang="go" title="check/check.go" />
+
+Then add the interface:
+
+<CodeFrom file="go/week02/your-monitor/check/check.go" region="getter" lang="go" title="check/check.go" />
+
+A comment directly above a declaration is its **doc comment**. `go doc ./check Getter` prints it, and the VS Code Go extension shows it when you hover over the name. Start each one with the name it describes.
+
+Now move `checkURL` from `main.go` into `check.go`, and change it into this:
+
+<CodeFrom file="go/week02/your-monitor/check/check.go" region="url" lang="go" title="check/check.go" />
+
+Four things change from Week 1:
+
+- The name: `checkURL` becomes `URL`, exported, and callers write `check.URL`.
+- The client: the parameter type changes from `*http.Client` to `Getter`.
+- The URL parameter: `url` becomes `target`. The `check` package also uses the standard `net/url` package, in `list.go`. In a file that imports `net/url`, a parameter named `url` hides the package inside its function, and a call to `url.Parse` there fails to compile. The name `target` keeps `url` free for the package everywhere in `check`.
+- The results: three separate values become one `Result`. A list of checks needs one value per URL that holds everything about that check. <a href={weekHref(4)}>Week 4</a> adds the timing of each network step to the same result.
+
+### Step 2: Give Result Two Methods
+
+Add the `Result` type above `URL`:
+
+<CodeFrom file="go/week02/your-monitor/check/check.go" region="result" lang="go" title="check/check.go" />
+
+`Up` holds the rule from Week 1 in one place: a response arrived, and its status is below `400`.
+
+`String` builds the same `key=value` line that Week 1 prints, with `fmt.Sprintf`, which formats like `fmt.Printf` and returns the text instead of printing it. A `switch` with no value after it runs the first `case` whose condition is true, like a chain of `if` and `else if`. Go never falls through to the next case, and needs no `break`.
+
+Because `Result` has a `String() string` method, it satisfies `fmt.Stringer`. `fmt.Println(result)` and the `%v` verb both call `String` for you.
+
+Check that the package compiles: `go build ./...` builds every package in the module and prints nothing when it succeeds. `main.go` still has its own `checkURL` for now. That is fine, because `main` does not import `check` yet.
+
+### Step 3: Write a Table Test for Result
+
+Create `check/check_test.go`. These are the imports of the finished file:
+
+<CodeFrom file="go/week02/your-monitor/check/check_test.go" region="imports" lang="go" title="check/check_test.go" />
+
+The last import is your own package, by its import path: in your file, write `github.com/your-user/your-monitor/check`. Go refuses an import the file does not use yet: start with `errors`, `testing`, `time` and your `check` package, and add the others in Steps 4 and 5. When you save, the VS Code Go extension adds a standard library import that the code uses and removes one it does not. Now add the test:
+
+<CodeFrom file="go/week02/your-monitor/check/check_test.go" region="table" lang="go" title="check/check_test.go" />
+
+The rows cover the classes from Week 1, plus the boundary at `400` from both sides. `t.Run` receives the row name and a function that checks one row. Run the tests from the folder that holds `go.mod`:
+
+```txt
+$ go test ./...
+?   	github.com/your-user/your-monitor	[no test files]
+ok  	github.com/your-user/your-monitor/check	0.007s
+```
+
+`go test` reports per package. The `main` package has no tests, and `check` passes.
+
+The `-run` command-line flag takes a regular expression and runs only the tests whose names match it. A `/` in the pattern separates the test name from the subtest name. Add `-v`, for verbose, to list each test as it runs:
+
+```txt
+$ go test -v -run 'TestResult/400' ./check
+=== RUN   TestResult
+=== RUN   TestResult/400_is_the_first_status_that_counts_as_down
+--- PASS: TestResult (0.00s)
+    --- PASS: TestResult/400_is_the_first_status_that_counts_as_down (0.00s)
+PASS
+ok  	github.com/your-user/your-monitor/check	0.007s
+```
+
+A subtest has the full name `TestResult/` plus the row name, with each space turned into `_`. Run `go test -v ./check` to list them all.
+
+Break the code once to see a failure: change `r.Status < 400` in `Up` to `r.Status <= 400`, and run `go test ./check`. Only the `400` row fails, and its message names the row and the value. Put the `<` back.
+
+### Step 4: Test URL Against a Real Server
+
+Add a helper that starts a test server, and two tests that use it:
+
+<CodeFrom file="go/week02/your-monitor/check/check_test.go" region="server" lang="go" title="check/check_test.go" />
+
+`newServer` builds the server from an `http.HandlerFunc`: a function that receives each request and writes the response. The handler waits for `delay`, then writes the status. A `select` statement waits for whichever comes first: the delay running out, or the client giving up. With that second case, the timeout test finishes in 100 ms instead of waiting out the full 10 seconds.
+
+`t.Helper()` and `t.Cleanup(srv.Close)` are the two methods from the Concepts section. Each subtest starts its own server, and the server stops when that subtest ends.
+
+These tests pass a real `*http.Client` to `check.URL`. That the file compiles is the first proof that `*http.Client` satisfies `Getter`.
+
+### Step 5: Test URL with a Fake
+
+A test server cannot tell you whether `URL` closed the response body. A fake can. Add it to `check_test.go`:
+
+<CodeFrom file="go/week02/your-monitor/check/check_test.go" region="fake" lang="go" title="check/check_test.go" />
+
+`fakeGetter` satisfies `Getter` with one method, `Get`, which returns whatever the test put in its fields. Its parameter `url` goes unused, which Go allows for parameters.
+
+`spyBody` is the response body. The `Body` field of `http.Response` has the type `io.ReadCloser`, an interface with two methods: `Read` and `Close`. `spyBody` gets `Read` through **embedding**: a field with a type and no name, here `io.Reader`, whose methods become methods of the struct. It adds its own `Close`, which records the call. In test-double terms, `fakeGetter` is a stub and `spyBody` is a spy.
+
+`Close` has a pointer receiver, `(b *spyBody)`, because it changes the struct. That is also why the test creates the body with `&spyBody{...}`. Pass a `spyBody` value instead, and the build stops with `spyBody does not implement io.ReadCloser (method Close has pointer receiver)`. The compiler checks the interface where you use the value, and names the missing piece. Rename the `Get` method of `fakeGetter` to `Fetch` to see the other common message: `fakeGetter does not implement "github.com/your-user/your-monitor/check".Getter (missing method Get)`. Then put both back.
+
+Now prove the spy works: delete `defer resp.Body.Close()` from `URL`, and run `go test ./check`. `TestURLClosesTheBody` fails with `URL returned without closing the response body`. Put the line back.
+
+### Step 6: Parse the URL File
+
+The URL file has one URL per line. `ParseList` skips blank lines and lines that start with `#`, and reports every line that is not an `http` or `https` URL with its line number. Create `check/list.go`:
+
+<CodeFrom file="go/week02/your-monitor/check/list.go" region="imports" lang="go" title="check/list.go" />
+
+<CodeFrom file="go/week02/your-monitor/check/list.go" region="parse" lang="go" title="check/list.go" />
+
+`ParseList` takes an `io.Reader`, not a file name. `main` passes it an open file, and the tests pass `strings.NewReader`, which reads from a string. Neither caller needs a change to `ParseList`, and the tests need no files on disk.
+
+- `bufio.NewScanner(r)`: wraps the reader. Each call to `scanner.Scan()` reads the next line, and returns `false` at the end of the input. `scanner.Text()` returns the line without its line ending, whether that is `\n` or the `\r\n` of a Windows file.
+- `for n := 1; scanner.Scan(); n++`: counts lines from `1` while it reads, to name them in errors.
+- `strings.TrimSpace`: removes spaces, tabs and other white space at both ends. A comment after a URL on the same line does not work: `https://example.org # main site` has a space inside, and `url.Parse` rejects it. Put comments on their own lines.
+- `scanner.Err()`: reports a read error after the loop ends. The scanner raises one error of its own: it refuses a line longer than 64 KiB with `bufio.Scanner: token too long`.
+- `errors.Join(errs...)`: combines every line error into one `error` whose message has one line per error. The `...` passes the slice as separate arguments. The caller gets every bad line in one run, not only the first.
+- `valid`: parses the line with `url.Parse` from `net/url`, and accepts it when it has an `http` or `https` scheme and a host. `example.com`, `ftp://example.com` and `https://` all fail.
+
+When the error is not `nil`, `ParseList` returns a `nil` slice. That is the Go convention: a caller checks the error first, and ignores the other results when it is set.
+
+### Step 7: Test ParseList with a Table
+
+Create `check/list_test.go` with the imports `os`, `slices`, `strings`, `testing` and your `check` package. Add a helper that compares an error with the message you expect, then the table:
+
+<CodeFrom file="go/week02/your-monitor/check/list_test.go" region="helper" lang="go" title="check/list_test.go" />
+
+<CodeFrom file="go/week02/your-monitor/check/list_test.go" region="parse" lang="go" title="check/list_test.go" />
+
+The rows read as a specification of the file format, which is what a good table does. `slices.Equal` compares two slices element by element, and treats a `nil` slice and an empty one as equal. `70_000` is `70000`: Go allows `_` between digits to make long numbers easier to read.
+
+See what `t.Helper()` does. Change the `wantErr` of the `missing scheme` row to `line 3`, and run `go test ./check`:
+
+```txt
+--- FAIL: TestParseList (0.00s)
+    --- FAIL: TestParseList/missing_scheme (0.00s)
+        list_test.go:84: error = "line 2: \"example.org\" is not an http or https URL"
+            want    "line 3: \"example.org\" is not an http or https URL"
+```
+
+In this run, line `84` is the line in `TestParseList` that calls `assertError`. Delete the `t.Helper()` call and run it again: the failure now points at line `22`, the `t.Fatalf` inside the helper, which is the same line for every failing row. Put both back.
+
+Last, test with a real file. Create `check/testdata/urls.txt`:
+
+```txt
+# Sites for TestParseListReadsAFile.
+https://example.com
+
+# The health endpoint answers faster than the home page.
+https://example.org/health
+```
+
+<CodeFrom file="go/week02/your-monitor/check/list_test.go" region="file" lang="go" title="check/list_test.go" />
+
+`go test` runs the tests of each package inside that package folder, which is why the relative path `testdata/urls.txt` works. The Go tools ignore any folder named `testdata`, which makes it the standard place for test input. An open `*os.File` has a `Read` method, and it satisfies `io.Reader` the same way `strings.NewReader` does.
+
+### Step 8: Rewrite main.go
+
+Replace `main.go`. The old `checkURL` goes, because it now lives in `check`. The imports become:
+
+```go
+package main
+
+import (
+	"flag"
+	"fmt"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/your-user/your-monitor/check"
+)
+```
+
+Go style puts standard library imports in one group, and other imports in a second group below it, after a blank line. `gofmt` sorts each group. Then add `main` and the function that reads the file:
+
+<CodeFrom file="go/week02/your-monitor/main.go" region="main" lang="go" title="main.go" />
+
+<CodeFrom file="go/week02/your-monitor/main.go" region="read" lang="go" title="main.go" />
+
+- `-file` replaces `-url`. The timeout now applies to each check on its own.
+- `readList` opens the file with `os.Open`, which returns an `*os.File`, and passes it to `check.ParseList` as an `io.Reader`. `defer f.Close()` closes the file when `readList` returns.
+- A file that cannot be opened or parsed, or that holds no URLs, exits with `2`, the same as a missing command-line flag: the command is wrong, not a site. Nothing gets checked.
+- The loop checks each URL in turn and prints its line through `String`. It counts the sites that are down, and exits with `1` when there is at least one.
+
+Create `urls.txt` next to `go.mod` with two or three sites and a comment line:
+
+```txt
+# Sites your monitor checks, one URL per line.
+https://example.com
+https://example.org
+```
+
+### Step 9: Run Everything
+
+Run the full suite with the race detector and coverage:
+
+```txt
+$ go test -race -cover ./...
+	github.com/your-user/your-monitor		coverage: 0.0% of statements
+ok  	github.com/your-user/your-monitor/check	1.130s	coverage: 100.0% of statements
+```
+
+`-race` builds the test binary with the **race detector**, which watches every memory access while the tests run. It fails a test when two goroutines, functions that run at the same time, touch the same memory and at least one of them writes. Your code starts no goroutines of its own yet, but `net/http` and `httptest` start several. The detector finds a race only in code that a test runs, which is why you run it with every test run, not once. [Operate It](#operate-it) shows it catching a bug in test code.
+
+`-cover` reports **statement coverage**: the share of statements that at least one test runs. `main` shows `0.0%` because it has no tests. That is a deliberate trade: `main` holds only the wiring, and everything with logic lives in `check`, at `100%`.
+
+Then build and run the monitor. Your numbers differ from this example:
+
+```txt
+$ go build
+$ ./your-monitor -file urls.txt
+up url=https://example.com status=200 latency_ms=118
+up url=https://example.org status=200 latency_ms=97
+$ echo $?
+0
+```
+
+### Step 10: Commit and Open a Pull Request
+
+```sh
+git add main.go urls.txt check/
+git commit -m "Move the check into a package and check a list of URLs from a file"
+git push -u origin week-02
+```
+
+Open a pull request from `week-02` into `main`, read the diff once more, and merge it. Week 3 starts from this code.
 
 ## Observe It
 
 <ObserveIt>
-This section is not written yet.
+
+**Watch your tests.** `go test -v` prints the time of every test and subtest. Find the slowest one:
+
+```sh
+go test -v -count=1 ./check | grep -- '--- PASS'
+```
+
+`TestURLGivesUpAtTheClientTimeout` takes `0.10s`, the length of its client timeout. The others finish in a few milliseconds. A test that waits for real time is the first place a suite grows slow. Keep such waits short, as this one does with 100 ms, and use a fake when the code under test can skip the wait.
+
+**Watch what the tests miss.** Write a coverage profile, then list it per function: `go test -coverprofile=cover.out ./check`, then `go tool cover -func=cover.out`. Every function in `check` shows `100.0%`.
+
+Delete the `a line longer than the scanner buffer` row, and run both commands again: `ParseList` drops to `93.8%`. `go tool cover -html=cover.out` opens the code in your browser with each statement colored, and the `return nil, err` after `scanner.Err()` shows in red. Put the row back.
+
+Now delete the `399` and `400` rows of `TestResult` instead. Coverage stays at `100.0%`, because the `503` row runs the same statements. The boundary is no longer tested, and the number does not show it. Coverage tells you which lines ran, not which behaviors you checked. Put the rows back, and add `cover.out` to `.gitignore`.
+
+**Watch the monitor.** The checks run one after the other, which makes the run time of the whole list the sum of every check. Time it with one silent site in the list. Start `nc -l 8080` in one terminal, as in Week 1. In a second terminal, run `python3 -m http.server 8000`, a small web server that ships with Python and serves the current folder on port `8000`. Then put four local URLs in `local.txt` and check them:
+
+```txt
+$ cat local.txt
+http://127.0.0.1:8000/
+http://127.0.0.1:8080/
+http://127.0.0.1:8000/missing
+http://127.0.0.1:1/
+$ time ./your-monitor -file local.txt -timeout 2s
+up url=http://127.0.0.1:8000/ status=200 latency_ms=5
+down url=http://127.0.0.1:8080/ latency_ms=2000 error="Get \"http://127.0.0.1:8080/\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"
+down url=http://127.0.0.1:8000/missing status=404 latency_ms=5
+down url=http://127.0.0.1:1/ latency_ms=0 error="Get \"http://127.0.0.1:1/\": dial tcp 127.0.0.1:1: connect: connection refused"
+
+real	0m2.016s
+```
+
+This is bash output. In zsh, the default shell on macOS, read the number before the word `total`. The real time is the sum of the four latencies: the silent site holds the two checks after it for the full 2 seconds. With 100 URLs and a 5-second timeout, ten silent sites add 50 seconds to every run. <a href={weekHref(5)}>Week 5</a> runs the checks at the same time instead.
+
 </ObserveIt>
 
 ## Operate It
 
 <OperateIt>
-This section is not written yet.
+
+**A broken URL file.** A monitor that skips a mistyped line checks fewer sites than you think, and nobody notices. Yours refuses the whole file instead:
+
+```txt
+$ cat bad.txt
+# Sites your monitor checks
+https://example.com
+example.org
+
+https://example.net # backup
+ftp://example.com
+$ ./your-monitor -file bad.txt
+bad.txt:
+line 3: "example.org" is not an http or https URL
+line 5: "https://example.net # backup" is not an http or https URL
+line 6: "ftp://example.com" is not an http or https URL
+$ echo $?
+2
+```
+
+You get every bad line, with its number, in one run. The comment on line 1 and the blank line 4 count toward the numbers, which makes them match the line numbers in your editor. The exit code `2` tells a script that the configuration is wrong, which is a different problem from a site that is down.
+
+The file goes wrong in other ways too, each with exit code `2`:
+
+| What you see | What it means |
+| --- | --- |
+| `open urls.txt: no such file or directory` | The path is wrong, or you run the binary from another folder: a relative path starts from the current folder |
+| `urls.txt: no URLs to check` | The file holds only comments and blank lines |
+| `urls.txt:` and `bufio.Scanner: token too long` | One line is longer than 64 KiB: the file is not a URL list |
+| `missing -file` and the usage text | The command has no `-file` command-line flag |
+
+**A pass that hides a failure.** `go test` caches a passing result, and prints `(cached)` when neither the code nor the files the tests read have changed. A test that calls a real site, such as `https://example.com`, depends on something outside the code: the site goes down, and the cache keeps showing the old pass. Run `go test -count=1 ./...` to run every test for real, and keep the tests in `check` free of the internet, as they are now. `-count=20` runs every test 20 times, which flushes out a test that fails one run in ten.
+
+**A server that stops before its subtests.** Call `t.Parallel()` as the first line of a subtest, and the subtests of that test run at the same time, after the parent test function returns. Add this test to `check_test.go`. It looks correct:
+
+```go
+func TestURLInParallel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+	for _, name := range []string{"first", "second", "third"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got := check.URL(&http.Client{Timeout: time.Second}, srv.URL)
+			if !got.Up() {
+				t.Errorf("got %v, want up", got)
+			}
+		})
+	}
+}
+```
+
+Every subtest fails, with a line that ends in `connect: connection refused", want up`. The `defer` runs when the parent function returns, and that happens before the parallel subtests start: the server is already closed. Replace `defer srv.Close()` with `t.Cleanup(srv.Close)`, which waits for every subtest, and the test passes. Note that `%v` prints the `Result` through its `String` method.
+
+**A data race in test code.** Keep the parallel test, declare `checked := 0` before the loop, and add `checked++` after the `check.URL` call in the subtest. `go test ./check` passes. `go test -race ./check` fails with `WARNING: DATA RACE`, two stack traces that both point at the `checked++` line, and `race detected during execution of test`. Three subtests write the same variable at the same time. Without `-race`, nothing reports it: the test passes, and Go gives no guarantee about the final count. Delete the test when you are done.
+
 </OperateIt>
 
 ## AI This Week
 
 <AiThisWeek>
-This section is not written yet.
+
+Stage 1, explain only: ask an assistant to explain errors, concepts and documentation, and to give hints. Do not paste code it writes into your project.
+
+**Do:** write the rows of your `TestParseList` table yourself first. Then paste the table and the file format rules, and ask which equivalence classes or boundaries the rows miss. Write the rows for the gaps yourself, and check each claim by running the test. Or paste a compiler message such as `method Close has pointer receiver` and ask what it means.
+
+**Do not:** ask it to generate the test table, the fake or `ParseList`. Choosing the cases is the skill you bring from QA, and writing the fake by hand is how interfaces stick. When you are stuck, ask for a hint, such as which standard library type reads a file line by line, then read its documentation with `go doc bufio.Scanner`.
+
 </AiThisWeek>
 
 ## Side Lab
 
-<SideLab title="Optional lab: not written yet">
-This section is not written yet.
+<SideLab title="Fuzz ParseList and let Go find the inputs you did not think of">
+
+A table test checks the cases you choose. A **fuzz test** generates inputs for you: Go starts from a few seed inputs, changes them at random, and keeps every input that reaches new code. It runs until an input fails a check, or until the time limit you set runs out. Fuzzing suits a parser such as `ParseList`, which accepts any text at all.
+
+**1. Write the fuzz test.** A fuzz test has a name that starts with `Fuzz` and takes `f *testing.F`. Create `check/fuzz_test.go` with this test, plus the imports `net/url`, `slices`, `strings`, `testing` and your `check` package:
+
+<CodeFrom file="go/week02/your-monitor/check/fuzz_test.go" region="fuzz" lang="go" title="check/fuzz_test.go" />
+
+A fuzz test cannot know the right answer for a random input. Instead, it checks **properties** that hold for every input: `ParseList` never panics, every URL it accepts is a valid `http` or `https` URL, and writing the accepted URLs back out gives the same list.
+
+**2. Fuzz.** A plain `go test ./check` runs the fuzz test once per `f.Add` seed, as a normal test. The `-fuzz` command-line flag turns on the generator. It works on one package at a time, and `-fuzztime` sets the time limit:
+
+```txt
+$ go test -run '^$' -fuzz=FuzzParseList -fuzztime=10s ./check
+fuzz: elapsed: 0s, gathering baseline coverage: 0/2 completed
+fuzz: elapsed: 0s, gathering baseline coverage: 2/2 completed, now fuzzing with 4 workers
+fuzz: elapsed: 11s, execs: 178829 (7232/sec), new interesting: 154 (total: 156)
+PASS
+```
+
+`-run '^$'` matches no test name, which skips the normal tests. `execs` counts the inputs tried. `new interesting` counts the inputs that reached new code: Go keeps them in its cache folder as the starting point for the next run.
+
+**3. Plant a bug.** Replace the body of `valid` with a shortcut, `return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")`, and remove the `net/url` import from `list.go`. Fuzz again. In a test run for this page, the fuzzer reported:
+
+```txt
+--- FAIL: FuzzParseList (0.26s)
+    --- FAIL: FuzzParseList (0.00s)
+        fuzz_test.go:23: ParseList accepted "http://"
+
+    Failing input written to testdata/fuzz/FuzzParseList/c0c4c378b4b9ccde
+    To re-run:
+    go test -run=FuzzParseList/c0c4c378b4b9ccde
+```
+
+Your failing input can differ. Go saves it under `check/testdata/fuzz`, and from then on a plain `go test ./check` runs it as a seed: a regression test you did not have to write. When such an input shows a real bug, commit the file with the fix.
+
+**4. Put valid back,** delete the `check/testdata/fuzz` folder, but keep `check/testdata/urls.txt`, and run `go test ./check` once more. Your table tests catch this planted bug too, through the `https://` row. The fuzzer found it without a single row.
+
 </SideLab>
 
 ## Done When

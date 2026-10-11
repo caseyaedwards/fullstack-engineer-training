@@ -1,0 +1,5 @@
+# Sites for TestParseListReadsAFile.
+https://example.com
+
+# The health endpoint answers faster than the home page.
+https://example.org/health
