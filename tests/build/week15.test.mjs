@@ -74,7 +74,7 @@ test('every Kubernetes version names the same minor, 1.36', () => {
     'site.yml kubectl': /dl\.k8s\.io\/release\/v1\.(\d+)\.\d+\/bin\/linux\/amd64\/kubectl/.exec(readFileSync(join(root, '.github/workflows/site.yml'), 'utf8'))?.[1],
     'page kubectl install': blocks('sh').join('\n').match(/stable-1\.(\d+)\.txt/)?.[1],
     'page kubeconform output': blocks('txt').join('\n').match(/-kubernetes-version 1\.(\d+)\.0/)?.[1],
-    'page kubeconform schema URL': blocks('txt').join('\n').match(/\/v1\.(\d+)\.0-standalone/)?.[1],
+    'page kubeconform schema URL': /\/v1\.(\d+)\.0-standalone/.exec(html)?.[1],
     'page Pod Security warning': /restricted:v1\.(\d+)/.exec(html)?.[1],
   };
   for (const [where, minor] of Object.entries(minors)) {
