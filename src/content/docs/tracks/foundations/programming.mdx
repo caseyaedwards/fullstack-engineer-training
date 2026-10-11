@@ -1,36 +1,201 @@
 ---
 title: "Core Programming Concepts"
+description: How Go handles values, pointers, interfaces and errors, set next to the TypeScript you already know, with a tested error classifier in both languages.
 track: programming
 ---
 
+import { Tabs, TabItem } from '@astrojs/starlight/components';
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
 
 <UsedInWeeks />
 
+Every backend program in this course moves values between functions, shares some of them through pointers, and decides what each failure means. Go makes all three explicit in the code, where TypeScript hides two of them behind the runtime. This page collects the ideas the weeks rely on, compares each one with TypeScript, and ends with one function that sorts errors into classes in both languages.
+
 ## What It Is
 
-This section is not written yet.
+### Values and Types
+
+A **type** says what a value holds and which operations work on it. Go checks types when it compiles, as `tsc` does. Go has no `as any` cast that silences the checker: a **type assertion** such as `err.(*StatusError)` checks the type again at run time, and a mismatch either panics or, in the two-result form, returns `false`. Every variable starts at the **zero value** of its type: `0`, `""`, `false`, or `nil` for pointers, slices, maps, interfaces and errors.
+
+Go copies a value each time you assign it or pass it to a function. For an `int` that copy costs nothing. For a struct, a group of named fields, Go copies every field. TypeScript copies only primitives this way: an object variable holds a reference, and two variables can point at one object. In Go, you choose: pass the struct itself to get a copy, or pass a pointer to share it.
+
+### Pointers, the Stack and the Heap
+
+A **pointer** holds the memory address of a value. `&r` takes the address of `r`, and `*Result` is the type of a pointer to a `Result`. A function that receives a pointer changes the caller value. A function that receives a copy changes only its copy.
+
+A running program keeps values in two places:
+
+- The **stack**: a block of memory per goroutine, the Go lightweight thread, that grows and shrinks with function calls. A call pushes a frame for its local variables. The return pops the frame, and its memory is free at once, with no cleanup work.
+- The **heap**: memory shared by the whole program. A value on the heap stays until nothing points at it, and then the **garbage collector**, a part of the Go runtime, frees it.
+
+The Go compiler decides where each value lives, through **escape analysis**. A value whose address never outlives its function stays on the stack. A value whose address outlives its function, because the function returns a pointer to it or stores the pointer somewhere longer-lived, **escapes** to the heap. You never choose by hand, and `new` or `&` does not force the heap. `go build -gcflags=-m` prints each decision, such as `&Result{...} escapes to heap`. In TypeScript, the JavaScript engine makes these choices out of sight, and you never see a pointer at all.
+
+<Diagram
+  id="stack-heap"
+  title="A value copied on the stack, and a pointer to a value on the heap"
+  code={`direction: right
+stack: "stack frame of run" {
+  a: "a Result\\nStatus 200"
+  b: "b := a\\na full copy\\nStatus 200"
+  p: "p *Result\\nan address"
+}
+heap: "heap" {
+  h: "Result\\nStatus 503"
+}
+stack.a -> stack.b: copy
+stack.p -> heap.h: points to
+`}
+/>
+
+In the diagram, `b := a` copies every field: a change to `b.Status` leaves `a` alone. `p` holds only an address. The `Result` it points at escapes to the heap because `run` returns `p` to its caller, and every holder of that address sees the same `Status`.
+
+### Methods and Interfaces
+
+A **method** is a function attached to a type through a **receiver**, the parameter before the name: `func (e *StatusError) Error() string`. A pointer receiver works on the original value. A value receiver works on a copy.
+
+An **interface** lists methods, and any type with those methods **satisfies** it, with no `implements` keyword. TypeScript compares object shapes the same way. A Go interface value holds two things: the concrete type and the value or pointer inside. That pair matters in the next section, because asking an error for its type means asking which concrete type sits inside the interface.
+
+### Errors Are Values
+
+Go has no exceptions for expected failures. A function that can fail returns `error` as its last result, and the caller checks it with `if err != nil` straight away. `error` is an interface with one method, `Error() string`. A **panic** exists too, but only for bugs, such as reading past the end of a slice.
+
+As an error travels up, each layer adds context by **wrapping** it: `fmt.Errorf("check %s: %w", url, err)` returns a new error whose message adds the text in front and whose `Unwrap` method returns `err`. The `%w` verb keeps the original inside. The `%v` verb copies only its text, and the chain ends there. Since Go 1.20, one `fmt.Errorf` call can hold several `%w` verbs, and `errors.Join` combines a list of errors into one.
+
+Callers inspect a chain in two ways:
+
+- A **sentinel error** is one shared value, such as `io.EOF` or the `ErrTimeout` below. `errors.Is(err, ErrTimeout)` walks the chain and reports whether any error in it equals the sentinel.
+- An **error type** carries data, such as a status code. `errors.As(err, &se)` walks the chain, finds the first error with the same type as `se`, and stores it in `se`. Go 1.26 adds `errors.AsType`, a generic form that returns the match. The examples here target Go 1.24 and use `errors.As`.
+
+TypeScript reaches the same design through the `cause` option, standard since ES2022, short for ECMAScript 2022: `new Error('check example.com', { cause: err })` keeps the original error on `.cause`. TypeScript has no `errors.Is`, which is why the TypeScript twin below walks the chain itself.
 
 ## Diagrams
 
-This section is not written yet.
+The first diagram follows one timeout through three layers of wrapping, then shows `errors.Is` finding it again.
+
+<Diagram
+  id="errors-is"
+  title="errors.Is unwraps three layers to find ErrTimeout"
+  code={`direction: down
+e3: "round 7: ...\\n*fmt.wrapError"
+e2: "worker 2: ...\\n*fmt.wrapError"
+e1: "check https://example.com: ...\\n*fmt.wrapError"
+s: "ErrTimeout\\ntimeout"
+e3 -> e2: Unwrap
+e2 -> e1: Unwrap
+e1 -> s: Unwrap
+`}
+  steps={[
+    { hl: ['s'], caption: 'The check fails and returns ErrTimeout, the sentinel. Its message is the single word timeout.' },
+    { hl: ['e1', 's', 'e1->s'], caption: 'The check function wraps it with fmt.Errorf and %w. The new error adds the URL to the message and keeps ErrTimeout behind its Unwrap method.' },
+    { hl: ['e3', 'e2', 'e1', 'e3->e2', 'e2->e1'], caption: 'The worker and the round loop wrap it again. The full message now reads round 7: worker 2: check https://example.com: timeout.' },
+    { hl: ['e3'], caption: 'Classify calls errors.Is with the outer error. It compares the outer error with ErrTimeout first: no match.' },
+    { hl: ['e3', 'e2', 'e1', 'e3->e2', 'e2->e1'], caption: 'errors.Is calls Unwrap and compares again, one layer at a time. Neither wrapper equals ErrTimeout.' },
+    { hl: ['e1', 's', 'e1->s'], caption: 'The third Unwrap returns ErrTimeout itself. The comparison matches, errors.Is returns true, and Classify returns timeout. A %v at any layer cuts the chain, and the search ends with false.' },
+  ]}
+/>
+
+The second diagram shows what `errors.As` does with an error type, and why the pointer in `&se` matters.
+
+<Diagram
+  id="errors-as"
+  title="errors.As finds a *StatusError and fills in se"
+  code={`direction: right
+w: "check example.com: ...\\n*fmt.wrapError"
+se: "*StatusError\\nCode 503"
+target: "var se *StatusError\\nnil until a match"
+w -> se: Unwrap
+se -> target: "errors.As(err, &se)"
+`}
+/>
+
+`errors.As` receives `&se`, a pointer to a pointer variable, because it has to write the match into `se`. It tries each error in the chain with a type check against `*StatusError`. The wrapper does not match. The next error does, and `se` now points at it, with `se.Code` set to `503`.
 
 ## Example
 
-This section is not written yet.
+`Classify` turns any error a check returns into one of five fixed strings: `ok`, `timeout`, `http-4xx`, `http-5xx` or `other`. A fixed set of strings suits a log field or a metric label, where an open-ended error message does not. The Go and TypeScript versions answer the same table of cases.
+
+The types come first. `ErrTimeout` is a sentinel. `StatusError` is an error type, and its `Error` method has a pointer receiver, which makes `*StatusError` the error:
+
+<Tabs syncKey="lang">
+<TabItem label="Go">
+
+<CodeFrom file="go/tracks/programming/classify.go" region="types" lang="go" title="classify.go" />
+
+</TabItem>
+<TabItem label="TypeScript">
+
+<CodeFrom file="web/src/tracks/programming/classify.ts" region="types" lang="ts" title="classify.ts" />
+
+</TabItem>
+</Tabs>
+
+`Classify` checks the sentinel with `errors.Is`, then looks for the error type with `errors.As`. In TypeScript, `causes` builds the chain from `.cause`, `includes` plays the part of `errors.Is`, and `find` with `instanceof` plays the part of `errors.As`:
+
+<Tabs syncKey="lang">
+<TabItem label="Go">
+
+<CodeFrom file="go/tracks/programming/classify.go" region="classify" lang="go" title="classify.go" />
+
+</TabItem>
+<TabItem label="TypeScript">
+
+<CodeFrom file="web/src/tracks/programming/classify.ts" region="classify" lang="ts" title="classify.ts" />
+
+</TabItem>
+</Tabs>
+
+The TypeScript `causes` function also stops at a cycle: `.cause` is a plain property, and nothing stops a program from pointing two errors at each other. A chain that `fmt.Errorf` builds cannot loop, because each wrapper points only at an error that exists before it.
+
+The tests are one table in each language. Each row names a case, the error and the class it expects:
+
+<Tabs syncKey="lang">
+<TabItem label="Go">
+
+<CodeFrom file="go/tracks/programming/classify_test.go" region="test" lang="go" title="classify_test.go" />
+
+</TabItem>
+<TabItem label="TypeScript">
+
+<CodeFrom file="web/src/tracks/programming/classify.test.ts" region="test" lang="ts" title="classify.test.ts" />
+
+</TabItem>
+</Tabs>
+
+Beyond the table, the Go tests prove two more claims from this page: three layers of `%w` still classify as `timeout`, and a single `%v` in the chain turns the same error into `other`. The TypeScript tests prove the same for `.cause`, and add the cycle.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={1} anchor="errors-are-values">Week 1</WeekLink> introduces errors as values: `checkURL` returns an error instead of throwing, `main` turns it into an exit code, and `fmt.Errorf` with `%w` wraps the URL around a failure. <WeekLink n={1} anchor="structs-and-pointers">Structs and Pointers</WeekLink>, in the same week, explains why `checkURL` takes a `*http.Client`: one shared client, not a copy per call.
+
+<WeekLink n={2} anchor="interfaces">Week 2</WeekLink> adds methods and interfaces. `check.URL` takes a one-method `Getter` interface, which a real `*http.Client` and a test fake both satisfy. `error` itself is the first interface you use.
+
+<WeekLink n={5} anchor="step-4-count-timeouts">Week 5</WeekLink> counts timeouts with `errors.Is(err, context.DeadlineExceeded)`. The HTTP client wraps the context error in a `*url.Error`, and `errors.Is` sees through it, as in the walkthrough above. The same week explains why memory that several goroutines write needs a mutex or a channel: a pointer shares memory, and shared memory needs synchronization.
+
+A classifier like `Classify` fits the monitor wherever one failure becomes one word: a log field, an alert reason or a metric label.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **Wrapping with `%v` instead of `%w`.** The message reads the same, but the chain ends at that layer, and `errors.Is` and `errors.As` find nothing below it. Every timeout counts as `other`. Use `%w` whenever a caller can need the original error.
+- **Comparing errors with `==` or by message.** `err == ErrTimeout` fails as soon as anyone wraps the error, and matching on `err.Error()` text breaks when a library rewords its message. Use `errors.Is` for sentinels and `errors.As` for types.
+- **Mixing a value and a pointer form of an error type.** With a value receiver on `Error`, code can return `StatusError{Code: 503}` while `Classify` asks `errors.As` for a `*StatusError`. The types differ, the search finds nothing, and a `503` counts as `other`. Give `Error` a pointer receiver, as `StatusError` does: the compiler then rejects a plain value where an error goes.
+- **Returning a typed nil pointer as an error.** A function that returns `var se *StatusError` as its `error` result returns an interface that holds a type and a nil pointer. That interface is not `nil`, and the caller sees a failure that never happened. Return the literal `nil` on success.
+- **Sharing a struct by copying it.** A function that takes `Result` instead of `*Result` changes its own copy, and the caller never sees the change. When a function has to change the value, take a pointer.
+- **Expecting `try` and `catch` behavior.** A TypeScript habit is to let errors fly to one handler at the top. In Go, an unchecked error is silently ignored. Check every `err` where it comes back, and handle it, wrap it or return it.
 
 ## Going Deeper
 
-This section is not written yet.
+- **Generics:** Go 1.18 added type parameters, and functions such as `slices.Sort` and `errors.AsType` use them. Learn them to read the standard library and to avoid writing the same helper for each type.
+- **Escape analysis in practice:** run `go build -gcflags=-m` on a package and read why each value escapes. It explains most allocation counts in a benchmark.
+- **The Go memory model:** it defines when a write in one goroutine becomes visible to another. Week 5 relies on it every time it uses a channel or a mutex.
+- **Interface internals:** an interface value is a type and a pointer, which explains the typed nil mistake above and the cost of calling a method through an interface.
+- **Iterators:** Go 1.23 added range over functions. The `iter` package and the `maps` and `slices` helpers return them.
 
 ## Further Reading
 
-This section is not written yet.
+- [The errors package](https://pkg.go.dev/errors): the official reference for `Is`, `As`, `AsType`, `Join` and `Unwrap`, with runnable examples of each.
+- [The fmt package](https://pkg.go.dev/fmt): the reference for `Errorf` and the `%w` verb, including several `%w` verbs in one call.
+- [The compile command](https://pkg.go.dev/cmd/compile): the reference for the compiler options, including the `-m` option that prints escape analysis decisions.
+- [The sync package](https://pkg.go.dev/sync): `Mutex`, `WaitGroup` and `Once`, the tools for sharing a value through a pointer between goroutines.
