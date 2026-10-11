@@ -1,0 +1,23 @@
+/*
+ * Page width picker (src/components/ThemeSelect.astro). The choice is stored
+ * under localStorage "fsp-width" and applied as data-width on <html> by an
+ * inline head script, so there is no flash of the wrong width. Medium is
+ * Starlight's own content width (45rem), so it needs no rule here and a reader
+ * who never touches the picker sees no change.
+ *
+ * Starlight sizes the content column, the header grid and the right-hand table
+ * of contents from --sl-content-width, so setting it moves all three together
+ * and the sidebars stay. The width is only a ceiling: on narrow screens the
+ * column is the screen. Full is a ceiling no screen reaches; Starlight uses the
+ * value inside calc(), so a keyword such as "none" would be invalid. The
+ * :root[...] selector outranks Starlight's html:not([data-has-sidebar]) rule.
+ */
+:root[data-width='slim'] {
+  --sl-content-width: 38rem;
+}
+:root[data-width='wide'] {
+  --sl-content-width: 60rem;
+}
+:root[data-width='full'] {
+  --sl-content-width: 200rem;
+}

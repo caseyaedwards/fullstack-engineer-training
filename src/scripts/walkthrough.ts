@@ -1,7 +1,7 @@
 // Progressive enhancement for <Diagram>:
 // - a diagram too wide for its box scrolls sideways, so its box becomes focusable
 //   and keyboard users can scroll it with the arrow keys;
-// - <Diagram steps> swaps the <ol class="dg-steps"> for Prev/Next controls that
+// - <Diagram steps> swaps the <ol class="dg-steps"> for Prev/Next/Play controls that
 //   highlight each step's data-k elements and scroll them into view inside the box.
 document.querySelectorAll<HTMLElement>('figure.dg').forEach((fig) => {
   const box = fig.querySelector<HTMLElement>('.dg-svg');
@@ -35,16 +35,43 @@ document.querySelectorAll<HTMLElement>('figure.dg').forEach((fig) => {
     const b = document.createElement('button');
     b.type = 'button';
     b.textContent = label;
-    b.onclick = () => show(i + d);
+    b.onclick = () => go(i + d);
     return b;
   };
   const [prev, next] = [btn('Prev', -1), btn('Next', 1)];
+  const play = document.createElement('button');
+  play.type = 'button';
+  play.className = 'dg-play';
+  play.textContent = 'Play';
   const status = document.createElement('span');
   status.setAttribute('aria-live', 'polite');
-  nav.append(prev, status, next);
+  nav.append(prev, status, next, play);
   nav.onkeydown = (e) => {
     const d = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
-    if (d) (e.preventDefault(), show(i + d));
+    if (d) (e.preventDefault(), go(i + d));
+  };
+
+  // Play advances one step per STEP_MS, long enough to read a caption, and stops
+  // on the last step. Any step change by the reader (go) stops it too.
+  const STEP_MS = 2500;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const stop = () => {
+    clearInterval(timer);
+    timer = undefined;
+    play.textContent = 'Play';
+  };
+  const go = (n: number) => {
+    stop();
+    show(n);
+  };
+  play.onclick = () => {
+    if (timer !== undefined) return stop();
+    if (i === steps.length - 1) show(0);
+    play.textContent = 'Pause';
+    timer = setInterval(() => {
+      show(i + 1);
+      if (i === steps.length - 1) stop();
+    }, STEP_MS);
   };
 
   // Scroll the box sideways (never the page) so the elements in focus are in view:

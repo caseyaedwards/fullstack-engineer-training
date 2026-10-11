@@ -38,9 +38,25 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'Full-Stack Engineer Path',
+      favicon: '/favicon.svg',
       sidebar,
       plugins: [starlightLinksValidator()],
-      customCss: ['./src/styles/theme.css', './src/styles/diagrams.css', './src/styles/custom.css'],
+      customCss: [
+        './src/styles/theme.css',
+        './src/styles/diagrams.css',
+        './src/styles/custom.css',
+        './src/styles/width.css',
+      ],
+      // Adds the page width select beside the theme select.
+      components: { ThemeSelect: './src/components/ThemeSelect.astro' },
+      // Applies the stored page width before first paint (see src/styles/width.css).
+      head: [
+        {
+          tag: 'script',
+          content:
+            "(function(){var w='medium';try{var s=localStorage.getItem('fsp-width');if(s==='slim'||s==='wide'||s==='full')w=s}catch(e){}document.documentElement.setAttribute('data-width',w)})()",
+        },
+      ],
       // Syntax colours: Shiki's vitesse themes, whose muted greens, browns and
       // tans sit with the ivory and clay palette. The first theme is the default
       // (dark); Starlight's dark mode switch shows each theme in the matching site

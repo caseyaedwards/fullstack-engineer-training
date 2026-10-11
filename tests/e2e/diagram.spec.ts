@@ -71,6 +71,90 @@ test('walkthrough: steps highlight, dim, and navigate', async ({ page }) => {
   await expect(flow(page).getByRole('group', { name: 'Diagram steps' })).toBeVisible();
 });
 
+const STEP_MS = 2500;
+
+test.describe('walkthrough: Play', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.clock.install();
+    await page.goto(PAGE);
+  });
+  const play = (page: Page) => flow(page).getByRole('button', { name: 'Play' });
+  const pause = (page: Page) => flow(page).getByRole('button', { name: 'Pause' });
+
+  test('plays through every step, stops on the last, then reads Play again', async ({ page }) => {
+    await expect(caption(page)).toContainText('1/4');
+    await play(page).click();
+    await expect(pause(page)).toBeVisible();
+    await expect(caption(page)).toContainText('1/4');
+    for (const n of [2, 3, 4]) {
+      await page.clock.runFor(STEP_MS);
+      await expect(caption(page)).toContainText(`${n}/4`);
+      expect((await classes(page))[STEPS[n - 1][0]]).toBe('hl');
+    }
+    await expect(play(page)).toBeVisible();
+    await page.clock.runFor(STEP_MS * 3);
+    await expect(caption(page)).toContainText('4/4');
+    await expect(caption(page)).toHaveAttribute('aria-live', 'polite');
+  });
+
+  test('starts from the current step, and from step 1 when on the last', async ({ page }) => {
+    await flow(page).getByRole('button', { name: 'Next' }).click();
+    await play(page).click();
+    await expect(caption(page)).toContainText('2/4');
+    await page.clock.runFor(STEP_MS);
+    await expect(caption(page)).toContainText('3/4');
+    await pause(page).click();
+    await flow(page).getByRole('button', { name: 'Next' }).click();
+    await expect(caption(page)).toContainText('4/4');
+    await play(page).click();
+    await expect(caption(page)).toContainText('1/4');
+    await expect(pause(page)).toBeVisible();
+  });
+
+  test('Pause stops on the current step', async ({ page }) => {
+    await play(page).click();
+    await page.clock.runFor(STEP_MS);
+    await expect(caption(page)).toContainText('2/4');
+    await pause(page).click();
+    await expect(play(page)).toBeVisible();
+    await page.clock.runFor(STEP_MS * 4);
+    await expect(caption(page)).toContainText('2/4');
+  });
+
+  test('Next, Prev and arrow keys during playback stop it', async ({ page }) => {
+    const nextBtn = flow(page).getByRole('button', { name: 'Next' });
+    await play(page).click();
+    await page.clock.runFor(STEP_MS);
+    await nextBtn.click();
+    await expect(caption(page)).toContainText('3/4');
+    await expect(play(page)).toBeVisible();
+    await page.clock.runFor(STEP_MS * 4);
+    await expect(caption(page)).toContainText('3/4');
+
+    await play(page).click();
+    await flow(page).getByRole('button', { name: 'Prev' }).click();
+    await expect(caption(page)).toContainText('2/4');
+    await expect(play(page)).toBeVisible();
+    await page.clock.runFor(STEP_MS * 4);
+    await expect(caption(page)).toContainText('2/4');
+
+    await play(page).click();
+    await nextBtn.focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(caption(page)).toContainText('3/4');
+    await expect(play(page)).toBeVisible();
+    await page.clock.runFor(STEP_MS * 4);
+    await expect(caption(page)).toContainText('3/4');
+  });
+
+  test('playback does not depend on prefers-reduced-motion', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await play(page).click();
+    await page.clock.runFor(STEP_MS * 3);
+    await expect(caption(page)).toContainText('4/4');
+  });
+});
+
 test('walkthrough: nav sits between the steps and the figcaption', async ({ page }) => {
   await page.goto(PAGE);
   const order = await flow(page).evaluate((f) => [...f.children].map((c) => c.className || c.tagName.toLowerCase()));
