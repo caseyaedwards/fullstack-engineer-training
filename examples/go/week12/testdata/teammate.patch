@@ -1,0 +1,211 @@
+From 8070b872ad7888d547e14ad93fb5151d41bc5c3d Mon Sep 17 00:00:00 2001
+From: Sam Rivera <sam@example.com>
+Date: Sun, 11 Oct 2026 07:40:24 +0000
+Subject: [PATCH 1/4] api: send security headers with every answer
+
+The OWASP REST Security Cheat Sheet asks an API to send
+X-Content-Type-Options, X-Frame-Options and a frame-ancestors policy.
+secureHeaders adds all three. TestSecureHeaders checks four routes,
+including the JSON 404.
+---
+ internal/api/api.go          |  2 +-
+ internal/api/headers.go      | 20 ++++++++++++++++++++
+ internal/api/headers_test.go | 25 +++++++++++++++++++++++++
+ 3 files changed, 46 insertions(+), 1 deletion(-)
+ create mode 100644 internal/api/headers.go
+ create mode 100644 internal/api/headers_test.go
+
+diff --git a/internal/api/api.go b/internal/api/api.go
+index 97e025c..546aa62 100644
+--- a/internal/api/api.go
++++ b/internal/api/api.go
+@@ -63,3 +63,3 @@ func NewHandler(store monitor.Store, results monitor.ResultStore, incidents Inci
+ 	}
+-	return jsonFallback(mux)
++	return secureHeaders(jsonFallback(mux))
+ }
+diff --git a/internal/api/headers.go b/internal/api/headers.go
+new file mode 100644
+index 0000000..a3bd401
+--- /dev/null
++++ b/internal/api/headers.go
+@@ -0,0 +1,20 @@
++package api
++
++import "net/http"
++
++// secureHeaders adds the security headers that the OWASP REST Security
++// Cheat Sheet lists for an API to every answer:
++//   - X-Content-Type-Options: nosniff stops a browser from guessing a
++//     type other than the Content-Type the api sends.
++//   - X-Frame-Options: DENY and the frame-ancestors part of the
++//     Content-Security-Policy stop another site from showing an answer
++//     inside a frame of its own page.
++func secureHeaders(next http.Handler) http.Handler {
++	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		next.ServeHTTP(w, r)
++		h := w.Header()
++		h.Set("X-Content-Type-Options", "nosniff")
++		h.Set("X-Frame-Options", "DENY")
++		h.Set("Content-Security-Policy", "frame-ancestors 'none'")
++	})
++}
+diff --git a/internal/api/headers_test.go b/internal/api/headers_test.go
+new file mode 100644
+index 0000000..048f128
+--- /dev/null
++++ b/internal/api/headers_test.go
+@@ -0,0 +1,25 @@
++package api
++
++import (
++	"net/http"
++	"net/http/httptest"
++	"testing"
++)
++
++// TestSecureHeaders checks that every answer carries the security headers.
++func TestSecureHeaders(t *testing.T) {
++	h := newTestHandler(t)
++	for _, path := range []string{"/healthz", "/api/monitors", "/api/monitors/1", "/no-such-page"} {
++		rec := httptest.NewRecorder()
++		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
++		for name, want := range map[string]string{
++			"X-Content-Type-Options":  "nosniff",
++			"X-Frame-Options":         "DENY",
++			"Content-Security-Policy": "frame-ancestors 'none'",
++		} {
++			if got := rec.Header().Get(name); got != want {
++				t.Errorf("GET %s: %s = %q, want %q", path, name, got, want)
++			}
++		}
++	}
++}
+-- 
+2.43.0
+
+
+From 0f4dae154bdeb9f929033721d1552a69bde83a3d Mon Sep 17 00:00:00 2001
+From: Sam Rivera <sam@example.com>
+Date: Sun, 11 Oct 2026 07:40:24 +0000
+Subject: [PATCH 2/4] api: let browsers cache the public reads
+
+The status page polls GET /api/monitors, the results and the open
+incidents. Five minutes in the browser cache takes that load off the
+api and Postgres.
+---
+ internal/api/api.go   |  2 +-
+ internal/api/cache.go | 18 ++++++++++++++++++
+ 2 files changed, 19 insertions(+), 1 deletion(-)
+ create mode 100644 internal/api/cache.go
+
+diff --git a/internal/api/api.go b/internal/api/api.go
+index 546aa62..e7809cb 100644
+--- a/internal/api/api.go
++++ b/internal/api/api.go
+@@ -63,3 +63,3 @@ func NewHandler(store monitor.Store, results monitor.ResultStore, incidents Inci
+ 	}
+-	return secureHeaders(jsonFallback(mux))
++	return secureHeaders(cacheControl(jsonFallback(mux)))
+ }
+diff --git a/internal/api/cache.go b/internal/api/cache.go
+new file mode 100644
+index 0000000..98635bb
+--- /dev/null
++++ b/internal/api/cache.go
+@@ -0,0 +1,18 @@
++package api
++
++import (
++	"net/http"
++	"strings"
++)
++
++// cacheControl lets browsers keep the answers to public reads for five
++// minutes. The status page asks for the same lists every few seconds, and
++// an answer from the browser cache costs the api and the database nothing.
++func cacheControl(next http.Handler) http.Handler {
++	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/") {
++			w.Header().Set("Cache-Control", "public, max-age=300")
++		}
++		next.ServeHTTP(w, r)
++	})
++}
+-- 
+2.43.0
+
+
+From 7f53446b40f0e0cf5a9124f5b8870e4df33d5354 Mon Sep 17 00:00:00 2001
+From: Sam Rivera <sam@example.com>
+Date: Sun, 11 Oct 2026 07:40:49 +0000
+Subject: [PATCH 3/4] worker: name the flag defaults
+
+Collect the defaults of -timeout, -workers and -poll in one const
+block at the top of main.go, where the next person finds them.
+---
+ cmd/worker/main.go | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/cmd/worker/main.go b/cmd/worker/main.go
+index a8b93bf..5f6956b 100644
+--- a/cmd/worker/main.go
++++ b/cmd/worker/main.go
+@@ -36,6 +36,13 @@ import (
+ 
++// The defaults of the command-line flags, in one place.
++const (
++	defaultTimeout = 5 * time.Second
++	defaultWorkers = 10
++	defaultPoll    = 1000 // one second
++)
++
+ func main() {
+-	timeout := flag.Duration("timeout", 5*time.Second, "how long to wait for each check")
+-	workers := flag.Int("workers", 10, "how many checks run at the same time")
+-	poll := flag.Duration("poll", time.Second, "how long a worker waits before it looks again when the queue is empty")
++	timeout := flag.Duration("timeout", defaultTimeout, "how long to wait for each check")
++	workers := flag.Int("workers", defaultWorkers, "how many checks run at the same time")
++	poll := flag.Duration("poll", defaultPoll, "how long a worker waits before it looks again when the queue is empty")
+ 	debugAddr := flag.String("debug-addr", "", "address for the pprof debug server, for example 127.0.0.1:6060; empty turns it off")
+-- 
+2.43.0
+
+
+From 1a5713a19b0bfc01c700457560c23edc5ac0aee0 Mon Sep 17 00:00:00 2001
+From: Sam Rivera <sam@example.com>
+Date: Sun, 11 Oct 2026 07:40:49 +0000
+Subject: [PATCH 4/4] probe: say what each trace hook measures
+
+One comment per pair of hooks, and the hooks lined up in pairs.
+No change in behavior.
+---
+ internal/probe/probe.go | 16 ++++++++++------
+ 1 file changed, 10 insertions(+), 6 deletions(-)
+
+diff --git a/internal/probe/probe.go b/internal/probe/probe.go
+index c8ebf67..7238458 100644
+--- a/internal/probe/probe.go
++++ b/internal/probe/probe.go
+@@ -66,8 +66,12 @@ func Check(ctx context.Context, url string) (Timings, int, error) {
+ 	trace := &httptrace.ClientTrace{
+-		DNSStart:             func(httptrace.DNSStartInfo) { begin(&dnsStart) },
+-		DNSDone:              func(httptrace.DNSDoneInfo) { end(&t.DNS, &dnsStart) },
+-		ConnectStart:         func(string, string) { begin(&connectStart) },
+-		ConnectDone:          func(string, string, error) { end(&t.Connect, &connectStart) },
+-		TLSHandshakeStart:    func() { begin(&tlsStart) },
+-		TLSHandshakeDone:     func(tls.ConnectionState, error) { end(&t.TLS, &tlsStart) },
++		// DNS: from the question to the answer.
++		DNSStart: func(httptrace.DNSStartInfo) { begin(&dnsStart) },
++		DNSDone:  func(httptrace.DNSDoneInfo) { end(&t.DNS, &dnsStart) },
++		// Connect: from the SYN to the SYN-ACK.
++		ConnectStart: func(string, string) { begin(&connectStart) },
++		ConnectDone:  func(string, string, error) { end(&t.Connect, &connectStart) },
++		// TLS: from the ClientHello to the Finished.
++		TLSHandshakeStart: func() { begin(&tlsStart) },
++		TLSHandshakeDone:  func(tls.ConnectionState, error) { end(&t.TLS, &connectStart) },
++		// First byte: from the start of the request.
+ 		GotFirstResponseByte: func() { end(&t.FirstByte, &start) },
+-- 
+2.43.0
+

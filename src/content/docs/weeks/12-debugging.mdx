@@ -1,17 +1,22 @@
 ---
 title: "Week 12: Debugging"
+description: Apply a branch from a teammate that passes every test and still carries four bugs, then find each one with the tool that can see it. curl -v reads the headers on the wire, browser devtools read the HTTP cache, pprof finds a busy loop, and Delve stops the program at a wrong value.
 week: 12
 phase: harden
-hours: [5, 8]
+hours: [6, 8]
 aiStage: 2
 tracks: [operating-systems, networking, observability]
 done:
-  - id: item-1
-    text: "Placeholder item 1: this week is not written yet"
-  - id: item-2
-    text: "Placeholder item 2: this week is not written yet"
-  - id: item-3
-    text: "Placeholder item 3: this week is not written yet"
+  - id: headers-on-the-wire
+    text: curl -v against your api shows X-Content-Type-Options, X-Frame-Options and Content-Security-Policy on a 200, a 404 and a 204 answer, and TestSecureHeaders reads them from rec.Result().
+  - id: status-page-fresh
+    text: In the DevTools Network panel, every poll of /api/monitors reaches the api with Cache-Control no-store, and a monitor you add shows on the status page at the next refresh.
+  - id: idle-worker-quiet
+    text: You have read a CPU profile of the planted worker down to queue.Work, and the fixed worker uses under 1% of one CPU on an empty queue.
+  - id: delve-session
+    text: You have stopped Delve inside the TLS hook, shown with frame 1 locals that it reads connectStart, and fixed the hook.
+  - id: regression-tests
+    text: Each of the four bugs has a test that fails on the commits from Sam and passes on your fix, and make test passes on main after the merge.
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -21,43 +26,517 @@ import AiThisWeek from '../../../components/AiThisWeek.astro';
 import SideLab from '../../../components/SideLab.astro';
 import ReadWith from '../../../components/ReadWith.astro';
 import DoneWhen from '../../../components/DoneWhen.astro';
+import Diagram from '../../../components/Diagram.astro';
+import CodeFrom from '../../../components/CodeFrom.astro';
+import { Code } from '@astrojs/starlight/components';
+import { weekHref, trackHref } from '../../../lib/links';
+import patchPath from '../../../../examples/go/week12/testdata/teammate.patch?url';
+
+export const patchURL = new URL(patchPath, import.meta.env.SITE).href;
 
 <WeekHeader />
 
+A teammate, Sam, sends you a branch with four small commits: security headers for the api, browser caching for the status page, tidier worker defaults and better comments in the probe. Every test passes. Each commit still carries one bug. This week, you apply the branch, notice what goes wrong, and find each cause with the tool that can see it. You end the week with the bugs fixed, a test for each one, and the branch merged.
+
 ## Goals
 
-This section is not written yet.
+- Work from a symptom to a cause with a repeatable method, and finish each fix with a test that fails without it.
+- Read a raw HTTP exchange with `curl -v`, and catch headers that never leave the server.
+- Read the browser HTTP cache in Chrome DevTools, and pick the right `Cache-Control` value for an api.
+- Profile the CPU of a running Go program with `pprof`, and read flat and cumulative time.
+- Stop a Go program in the Delve debugger, walk its stack and print its variables.
 
 ## Concepts
 
-This section is not written yet.
+### When Green Tests Hide Bugs
+
+A test checks what its author thought to check. The branch from Sam passes every test because each bug sits where no test looks: in a header on the wire, in the browser cache, in a default value, and in a code path that only HTTPS reaches. Your testing background is the asset here. Debugging is testing with the order turned around: the failure comes first, and you work back to the cause.
+
+The method has six steps, and it works the same with every tool:
+
+1. **Reproduce.** Find the shortest way to see the symptom on demand. A bug you cannot trigger is a bug you cannot confirm fixed.
+2. **Observe.** Look at what the system does, not at what the code says. Pick the tool that sees the layer where the symptom shows.
+3. **Hypothesize.** Name one cause that explains everything you see.
+4. **Test the hypothesis.** Look at one value, or change one thing, that proves the cause or rules it out. A ruled-out cause is progress: it removes a place to look.
+5. **Fix.** Write the test that fails first, then change the code until it passes.
+6. **Keep the test.** It stops the same bug from coming back.
+
+### Four Tools for Four Layers
+
+Each tool sees a different layer of the monitor. Pick the tool by where the symptom shows, not by habit.
+
+<Diagram
+  id="tools"
+  title="Which tool sees which part of the monitor"
+  code={`direction: down
+devtools: "Chrome DevTools"
+browser: "browser\\nstatus page"
+curl: "curl -v"
+api: "api\\nport 8080"
+pg: Postgres
+pprof: "pprof\\nport 6060"
+worker: worker
+dlv: dlv
+site: "monitored\\nsite"
+
+devtools -> browser: "requests,\\ncache"
+browser -> api: JSON
+curl -> api: "every\\nheader"
+api -> pg: SQL
+worker -> pg: results
+pprof -> worker: "where time\\ngoes"
+dlv -> worker: "stop, print"
+worker -> site: checks
+`}
+  steps={[
+    { hl: ['devtools', 'browser', 'devtools->browser'], caption: 'Chrome DevTools sit inside the browser. The Network panel lists every request the page sends, with its headers, its timing and where the answer comes from: the network or the browser cache.' },
+    { hl: ['curl', 'api', 'curl->api'], caption: 'curl -v stands in for the browser and prints the raw exchange: every header sent and received. It shows what the api puts on the wire, with no browser cache or JavaScript in between.' },
+    { hl: ['pprof', 'worker', 'pprof->worker'], caption: 'pprof sees a whole running process over time. It answers questions about totals: which functions use the CPU, which goroutines wait, where memory goes.' },
+    { hl: ['dlv', 'worker', 'dlv->worker'], caption: 'Delve sees one moment in one process. It stops the program at a line and shows every variable there, in any goroutine. dlv works on any Go program, and on tests too.' },
+  ]}
+/>
+
+Totals and moments complement each other. `pprof` tells you where to look in a program that does too much. Delve tells you what a value is at one line, when the program does the wrong thing.
+
+### How Delve Stops a Program
+
+Delve is a debugger for Go, and its command is `dlv`. A **debugger** runs your program under its control: it stops the program at chosen lines, called **breakpoints**, and reads its memory while it stands still.
+
+<Diagram
+  id="breakpoint"
+  title="What happens between break and the prompt that shows a variable"
+  code={`shape: sequence_diagram
+you: you
+dlv: dlv
+prog: "your\\nprogram"
+os: "operating\\nsystem"
+
+you -> dlv: "break at line 47"
+dlv -> prog: "set a trap"
+you -> dlv: continue
+dlv -> prog: resume
+prog -> os: "runs the trap"
+os -> dlv: "program stopped"
+dlv -> prog: "read memory"
+dlv -> you: "line 47, values"
+`}
+  steps={[
+    { hl: ['you', 'dlv', 'prog', 'you->dlv', 'dlv->prog'], caption: 'dlv reads the debug information in the binary, which maps every source line to a machine address. It replaces the instruction at that address with a trap instruction.' },
+    { hl: ['you', 'dlv', 'prog', 'you->dlv#1', 'dlv->prog#1'], caption: 'continue resumes the program at full speed until some goroutine reaches the trap.' },
+    { hl: ['prog', 'os', 'dlv', 'prog->os', 'os->dlv'], caption: 'The trap stops the program, and the operating system tells dlv. On Linux, dlv uses the ptrace system call for this. On macOS, it drives debugserver from the Xcode Command Line Tools.' },
+    { hl: ['dlv', 'prog', 'you', 'dlv->prog#2', 'dlv->you'], caption: 'dlv reads the registers and memory of the stopped program, and the debug information turns them back into names: the line, the call stack and the value of each variable.' },
+  ]}
+/>
+
+When the compiler optimizes, it moves code around and keeps variables in registers. `dlv debug` and `dlv test` build your code with optimizations turned off, through the Go build option `-gcflags='all=-N -l'`, which keeps every variable where the debug information says it is. A breakpoint stops every goroutine, not only the one that hits it. While you read variables, nothing in the program moves, and every clock keeps running.
+
+### How a CPU Profile Works
+
+A **profiler** measures where a program spends its resources. Go has one built in, and `net/http/pprof`, which your worker serves on `-debug-addr` since <a href={weekHref(5)}>Week 5</a>, hands its results out over HTTP. Week 5 reads the goroutine dump. This week, you read the CPU profile.
+
+For a CPU profile, the Go runtime asks the operating system for a signal, `SIGPROF`, after every 10 ms of CPU time the program uses. At each signal, the runtime records the call stack of the goroutine that is running. After 10 seconds, the profile holds one stack per tick, and `go tool pprof` adds them up. Two columns matter:
+
+- **flat**: the time in which the function itself runs, at the top of the stack.
+- **cum**, short for cumulative: the time in which the function appears anywhere in the stack, itself or anything it calls.
+
+A function with a small flat and a large cum calls the work. A function with a large flat does the work. To find the cause of a busy program, sort by cum and read down from `main` until the path splits.
+
+### The HTTP Cache in the Browser
+
+A browser keeps answers it can reuse. The `Cache-Control` response header sets the rules:
+
+| Value | What the browser does |
+| --- | --- |
+| `max-age=300` | Keeps the answer and reuses it for 300 seconds without asking the server |
+| `no-cache` | Keeps the answer, but asks the server before each reuse |
+| `no-store` | Keeps nothing: every request goes to the server |
+| `public` | Allows shared caches, such as a company proxy or a CDN (content delivery network), to keep it too |
+
+<Diagram
+  id="browser-cache"
+  title="Three polls of the status page under max-age=300"
+  code={`shape: sequence_diagram
+page: "status page"
+cache: "browser cache"
+api: api
+
+page -> cache: "GET /api/monitors"
+cache -> api: "GET /api/monitors"
+api -> cache: "200, max-age=300"
+cache -> page: "the answer"
+page -> cache: "30 s later: GET /api/monitors"
+cache -> page: "the stored answer"
+page -> cache: "5 min later: GET /api/monitors"
+cache -> api: "GET /api/monitors"
+`}
+  steps={[
+    { hl: ['page', 'cache', 'api', 'page->cache', 'cache->api', 'api->cache', 'cache->page'], caption: 'The first poll finds nothing stored. The request goes to the api, and the answer comes back with Cache-Control: max-age=300. The browser keeps it.' },
+    { hl: ['page', 'cache', 'page->cache#1', 'cache->page#1'], caption: 'Thirty seconds later, the stored answer is fresh: younger than 300 seconds. The browser hands it to the page and sends nothing. The api never sees the poll, and the page shows data from 30 seconds ago.' },
+    { hl: ['page', 'cache', 'api', 'page->cache#2', 'cache->api#1'], caption: 'Only after 300 seconds does the stored answer turn stale, and the next poll reaches the api again. Until then, a monitor you add or a site that goes down stays invisible.' },
+  ]}
+/>
+
+`fetch` in the page uses the same cache as every other request. A page that polls for changes needs answers the browser never reuses.
 
 ## Build
 
-This section is not written yet.
+You apply the four commits on a branch, then work through them from the easiest bug to the deepest. Each step finds one bug, fixes it, and adds or corrects one test. The files you touch:
+
+```txt
+your-monitor/
+├── cmd/worker/
+│   ├── main.go          from Sam, fixed in Step 5
+│   └── poll_test.go     new in Step 5
+└── internal/
+    ├── api/
+    │   ├── api.go           from Sam: wires the two new middlewares
+    │   ├── headers.go       from Sam, fixed in Step 3
+    │   ├── headers_test.go  from Sam, fixed in Step 3
+    │   ├── cache.go         from Sam, fixed in Step 4
+    │   └── cache_test.go    new in Step 4
+    └── probe/
+        ├── probe.go     from Sam, fixed in Step 6
+        └── tls_test.go  new in Step 6
+```
+
+The snippets come from the example code this site tests, where the module path `fsp/examples/week12/your-monitor` stands for your `github.com/<you>/your-monitor`. The site also keeps the versions of each file from Sam, and a test that runs every regression test below against them, to prove that each one fails there.
+
+### Step 1: Install the Tools
+
+`curl` comes with macOS and Ubuntu, and `go tool pprof` comes with Go. This page uses Chrome DevTools. Install Delve:
+
+```sh
+go install github.com/go-delve/delve/cmd/dlv@latest
+dlv version
+```
+
+`go install` puts `dlv` in `~/go/bin`, which <a href={weekHref(0)}>Week 0</a> adds to your `PATH`. Each Delve release supports a range of Go releases, and new releases drop old ones. When `dlv` prints `Go version go1.24.7 is too old for this version of Delve`, update Go, as Week 0 shows. On macOS, Delve needs the Xcode Command Line Tools from Week 0.
+
+### Step 2: Apply the Branch from Sam
+
+Create a branch, download the commits as one patch file, and apply them with `git am`, which turns each patch into a commit with its author and message. Do not read the patch: finding the bugs is the exercise.
+
+<Code lang="sh" code={`git switch -c review/sam
+curl -fsSLo /tmp/teammate.patch ${patchURL}
+git am /tmp/teammate.patch`} />
+
+```txt
+Applying: api: send security headers with every answer
+Applying: api: let browsers cache the public reads
+Applying: worker: name the flag defaults
+Applying: probe: say what each trace hook measures
+```
+
+When `git am` stops with `patch does not apply`, a file of yours differs from the version on the earlier pages. Run `git am --abort`, compare that file with the page that shows it, and try again.
+
+Run `make test`. Every test passes, the new `TestSecureHeaders` included. Rebuild and start the stack with `make up`, and start the status page with `make web`. Run `git log -4` and read the commit messages: each one claims what its change does. The next four steps check each claim.
+
+### Step 3: Missing Headers Found with curl
+
+The first commit says that every answer carries three security headers from the REST Security Cheat Sheet of OWASP, the Open Worldwide Application Security Project from <a href={weekHref(11)}>Week 11</a>:
+
+- `X-Content-Type-Options: nosniff`: the browser trusts the `Content-Type` the api sends and never guesses another type.
+- `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'none'`: no other site can show an answer inside a frame on its own page. The second is the modern form, and the first covers old browsers.
+
+Check the claim on the wire. `-s` hides the progress bar, `-v` prints the exchange, and `-o /dev/null` drops the body. The output below leaves out the lines that start with `*`:
+
+```sh
+curl -sv -o /dev/null http://127.0.0.1:8080/healthz
+```
+
+```txt
+> GET /healthz HTTP/1.1
+> Host: 127.0.0.1:8080
+> User-Agent: curl/8.5.0
+> Accept: */*
+>
+< HTTP/1.1 200 OK
+< Content-Type: application/json
+< Date: Sun, 11 Oct 2026 07:41:18 GMT
+< Content-Length: 16
+<
+```
+
+Lines that start with `>` go out, and lines that start with `<` come back, as in <a href={weekHref(4)}>Week 4</a>. None of the three headers arrives. The test says they are there, and the wire says they are not: the two read different things.
+
+Here is how Go sends headers. A handler sets them in the map that `w.Header()` returns. The first call to `w.WriteHeader` or `w.Write` sends the status line and that map, and from then on, the map no longer matters. A change after that point edits a map nobody reads. `secureHeaders` calls `next.ServeHTTP` first, and every handler writes its answer there. The three `Set` calls come after it.
+
+`httptest.ResponseRecorder` hides the bug. `rec.Header()` returns the same live map the handler writes to, late changes included. `rec.Result().Header` holds a copy taken when the handler calls `WriteHeader`, which is what a client receives. Fix the test first, to read the headers the way a client does:
+
+<CodeFrom file="go/week12/your-monitor/internal/api/headers_test.go" region="headers-test" lang="go" title="internal/api/headers_test.go" />
+
+Run `go test ./internal/api -run TestSecureHeaders`. It fails, as a test written before the fix must:
+
+```txt
+--- FAIL: TestSecureHeaders (0.00s)
+    headers_test.go:27: GET /healthz: X-Content-Type-Options = "", want "nosniff"
+    headers_test.go:27: GET /healthz: X-Frame-Options = "", want "DENY"
+```
+
+Now move the three `Set` calls above `next.ServeHTTP`:
+
+<CodeFrom file="go/week12/your-monitor/internal/api/headers.go" region="headers" lang="go" title="internal/api/headers.go" />
+
+The test passes. Run `make up` and the same `curl` again. The headers arrive on every answer, a `204` from `DELETE` and the JSON `404` included.
+
+### Step 4: A Stale Status Page Found with DevTools
+
+The second commit says that browsers keep the public reads for five minutes. Reproduce what that means for the status page. Open `http://localhost:5173`, then add a monitor with `curl`. `read -rs` reads your password without showing it, and `printf` hands it to `curl` on standard input, which keeps it out of your shell history and out of the process list:
+
+```sh
+read -rs PASSWORD
+printf '{"email":"you@example.com","password":"%s"}' "$PASSWORD" |
+  curl -sS -c /tmp/monitor-cookies.txt -H 'Content-Type: application/json' --data @- \
+  http://127.0.0.1:8080/api/login
+curl -sS -b /tmp/monitor-cookies.txt -H 'Content-Type: application/json' \
+  -d '{"url":"https://example.org","interval_seconds":30}' http://127.0.0.1:8080/api/monitors
+```
+
+The page refreshes every 30 seconds since <a href={weekHref(10)}>Week 10</a>, yet `https://example.org` stays missing for up to five minutes. `curl -s http://127.0.0.1:8080/api/monitors` lists it at once. The api is right, and the page shows old data.
+
+Open DevTools with **F12**, or **Cmd+Option+I** on macOS, and select the **Network** panel. Click **Fetch/XHR** to list only the requests the page sends from code, and wait for the next refresh:
+
+- The **Size** column of each `monitors` row reads **(disk cache)** instead of a number of bytes. The browser answers from its cache, and the request never leaves the machine.
+- Click the row and open **Headers**. Under **Response Headers**, `Cache-Control: public, max-age=300` tells the browser to reuse the answer for 300 seconds.
+
+Now tick **Disable cache** at the top of the panel. The next refresh reaches the api, and `https://example.org` appears. Untick it, and the page goes stale again. Remember this trap: the checkbox works only while DevTools is open, which means a caching bug can vanish the moment you start to look for it.
+
+`grep -rn Cache-Control internal/` finds `cache.go`. The fix is the value that the cheat sheet from the first commit lists first for every api answer: `no-store`. Write the test first:
+
+<CodeFrom file="go/week12/your-monitor/internal/api/cache_test.go" region="cache-test" lang="go" title="internal/api/cache_test.go" />
+
+It fails with `Cache-Control = "public, max-age=300", want no-store`. Then change `cache.go`. The header now covers every answer under `/api/`, writes included:
+
+<CodeFrom file="go/week12/your-monitor/internal/api/cache.go" region="cache" lang="go" title="internal/api/cache.go" />
+
+`no-cache` with an `ETag` header has the browser ask whether the answer changed, and get a short `304 Not Modified` back when it did not, which saves bytes on large answers. The status page answers are small, and `no-store` is simpler to get right. Run `make up`. Your browser still holds the old answers until their 300 seconds run out: with DevTools open, right-click the reload button and pick **Empty Cache and Hard Reload**. After that, every poll shows a size in bytes.
+
+### Step 5: A Busy Idle Worker Found with a CPU Profile
+
+The third commit says it only names the defaults. Watch what the worker does with an empty queue. Stop the worker and the scheduler in Docker, which leaves no one to queue jobs, and run a worker on your machine, with its debug server, against the Postgres in Docker:
+
+```sh
+docker compose stop worker scheduler
+make run ARGS="-workers 10 -debug-addr 127.0.0.1:6060"
+```
+
+In a second terminal, check its CPU use with the process ID from its first log line, `pid=8933` in this example output:
+
+```sh
+ps -o pid,%cpu,command -p 8933
+```
+
+```txt
+  PID %CPU COMMAND
+ 8933 96.0 /tmp/go-build1234/b001/exe/worker -workers 10 -debug-addr 127.0.0.1:6060
+```
+
+A worker with nothing to do uses a whole CPU. Take a 10-second CPU profile and sort it by cumulative time. The output here is trimmed:
+
+```sh
+go tool pprof -top -cum 'http://127.0.0.1:6060/debug/pprof/profile?seconds=10'
+```
+
+```txt
+Duration: 10.11s, Total samples = 9.10s (89.99%)
+      flat  flat%   sum%        cum   cum%
+     0.05s  0.55%  0.55%      7.90s 86.81%  main.run.func1
+         0     0%  0.55%      7.75s 85.16%  github.com/you/your-monitor/internal/queue.Work
+         0     0%  0.55%      7.75s 85.16%  main.main.func2
+     6.21s 68.24% 68.79%      6.21s 68.24%  internal/runtime/syscall.Syscall6
+```
+
+`Total samples = 9.10s` in 10.11 seconds means that the worker keeps 0.9 of a CPU busy. `go tool pprof` saves each profile under `~/pprof/` and prints the file name. Read the `cum` column from the top: 87% of the time runs inside `run`, the worker loop, and 85% inside `queue.Work`. The large flat value of `Syscall6` is the operating system call that sends and receives bytes: the worker talks to Postgres nonstop. `-peek` shows what one function calls, here from the file the first command saved:
+
+```sh
+go tool pprof -peek 'queue.Work$' ~/pprof/pprof.worker.samples.cpu.001.pb.gz
+```
+
+```txt
+                                             7.75s   100% |   main.main.func2
+         0     0%     0%      7.75s 85.16%                | github.com/you/your-monitor/internal/queue.Work
+                                             2.83s 36.52% |   github.com/jackc/pgx/v5/pgxpool.(*Pool).Begin (inline)
+                                             2.46s 31.74% |   github.com/jackc/pgx/v5/pgxpool.(*Tx).Rollback
+                                             2.29s 29.55% |   github.com/jackc/pgx/v5/pgxpool.(*Tx).QueryRow
+```
+
+`Work` opens a transaction, asks for a job, finds none, and rolls back. `probe.Check` does not appear at all: the worker checks nothing, and spends its time asking. From <a href={weekHref(9)}>Week 9</a>, `run` waits `poll` after an empty answer before it asks again. The wait is gone. Now read the first log line of the worker again: `started pid=8933 workers=10 poll=1µs`. One microsecond.
+
+The new constant reads `defaultPoll = 1000 // one second`. A constant without a type, such as `1000`, takes the type it meets. Passed to `flag.Duration`, it becomes `time.Duration(1000)`: 1,000 nanoseconds. `go run ./cmd/worker -h` shows it too: `(default 1µs)`. The test runs `run` with the default on a queue that stays empty, and counts the looks:
+
+<CodeFrom file="go/week12/your-monitor/cmd/worker/poll_test.go" region="poll-test" lang="go" title="cmd/worker/poll_test.go" />
+
+Before the fix, it fails with `two idle workers looked at the queue 21744 times in 200 ms, want 2`. Change the constant to `defaultPoll = time.Second`, and the test passes. Run the worker again and take a new profile: `Total samples = 10ms (0.1%)`. For a picture of the same data, open a saved profile with `go tool pprof -http=127.0.0.1:8081 <file>` and pick **View**, then **Flame Graph**. The default graph view needs Graphviz: `brew install graphviz` on macOS, `sudo apt install graphviz` on Ubuntu. Stop your worker with Ctrl+C and start the two services in Docker again with `docker compose start worker scheduler`.
+
+### Step 6: A Slow Handshake Found with Delve
+
+The fourth commit says it changes no behavior. Look at the results of an HTTPS monitor. This example output leaves out the other fields:
+
+```sh
+curl -s 'http://127.0.0.1:8080/api/monitors/1/results?limit=1'
+```
+
+```txt
+[{"monitor_id":1,"up":true,"status_code":200,"dns_ms":12,"connect_ms":12,"tls_ms":25,"first_byte_ms":50}]
+```
+
+TLS takes about twice as long as connect. Week 4 names two causes: a server on TLS 1.2, which needs two round trips, and a HelloRetryRequest. Test the first with `curl -v https://example.com`: the `SSL connection using TLSv1.3` line rules it out. Next, measure the same handshake with a second tool. `curl -w` prints timings, each counted from the start: `time_connect` ends with the TCP handshake and `time_appconnect` with the TLS handshake. This is example output:
+
+```sh
+curl -so /dev/null -w 'connect %{time_connect}s  tls done %{time_appconnect}s\n' https://example.com
+```
+
+```txt
+connect 0.024158s  tls done 0.037402s
+```
+
+curl measures a TLS handshake of 13 ms, the difference between the two. Your monitor says 25: about connect plus TLS. The number your code reports is wrong, and the cause is in `probe.Check`. Reproduce it in a test that needs no internet. The test server speaks TLS, and the dialer waits 300 ms between the TCP handshake and the TLS handshake. That wait belongs in neither row:
+
+<CodeFrom file="go/week12/your-monitor/internal/probe/tls_test.go" region="tls-test" lang="go" title="internal/probe/tls_test.go" />
+
+```txt
+--- FAIL: TestTLSRowIsTheHandshakeOnly (0.31s)
+    tls_test.go:37: Connect = 127.67µs, TLS = 306.994225ms; want each under the 300ms gap between them
+```
+
+The TLS row holds the 300 ms wait, which means it starts before the wait does. Run the test under Delve and stop where every row gets its value: the line `*d = time.Since(*from)` inside `end`. `grep -n 'time.Since(\*from)' internal/probe/probe.go` gives its line number, 47 in this example:
+
+```sh
+dlv test ./internal/probe -- -test.run TestTLSRowIsTheHandshakeOnly
+```
+
+Everything after `--` goes to the test binary. At the `(dlv)` prompt, set the breakpoint and run to it. `stack 1` prints the current frame and the one that called it, and `print from` shows the address that `from` points to, followed by the time stored there. This output is trimmed:
+
+```txt
+(dlv) break probe.go:47
+Breakpoint 1 set at 0x86cf2b for github.com/you/your-monitor/internal/probe.Check.func2() ./internal/probe/probe.go:47
+(dlv) continue
+> [Breakpoint 1] github.com/you/your-monitor/internal/probe.Check.func2() ./internal/probe/probe.go:47 (hits goroutine(9):1 total:1)
+(dlv) stack 1
+0  0x000000000086cf2b in github.com/you/your-monitor/internal/probe.Check.func2
+   at ./internal/probe/probe.go:47
+1  0x000000000086cada in github.com/you/your-monitor/internal/probe.Check.func7
+   at ./internal/probe/probe.go:64
+(dlv) print from
+(*time.Time)(0xc000010ea0)
+```
+
+Go names the function literals inside `Check` in order: `begin` is `func1`, `end` is `func2`, and the hooks follow. Line 64 is the `ConnectDone` hook, and `from` points to `connectStart`. That one is right. Continue to the next call:
+
+```txt
+(dlv) continue
+> [Breakpoint 1] github.com/you/your-monitor/internal/probe.Check.func2() ./internal/probe/probe.go:47 (hits goroutine(9):2 total:2)
+(dlv) stack 1
+0  0x000000000086cf2b in github.com/you/your-monitor/internal/probe.Check.func2
+   at ./internal/probe/probe.go:47
+1  0x000000000086ca0c in github.com/you/your-monitor/internal/probe.Check.func9
+   at ./internal/probe/probe.go:67
+(dlv) print from
+(*time.Time)(0xc000010ea0)
+(dlv) frame 1 locals
+end = github.com/you/your-monitor/internal/probe.Check.func2
+connectStart = time.Time(2026-10-11T08:03:00Z, +2114556){wall: 14027286278811489895, ext: 2114556, loc: (*time.Location)(0xcd7de0)}
+t = github.com/you/your-monitor/internal/probe.Timings {DNS: 0, Connect: 412699689, TLS: 0,...+2 more}
+```
+
+Line 67 is the `TLSHandshakeDone` hook, and `from` holds the same address as before. `frame 1 locals` lists what the hook closes over: `connectStart`, not `tlsStart`. The TLS row counts from the start of the TCP connect. Type `exit` to leave Delve.
+
+Three details in that session are worth a second look:
+
+- `goroutine(9)`: the hooks run in a goroutine of the HTTP client, not in the one that runs the test, as Week 4 explains. A breakpoint finds code wherever it runs.
+- `Connect: 412699689` is 412 ms, not the fraction of a millisecond the test prints. `end` computes it after the first stop, and the clock keeps running while you type.
+- One look settles the hypothesis: two different hooks hand `end` the same pointer.
+
+Fix the hook: `end(&t.TLS, &tlsStart)`. Keep the new comments, which are good:
+
+<CodeFrom file="go/week12/your-monitor/internal/probe/probe.go" region="timings" lang="go" title="internal/probe/probe.go" />
+
+The test passes. Run `make up`, and the next results of your HTTPS monitors show a `tls_ms` close to `connect_ms`, as Week 4 predicts for TLS 1.3.
+
+### Step 7: Merge the Fixes
+
+Commit each fix with its test on `review/sam`. One commit per bug keeps the history readable: each one names a symptom, a cause and a test. Then run the whole suite and merge:
+
+```sh
+make test
+git switch main
+git merge review/sam
+make up
+```
+
+`make test` passes, with three new tests and one corrected one. Each of the four fails on the commits from Sam. The site checks the same with its own copy: it builds the versions from Sam in place of the fixed files and runs the four tests against them.
 
 ## Observe It
 
 <ObserveIt>
-This section is not written yet.
+
+Two of the four bugs leave clues in output you already have. Make these habits:
+
+- **Log the settings a program runs with, at start.** The worker prints `poll=1µs` on its first line. A busy loop, a wrong timeout or the wrong database shows up there before anywhere else. The api prints only its address: add every value it reads from a command-line flag or the environment to its `listening` line, except secrets such as `DATABASE_URL`, which holds the database password.
+- **Measure the same thing with two tools.** `curl -w` against `tls_ms` catches the TLS row. When a number from your code matters, find a second tool that measures it on its own, and compare them once.
+- **Keep a baseline profile.** Take a 10-second CPU profile of the healthy worker, idle and with 100 monitors, and save both files. A later profile that disagrees with the baseline points at what changed. Note the `Total samples` line of each: the fixed idle worker shows `10ms (0.1%)`.
+- **Count the requests the api serves.** The api logs one line per request since <a href={weekHref(7)}>Week 7</a>. With the status page open, `docker compose logs api | grep -c 'path=/api/monitors '` counts its polls. Under the caching bug, the count stays flat while the page polls.
+
+<a href={weekHref(13)}>Week 13</a> turns these into metrics and dashboards. The <a href={trackHref('observability')}>Observability track</a> covers profiles as one of the signals a service gives off.
+
 </ObserveIt>
 
 ## Operate It
 
 <OperateIt>
-This section is not written yet.
+
+Debugging tools change the program they look at. Know the cost before you point one at a running service:
+
+- **A breakpoint stops every goroutine.** Health checks time out while you read variables, and from <a href={weekHref(15)}>Week 15</a>, Kubernetes restarts a container whose liveness probe fails. Debug a copy, or a test, not the live service.
+- **The production image cannot be debugged.** The Dockerfile from <a href={weekHref(6)}>Week 6</a> builds with `-ldflags="-s -w"`, which strips the symbol table and the debug information that Delve reads. Reproduce the bug on your machine, as Steps 5 and 6 do.
+- **The debug server is a door.** `/debug/pprof/` shows the inside of the program and starts profiles on request. Keep `-debug-addr` on `127.0.0.1` and never publish its port in `compose.yaml`.
+- **A cache header outlives its fix.** Every browser that received `max-age=300` keeps that answer for up to 300 seconds after you deploy the fix, and a CDN keeps it until you purge it. Before you ship a `max-age`, decide how stale an answer can be.
+
+| What you see | Tool to start with |
+| --- | --- |
+| A header, status code or cookie looks wrong | `curl -v` against the api, with no browser in between |
+| The page shows old data, or behaves differently with DevTools open | DevTools **Network** panel: the **Size** column and the response headers |
+| A process uses CPU or memory it has no reason to use | `go tool pprof` on its debug server: profile for CPU, heap for memory, goroutine for leaks |
+| A value is wrong, and the code that computes it looks right | A failing test, then `dlv test` with a breakpoint where the value is set |
+
 </OperateIt>
 
 ## AI This Week
 
 <AiThisWeek>
-This section is not written yet.
+
+**Stage 2: Review everything.** You can generate code, but you read every line, write or extend its test, and can explain it back.
+
+**Do:** paste the output of `go tool pprof -top -cum` into the assistant and ask it to explain flat against cum for each line, and which function to read next. Then check each claim against your code and the `-peek` output.
+
+**Do not:** paste the patch and ask the assistant to find the bugs before you hunt them yourself. The exercise trains the path from a symptom to a cause with a tool, and a list of answers skips the path. After Step 7, try it, and note which of the four bugs it finds and which it misses.
+
 </AiThisWeek>
 
 ## Side Lab
 
-<SideLab title="Optional lab: not written yet">
-This section is not written yet.
+<SideLab title="Find the commit that broke a test with git bisect">
+
+With four commits, reading each diff works. With 400, it does not. `git bisect` runs a binary search over the history: you name a commit where a test fails and one where it passes, and Git checks out the commit halfway between, again and again, until it finds the first bad one. 400 commits take nine steps.
+
+The TLS test lives in your fix commit, which bisect removes from the tree when it checks out an older commit. Copy the test aside first, then let `git bisect run` drive the search. On `review/sam`, after you commit the fixes and before you merge:
+
+```sh
+git show HEAD:internal/probe/tls_test.go > /tmp/tls_test.go
+git bisect start $(git log --format=%h -1 --author=sam@example.com) main
+git bisect run sh -c 'cp /tmp/tls_test.go internal/probe/ && go test ./internal/probe -run TestTLSRowIsTheHandshakeOnly; status=$?; rm internal/probe/tls_test.go; exit $status'
+git bisect reset
+```
+
+`git bisect start` takes the bad commit first, the last one from Sam, then the good one. `git bisect run` runs the command at each step: exit code `0` marks the commit good, and any code from `1` to `127` except `125` marks it bad. The command copies the test in, runs it, removes it again, and passes on the result of `go test`. Git ends with:
+
+```txt
+ade3b0ec6f8b43981fa792d347be577cc5c74096 is the first bad commit
+    probe: say what each trace hook measures
+```
+
+Your hash differs. `git bisect reset` returns you to the branch you started from. Repeat it with `TestIdleWorkersWaitForPoll` from `cmd/worker/poll_test.go`, and bisect names the worker commit.
+
 </SideLab>
 
 ## Done When
