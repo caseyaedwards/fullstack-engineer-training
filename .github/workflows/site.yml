@@ -90,7 +90,7 @@ jobs:
         working-directory: examples/web
         run: |
           npm ci
-          npx vitest run
+          npm test
 
       - run: npm run test:unit
       - run: npm run build
@@ -98,6 +98,13 @@ jobs:
 
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+
+      # The Week 10 status page: Playwright against the Vite dev server.
+      # Both lock files hold @playwright/test 1.64.0, which shares
+      # the Chromium installed above.
+      - name: Web examples, end to end
+        working-directory: examples/web
+        run: npm run test:e2e
 
       - uses: actions/upload-pages-artifact@v3
         if: github.event_name != 'pull_request'

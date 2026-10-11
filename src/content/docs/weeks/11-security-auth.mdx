@@ -1,17 +1,24 @@
 ---
 title: "Week 11: Security and Auth"
+description: Give the uptime monitor a login. Hash passwords with bcrypt, keep sessions in Postgres behind an HttpOnly, Secure, SameSite=Lax cookie, limit password guessing, keep secrets out of Git, and map each fix to the OWASP Top 10.
 week: 11
 phase: harden
-hours: [5, 8]
+hours: [6, 8]
 aiStage: 2
 tracks: [security, iam, tls-pki]
 done:
-  - id: item-1
-    text: "Placeholder item 1: this week is not written yet"
-  - id: item-2
-    text: "Placeholder item 2: this week is not written yet"
-  - id: item-3
-    text: "Placeholder item 3: this week is not written yet"
+  - id: writes-need-login
+    text: With the stack running, POST /api/monitors without a cookie answers 401, the same request with the cookie from POST /api/login answers 201, and GET /api/monitors answers without any cookie.
+  - id: user-from-stdin
+    text: The users table holds a 60-character hash that starts with $2a$12$ for a user you created with api -create-user, and the password appears in no file, log line or shell history.
+  - id: cookie-attributes
+    text: In the browser devtools, the session cookie shows HttpOnly, Secure and SameSite Lax, document.cookie leaves it out, and you can name the attack each attribute blocks.
+  - id: rate-limit-seen
+    text: Six wrong passwords in a row get five 401 answers and then a 429 with a Retry-After header, and the api log has five login failed lines and one login refused line.
+  - id: sessions-vs-tokens
+    text: Without notes, you can explain why the monitor keeps sessions in a table instead of handing out JWTs, and name a system where a JWT fits better.
+  - id: secrets-checked
+    text: A search of every commit in your repository finds none of the secrets in your .env file.
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -21,43 +28,460 @@ import AiThisWeek from '../../../components/AiThisWeek.astro';
 import SideLab from '../../../components/SideLab.astro';
 import ReadWith from '../../../components/ReadWith.astro';
 import DoneWhen from '../../../components/DoneWhen.astro';
+import Diagram from '../../../components/Diagram.astro';
+import CodeFrom from '../../../components/CodeFrom.astro';
+import { weekHref, trackHref } from '../../../lib/links';
 
 <WeekHeader />
 
+Right now, anyone who reaches port `8080` can add a monitor or delete every one. This week, the api learns who is asking. The status page stays public: anyone can read it. Adding and deleting monitors needs a login.
+
 ## Goals
 
-This section is not written yet.
+- Store passwords in a form that a stolen database does not give away, and know the limits of bcrypt.
+- Log users in with a server-side session and a cookie, and explain what each cookie attribute blocks.
+- Guard the routes that change data, refuse writes that other sites start, and test both.
+- Limit password guessing, and log every failed login without logging a secret.
+- Compare sessions with JSON Web Tokens, and map this week's fixes to the OWASP Top 10.
 
 ## Concepts
 
-This section is not written yet.
+### Who Are You, and What Can You Do
+
+Two questions guard every request. **Authentication** asks who you are: the api checks an email and a password, then remembers the answer. **Authorization** asks what you can do: the api looks up the rules for that person and that request. The monitor has one rule: anyone can read, and any logged-in user can write. Bigger systems give each person roles, such as viewer and editor. The <a href={trackHref('iam')}>IAM track</a>, short for identity and access management, covers them.
+
+### Storing Passwords
+
+The api never stores a password. It stores a **hash**: the output of a one-way function. At login, it hashes what you type and compares the two hashes. Nobody can turn a hash back into the password, but anyone with the hash can guess: hash `password1`, compare, try the next word. A fast hash such as SHA-256 runs billions of times a second on one graphics card, which tries every common password in seconds.
+
+Two fixes stop that:
+
+- A **salt**: random bytes mixed into each hash. Two users with the same password get different hashes, and an attacker who steals the table has to guess each user separately.
+- A **slow hash**, built to cost time on purpose. bcrypt takes a **cost**: it runs 2 to the power of the cost rounds, and each step up doubles the time. On the machine that built this page, one hash takes 68 ms at cost 10, 269 ms at cost 12 and 1.13 s at cost 14. A login pays that once. An attacker who steals the hashes pays it for every guess. An attacker who guesses through the login form makes your server pay it instead, which is why Step 5 limits guesses.
+
+A bcrypt hash carries everything needed to check it, in 60 characters, such as `$2a$12$cPYsvj8HiV7yznYS7TVYSeVzUEXRo51fqRpOjVL7/5Kf5tHiRseE2`:
+
+| Part | Example | Meaning |
+| --- | --- | --- |
+| Version | `$2a$` | The bcrypt version |
+| Cost | `12$` | 2 to the power of 12 rounds |
+| Salt | `cPYsvj8HiV7yznYS7TVYSe` | 22 characters, new for every hash |
+| Hash | `VzUEXRo51fqRpOjVL7/5Kf5tHiRseE2` | The last 31 characters |
+
+Because the cost sits in the hash, you can raise it later: new hashes use the new cost, and old ones still check.
+
+bcrypt has one sharp edge: it reads only the first 72 **bytes** of a password. Bytes, not characters: in UTF-8, `é` takes two bytes and `🔒` four. The Go package `golang.org/x/crypto/bcrypt` refuses to hash a longer password and returns `ErrPasswordTooLong`. When it checks a password, it compares the first 72 bytes and ignores the rest. The api refuses any password over 72 bytes itself, at both ends.
+
+The OWASP Password Storage Cheat Sheet ranks Argon2id first, then scrypt, and lists bcrypt "for legacy systems", with a cost of 10 or more and a 72-byte limit. This course uses bcrypt at cost 12, because its Go package has a two-function API and keeps the cost and the salt inside the hash. Argon2id, in `golang.org/x/crypto/argon2`, leaves you to store its settings and salt yourself.
+
+### Sessions: A Random Name for a Login
+
+HTTP forgets you between requests. To remember a login, the api creates a **session**: a row in Postgres that says which user logged in and when the login ends. The browser holds the name of that row in a **cookie**: a value the server sets with a `Set-Cookie` header, and the browser sends back in a `Cookie` header on every later request to the same site.
+
+The name is a **token**: 26 random characters from `crypto/rand.Text`, with at least 128 bits of randomness. At a billion billion guesses a second, trying half of all 128-bit tokens takes about five trillion years. The sessions table stores the SHA-256 hash of the token, not the token: a copy of the table, in a backup for example, logs nobody in. A fast hash is enough here, unlike for passwords, because nobody can guess the input.
+
+<Diagram
+  id="session-login"
+  title="Logging in, then adding a monitor with the session cookie"
+  code={`shape: sequence_diagram
+browser: browser
+api: api
+db: Postgres
+
+browser -> api: "POST /api/login: email, password"
+api -> db: "SELECT the user by email"
+db -> api: "id, bcrypt hash"
+api -> api: "bcrypt check, 0.25 s"
+api -> db: "INSERT session: SHA-256 of a new token"
+api -> browser: "200, Set-Cookie: session=token"
+browser -> api: "POST /api/monitors, Cookie: session=token"
+api -> db: "SELECT the user of the session, if unexpired"
+db -> api: "you@example.com"
+api -> browser: "201 Created"
+`}
+  steps={[
+    { hl: ['browser', 'api', 'browser->api'], caption: 'The browser sends the email and the password in a JSON body. Never in the URL: servers log URLs, and browsers keep them in the history.' },
+    { hl: ['api', 'db', 'api->db', 'db->api', 'api->api'], caption: 'The api loads the hash for that email and runs bcrypt on the password. A wrong email and a wrong password get the same answer, after the same 0.25 s.' },
+    { hl: ['api', 'db', 'browser', 'api->db#1', 'api->browser'], caption: 'On a match, the api makes a new random token, stores its SHA-256 hash with an expiry 24 hours away, and hands the token to the browser in a cookie.' },
+    { hl: ['browser', 'api', 'browser->api#1'], caption: 'From now on, the browser adds the cookie to every request to this site. The page code does nothing: the browser does it.' },
+    { hl: ['api', 'db', 'browser', 'api->db#2', 'db->api#1', 'api->browser#1'], caption: 'The api hashes the token from the cookie and looks the session up. A row that exists and has not expired names the user, and the write goes ahead.' },
+  ]}
+/>
+
+### What Each Cookie Attribute Blocks
+
+The api sets the cookie with this header. Each attribute after the value closes one door:
+
+```txt
+Set-Cookie: session=4JSM4QUGWTA4AWIZ2BSX5JLPON; Path=/; Max-Age=86400; HttpOnly; Secure; SameSite=Lax
+```
+
+| Attribute | What the browser does | What it blocks |
+| --- | --- | --- |
+| `Path=/` | Sends the cookie with every path on the site | Nothing: it makes `/api/me` and `/api/monitors` both receive it |
+| `Max-Age=86400` | Deletes the cookie after 86,400 seconds, 24 hours | A login that lasts forever on a shared computer |
+| `HttpOnly` | Leaves the cookie out of `document.cookie` | Script injected into the page reading the token and sending it away |
+| `Secure` | Sends the cookie only over HTTPS. Chrome and Firefox exempt `http://localhost`, and Chromium also `http://127.0.0.1` | Anyone on the network path reading the token from plain HTTP |
+| `SameSite=Lax` | Leaves the cookie off requests that another site starts, except a top-level `GET` navigation | Cross-site request forgery |
+
+**Cross-site scripting** (XSS) is an attack where a page runs script that someone else wrote, through text that the page shows without escaping. React escapes text by default, which is why the status page from <a href={weekHref(10)}>Week 10</a> is safe from it. `HttpOnly` limits the damage of one: the script can still send requests from your page, but it cannot copy the token and use it from elsewhere.
+
+**Cross-site request forgery** (CSRF) is an attack where another site makes your browser send a request to your api. Without `SameSite`, the browser adds your cookie to it, and the api sees a logged-in request. `SameSite` decides when the browser adds the cookie. It compares **sites**, not origins. An origin is the scheme, host and port. A site is the scheme plus the registrable domain: `https://app.example.com` and `https://api.example.com` are two origins on one site, and `http://localhost:5173` and `http://localhost:8080` are one site too. With `Lax`, a request from another site carries the cookie only when it is a top-level navigation, such as a link click, with a safe method: `GET` or `HEAD`. A form `POST`, a `fetch`, an image or an iframe from another site gets no cookie.
+
+A request from another origin also meets CORS, short for cross-origin resource sharing: the headers a server sends to tell the browser which other origins can read its answers. A **simple request**, such as a form `POST` or a `fetch` with a `text/plain` body, still reaches the api and runs the handler: CORS only decides whether the other origin reads the answer. A request with a JSON body or the `DELETE` method is not simple. The browser asks first with an `OPTIONS` request, the **preflight**, and sends the real request only when the answer carries the right CORS headers. Two rules of the api turn this into a defense, and every later week keeps them: **writes take JSON only, and the api sends no CORS headers.** The browser hides each answer from other origins, and blocks each JSON or `DELETE` request at the preflight.
+
+Rules that hold by habit break by accident, and `SameSite` admits a sibling subdomain. A third check reads what the browser says about the request itself. Every current browser sends `Sec-Fetch-Site` with each request: `same-origin`, `same-site`, `cross-site`, or `none` for an address the user typed. Step 7 adds `sameOrigin`, which refuses every write that does not come from the api's own origin.
+
+<Diagram
+  id="csrf"
+  title="A page on another site tries to change your monitors"
+  code={`shape: sequence_diagram
+evil: "page on evil.example"
+browser: "your browser, logged in"
+api: "your api"
+
+evil -> browser: "hidden form: POST /api/monitors"
+browser -> api: "POST, Sec-Fetch-Site: cross-site"
+api -> browser: "403 cross-origin request refused"
+evil -> browser: "fetch: POST, JSON, credentials"
+browser -> api: "OPTIONS preflight"
+api -> browser: "405, no CORS headers"
+browser -> evil: "TypeError: Failed to fetch"
+evil -> browser: "link to /api/me"
+browser -> api: "GET /api/me, with cookie"
+api -> browser: "200, shown in your tab only"
+`}
+  steps={[
+    { hl: ['evil', 'browser', 'api', 'evil->browser', 'browser->api', 'api->browser'], caption: 'A form on evil.example posts to your api. The browser labels it cross-site, and sameOrigin answers 403 before any handler runs. SameSite=Lax keeps the cookie off it as well, and the create handler takes JSON only: three locks on one door.' },
+    { hl: ['evil', 'browser', 'api', 'evil->browser#1', 'browser->api#1', 'api->browser#1', 'browser->evil'], caption: 'A fetch with a JSON body needs permission first. The browser sends an OPTIONS preflight, the api answers 405 with no CORS headers, and the browser never sends the POST.' },
+    { hl: ['evil', 'browser', 'api', 'evil->browser#2', 'browser->api#2', 'api->browser#2'], caption: 'A link click is a top-level GET, and Lax sends the cookie. The answer opens in your tab, where evil.example cannot read it. This is why a GET must never change data.' },
+  ]}
+/>
+
+Every step of this diagram comes from Chromium against the api you build this week. `SameSite` alone has one gap: it trusts the whole site. A hostile page on `blog.example.com` counts as the same site as `app.example.com`, and its form `POST` to `/api/logout` carries your cookie. `sameOrigin` refuses it, since `Sec-Fetch-Site` says `same-site`. Still, keep the status page on a domain that runs nothing else.
+
+### Sessions or Tokens
+
+The other common answer is a **JSON Web Token** (JWT): the server writes the user and an expiry into a JSON payload, signs it with a secret key, and hands out `header.payload.signature`, each part written in base64url: a way to write bytes as text that is safe in a URL. Any server that holds the key checks the signature and the expiry, with no database lookup. The side lab builds one by hand.
+
+| | Session in a table | Signed token (JWT) |
+| --- | --- | --- |
+| Check a request | One indexed query in Postgres | Check the signature: CPU only |
+| Log out, or lock someone out | Delete the row: the next request fails | The token stays valid until it expires, unless every server checks a deny list in a database |
+| Secret to manage | None: the token is random | The signing key. Whoever holds it logs in as anyone |
+| What the client holds | A random name that says nothing | The payload, readable by anyone: base64url is encoding, not encryption |
+
+The monitor uses sessions. It has one api and one Postgres already, which makes the lookup cheap. Logout and lockout work at once. No signing key exists to leak. A JWT fits a different shape: many services, run by different teams or companies, that each check who sent a request without calling one shared database. OpenID Connect, the protocol behind Sign in with Google, hands your identity to another company as a JWT.
+
+### The OWASP Top 10
+
+The Open Worldwide Application Security Project (OWASP) publishes the **OWASP Top 10**: a ranked list of the most common kinds of weakness in web applications. The current list is the 2025 edition. Eight of its ten categories touch the monitor:
+
+| Category | In the monitor |
+| --- | --- |
+| A01:2025 Broken Access Control | Before this week, anyone wrote. `requireUser` now guards every write, and `sameOrigin` refuses writes from other sites |
+| A02:2025 Security Misconfiguration | Compose publishes Postgres on `127.0.0.1` only, and the api sends no CORS headers |
+| A03:2025 Software Supply Chain Failures | `go.sum` pins the checksum of every module, including the new `golang.org/x/crypto` |
+| A04:2025 Cryptographic Failures | bcrypt for passwords, SHA-256 for tokens, a `Secure` cookie |
+| A05:2025 Injection | Every SQL statement passes values as `$1` parameters, since <a href={weekHref(8)}>Week 8</a>. React escapes text, which blocks XSS |
+| A07:2025 Authentication Failures | A login limit per email, one answer for a wrong email or password, a new random token at each login |
+| A09:2025 Security Logging and Alerting Failures | One log line per failed login, with the reason and without the password |
+| A10:2025 Mishandling of Exceptional Conditions | Errors answer `internal error` and keep the details in the log, since <a href={weekHref(7)}>Week 7</a>. When the session lookup fails, `requireUser` answers `500` and refuses the request |
 
 ## Build
 
-This section is not written yet.
+By the end of this section, writes need a login, and `cmd/api` creates users. The code comes from the site examples in `examples/go/week11/your-monitor`, which mirror your repository. Their import paths start with `fsp/examples/week11/your-monitor`, and yours start with `github.com/<user>/your-monitor`:
+
+```txt
+your-monitor/
+├── migrations/003_auth.sql   new: users, sessions
+├── internal/
+│   ├── auth/                 new: passwords, the limiter, Service
+│   ├── db/auth.go            new: AuthStore, the SQL for users and sessions
+│   └── api/                  new auth.go: login, logout, me, requireUser
+├── cmd/api/                  -create-user, and the auth service for the handler
+└── web/src/auth.ts           new: login, currentUser, logout, and its test
+```
+
+### Step 1: Add the Crypto Module
+
+bcrypt lives in `golang.org/x/crypto`, a module that the Go team maintains outside the standard library. From the folder that holds `go.mod`, run:
+
+```sh
+go get golang.org/x/crypto@latest
+```
+
+`go.sum` records the checksum of the module, and every later download must match it. Releases of `golang.org/x/crypto` from `v0.49.0` on ask for Go 1.25 or newer, and `go get` raises the `go` line of your `go.mod` to match when it is lower. Open `go.mod` and compare its `go` line with `ARG GO_VERSION` in your Dockerfile: the Dockerfile must name at least the same minor version, such as `1.26` for `go 1.26.0`, or the image build refuses the module. The site examples pin `v0.48.0`, the newest release that builds with Go 1.24, because the machine that tests them runs Go 1.24.
+
+### Step 2: Add the Tables
+
+Create `migrations/003_auth.sql`. `db.Migrate` from <a href={weekHref(8)}>Week 8</a> applies it at the next start, and `TestMigrateRunsEachFileOnce` in `internal/db` now expects versions 1, 2 and 3:
+
+<CodeFrom file="go/week11/your-monitor/migrations/003_auth.sql" region="users" lang="sql" title="migrations/003_auth.sql" />
+
+<CodeFrom file="go/week11/your-monitor/migrations/003_auth.sql" region="sessions" lang="sql" title="migrations/003_auth.sql" />
+
+### Step 3: Hash and Check Passwords
+
+Create the package `internal/auth`. The password rules come first:
+
+<CodeFrom file="go/week11/your-monitor/internal/auth/password.go" region="password" lang="go" title="internal/auth/password.go" />
+
+The minimum of 15 characters comes from NIST SP 800-63B-4, the US government rules for passwords, for a password that is the only factor of a login, as this one is. Length resists guessing better than symbols do. The tests check each edge, and one of them pins down the bcrypt behavior that makes the 72-byte check necessary:
+
+<CodeFrom file="go/week11/your-monitor/internal/auth/password_test.go" region="password-test" lang="go" title="internal/auth/password_test.go" />
+
+The tests use `bcrypt.MinCost`, which is 4, because cost 12 under `go test -race` takes seconds per hash. Run `go test -bench HashPassword ./internal/auth` to time costs 10, 12 and 14 on your machine.
+
+### Step 4: Define Users, Sessions and the Store
+
+<CodeFrom file="go/week11/your-monitor/internal/auth/auth.go" region="types" lang="go" title="internal/auth/auth.go" />
+
+`User` has no hash field, which means no JSON answer carries one by mistake. Then implement the store on Postgres in `internal/db/auth.go`. The user half follows the monitor store from Week 8, and turns the unique violation `23505` on `email` into `ErrEmailTaken`. The session half:
+
+<CodeFrom file="go/week11/your-monitor/internal/db/auth.go" region="sessions" lang="go" title="internal/db/auth.go" />
+
+### Step 5: Limit Password Guessing
+
+A slow hash makes each guess cost time. A limit caps the number of guesses. This one allows five login attempts per email address every 15 minutes:
+
+<CodeFrom file="go/week11/your-monitor/internal/auth/limit.go" region="limiter" lang="go" title="internal/auth/limit.go" />
+
+The key is the email address, not the client address, because every request behind nginx or the Vite dev server arrives from the address of the proxy. The trade-off: anyone who knows your email can lock you out for 15 minutes. `TestLimiterUnderParallelGuesses` fires 100 attempts at once and counts exactly five that pass.
+
+The cap of 10,000 keys protects the memory of the api from guesses at made-up emails. A full map makes room by deleting the expired keys, then the oldest one, which means a flood never locks out a real user: `TestLimiterCapsItsMemory` fills the map and logs in with a fresh email. `Login` refuses an email over 254 bytes, the longest that SMTP allows, before it reaches the map or the log. Each guess at a new email still costs the server one bcrypt check, about 0.27 s of CPU, and nothing caps those until <a href={weekHref(17)}>Week 17</a> adds a limit per client address for the whole api.
+
+### Step 6: Start and End Sessions
+
+`Service` ties the store, bcrypt and the limiter together. `NewService` sets `Cost` to 12, `Now` to `time.Now`, and a limiter of five attempts per 15 minutes:
+
+<CodeFrom file="go/week11/your-monitor/internal/auth/service.go" region="login" lang="go" title="internal/auth/service.go" />
+
+When the email has no account, `Login` still runs bcrypt, against `dummyHash`. Without it, a missing account answers in a millisecond and a real one in 250 ms, and the timing tells an attacker which emails have accounts. `s.Check` is `CheckPassword`, kept in a field for the tests: `TestUnknownEmailCostsAFullCheck` records each check and fails when a login for an unknown email skips it, and `TestGoodLoginResetsTheLimit` fails when you delete the `reset` call. The rest of the session handling:
+
+<CodeFrom file="go/week11/your-monitor/internal/auth/service.go" region="session" lang="go" title="internal/auth/service.go" />
+
+The service tests run against Postgres, each in an empty schema from `dbtest.Pool(t, dbtest.URL(t), db.Migrate)`, the helpers of Weeks 8 and 9, and with a clock that the test moves by hand: past the 24 hours of a session, and past the 15 minutes of the limiter.
+
+### Step 7: Guard the Routes
+
+Create `internal/api/auth.go`. The cookie comes first, with a comment on each attribute:
+
+<CodeFrom file="go/week11/your-monitor/internal/api/auth.go" region="cookie" lang="go" title="internal/api/auth.go" />
+
+The login handler reads the body with `isJSON` and `decodeJSON[loginRequest]` from Week 7. It answers `400` for an email over 254 bytes, `401` for `ErrBadCredentials`, and `429` with a `Retry-After` header for `TooManyAttemptsError`. On success, it sets the cookie and answers with the user. The guard wraps a handler:
+
+<CodeFrom file="go/week11/your-monitor/internal/api/auth.go" region="require" lang="go" title="internal/api/auth.go" />
+
+In `internal/api/api.go`, add `auth Auth` to `handler`, make it the fourth parameter of `NewHandler`, and wrap the writes:
+
+<CodeFrom file="go/week11/your-monitor/internal/api/api.go" region="auth-routes" lang="go" title="internal/api/api.go" />
+
+`NewHandler` puts `sameOrigin` in front of every route. Create it in `internal/api/csrf.go`:
+
+<CodeFrom file="go/week11/your-monitor/internal/api/csrf.go" region="csrf" lang="go" title="internal/api/csrf.go" />
+
+Pages from the Vite dev server and from nginx share the origin of the api they proxy, which means they pass. Go 1.25 added the same check to the standard library: `http.NewCrossOriginProtection()` returns a `*http.CrossOriginProtection`, and its `Handler` method wraps a handler. Your `go.mod` names Go 1.25 or newer after Step 1, and you can use it in place of `sameOrigin`. The site examples write their own, because they build with Go 1.24. Either way, `TestCrossOriginWritesAreRefused` in `csrf_test.go` sends each write with the headers a browser adds, and expects `403` from every other origin.
+
+Your Week 7 tests now get `401` on every write. Give their `serve` and `mustDo` helpers the line `req.AddCookie(&http.Cookie{Name: "session", Value: goodToken})`, and pass `NewHandler` a fake `Auth` that accepts `goodToken`. `TestAPIOnPostgres` in `cmd/api` needs a real session: create a user with the service, call `Login`, and add the token as the `session` cookie of its `POST` and `DELETE`. Then add the test that matters most this week. It sends each request with no cookie and with a forged one:
+
+<CodeFrom file="go/week11/your-monitor/internal/api/auth_test.go" region="require-test" lang="go" title="internal/api/auth_test.go" />
+
+Delete one `requireUser` call and run the test: it fails. `TestLoginFlowInABrowser`, in `cmd/api`, runs the whole flow over HTTPS against Postgres with a cookie jar, and checks that the jar keeps the `Secure` cookie off a plain HTTP server.
+
+### Step 8: Create Users from the Command Line
+
+The api has no sign-up page: a public sign-up form admits anyone. You create users from the command line, with the password on stdin:
+
+<CodeFrom file="go/week11/your-monitor/cmd/api/createuser.go" region="create-user" lang="go" title="cmd/api/createuser.go" />
+
+In `cmd/api/main.go`, add the Go command-line flag `-create-user`, build the service after `openDB`, and pass it to `newHandler`, which hands it to `api.NewHandler` as the fourth argument:
+
+<CodeFrom file="go/week11/your-monitor/cmd/api/main.go" region="create-user-flag" lang="go" title="cmd/api/main.go" />
+
+### Step 9: Try It with curl
+
+Rebuild and start the stack with `make up`. Then create your user. `read -s` reads a line without showing it on screen, and `printf` is built into bash and zsh, which keeps the password out of `ps`, the list of running processes that every user of the machine can read:
+
+```sh
+read -rs PASSWORD
+printf '%s\n' "$PASSWORD" | docker compose exec -T api /api -create-user you@example.com
+```
+
+The api answers `created user id=1 email=you@example.com`. Now try a write without a session, then log in. `-c cookies.txt` saves the cookies of the answer to a file, and `-d @-` reads the body from stdin. The `printf` builds the JSON by hand, which works for a password without `"` or `\`. The output is an example:
+
+```txt
+$ curl -sS -H 'Content-Type: application/json' -d '{"url":"https://example.org","interval_seconds":60}' http://127.0.0.1:8080/api/monitors
+{"error":"login required"}
+$ printf '{"email":"you@example.com","password":"%s"}' "$PASSWORD" | curl -sS -i -c cookies.txt -H 'Content-Type: application/json' -d @- http://127.0.0.1:8080/api/login
+HTTP/1.1 200 OK
+Content-Type: application/json
+Set-Cookie: session=4JSM4QUGWTA4AWIZ2BSX5JLPON; Path=/; Max-Age=86400; HttpOnly; Secure; SameSite=Lax
+Date: Sun, 11 Oct 2026 07:36:52 GMT
+Content-Length: 78
+
+{"id":1,"email":"you@example.com","created_at":"2026-10-11T07:26:56.260849Z"}
+```
+
+`-b cookies.txt` sends the saved cookie back. `curl`, like Chromium, treats `127.0.0.1` as secure and sends the `Secure` cookie to it over plain HTTP:
+
+```txt
+$ curl -sS -b cookies.txt -H 'Content-Type: application/json' -d '{"url":"https://example.org","interval_seconds":60}' http://127.0.0.1:8080/api/monitors
+{"id":2,"url":"https://example.org","interval_seconds":60,"created_at":"2026-10-11T07:36:52.476284Z"}
+$ curl -sS -b cookies.txt -c cookies.txt -X POST -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/logout
+204
+$ curl -sS -b cookies.txt -X DELETE -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/monitors/2
+401
+```
+
+The `curl` loop from Week 10 that adds monitors needs `-b cookies.txt` from now on. Run `rm cookies.txt` and `unset PASSWORD` when you finish: until you log out, the file holds a live token.
+
+### Step 10: Watch the Cookie in the Browser
+
+Run `make web`, open `http://localhost:5173`, open the devtools console, and log in from there. `prompt` asks for the password in a dialog, which keeps it out of the console history:
+
+```js
+await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'you@example.com', password: prompt('password') }) })
+```
+
+In Chrome, open **Application**, then **Cookies**, then `http://localhost:5173`: the `session` row has ticks under **HttpOnly** and **Secure**, and `Lax` under **SameSite**. In Firefox, the same table sits under **Storage**. Type `document.cookie` in the console: the answer is `''`, because `HttpOnly` hides the cookie from scripts. `await (await fetch('/api/me')).json()` still answers with your user, because the browser sends the cookie with the request.
+
+For the page itself, create `web/src/auth.ts` with the three calls that a login form needs. They follow the pattern of `api.ts` from Week 10:
+
+<CodeFrom file="web/src/week11/auth.ts" region="calls" lang="ts" title="web/src/auth.ts" />
+
+The file also defines `User` and `AuthError`. Create `web/src/auth.test.ts` next to it. It checks the JSON body, the `401` that means logged out, and `Retry-After` on a `429`:
+
+<CodeFrom file="web/src/week11/auth.test.ts" region="tests" lang="ts" title="web/src/auth.test.ts" />
+
+### Step 11: Keep Secrets Out of Git
+
+The monitor has two secrets: `POSTGRES_PASSWORD` and `ALERT_WEBHOOK_URL`. Sessions add none, because their tokens are random and live only in Postgres and the browser. Both secrets come from `.env`, which Compose reads, and the Week 0 `.gitignore` keeps `.env` out of Git. Check both claims. `git check-ignore -v` prints the rule that ignores a file:
+
+```sh
+git check-ignore -v .env
+git grep -I -F -n -f <(grep -E '^(POSTGRES_PASSWORD|ALERT_WEBHOOK_URL)=.' .env | cut -d= -f2-) $(git rev-list --all)
+```
+
+The second command reads the secret values from `.env` into a pattern list, never onto the command line, and searches every file of every commit for them. No output means no commit holds them. Run `chmod 600 .env`, which leaves the file readable by your user only.
+
+`api/openapi.yaml` gains the three routes, a `sessionCookie` security scheme on the writes, and the `401`, `403` and `429` answers. The Week 7 test that compares it with the routes fails until it does. Then tidy the module and commit:
+
+```sh
+go mod tidy
+git add go.mod go.sum migrations/003_auth.sql internal cmd api/openapi.yaml web/src/auth.ts web/src/auth.test.ts
+git commit -m "Add login: bcrypt, sessions, guarded writes, login limit"
+```
 
 ## Observe It
 
 <ObserveIt>
-This section is not written yet.
+
+The api writes one line per login attempt, next to the request log line. These four lines come from the fifth wrong password in a row and the attempt after it:
+
+```txt
+2026/10/11 07:28:06 login failed email="you@example.com" reason="wrong password"
+2026/10/11 07:28:06 request method=POST path=/api/login status=401 bytes=36 duration_ms=300.3
+2026/10/11 07:28:07 login refused email="you@example.com" reason="too many attempts"
+2026/10/11 07:28:07 request method=POST path=/api/login status=429 bytes=62 duration_ms=0.1
+```
+
+The answer to the client says only `wrong email or password`. The log names the reason, because you need it and an attacker does not. `%q` quotes the email: an email with a line break in it shows as `\n`, and cannot forge a second log line.
+
+Read the lines with `docker compose logs api | grep 'login '` and look for these patterns:
+
+- **Many `wrong password` lines for one email.** Someone guesses that password. The `429` lines show the limit at work.
+- **`no such user` lines for many different emails.** Someone tries a list of email and password pairs leaked from another site, an attack called credential stuffing.
+- **A `401` on `/api/login` that takes 300 ms, and a `429` that takes 0.1 ms.** bcrypt costs the time, and the limiter answers before bcrypt runs.
+
+Never log a password, a token or a `Cookie` header. The request log writes the path, not the headers. pgx replaces the password in its error messages with `xxxxxx`, as in ``cannot parse `postgres://monitor:xxxxxx@127.0.0.1:5432/monitor` ``.
+
 </ObserveIt>
 
 ## Operate It
 
 <OperateIt>
-This section is not written yet.
+
+**Login works, then every request answers 401.** You started the dev server with `npm --prefix web run dev -- --host` and opened the page from your phone at `http://192.168.1.20:5173`. The login answers `200` with the cookie, and the browser drops it: `Secure` allows plain HTTP only for `localhost`, and in Chromium for `127.0.0.1`. In Chromium, `window.isSecureContext` is `false` on that address, and **Application** shows no cookie. Use HTTPS, which <a href={weekHref(16)}>Week 16</a> sets up, or test on the machine that runs the stack.
+
+**You locked yourself out.** Five wrong passwords give `429` with `Retry-After: 900` or less. Wait that many seconds, or restart the api with `docker compose restart api`: the limiter lives in memory. Two api replicas, from <a href={weekHref(15)}>Week 15</a>, keep two separate counts.
+
+**A user forgot the password, or leaves.** Delete the user. `ON DELETE CASCADE` deletes their sessions with them, which logs them out at once:
+
+```sh
+docker compose exec postgres psql -U monitor -d monitor -c "DELETE FROM users WHERE email = 'you@example.com'"
+```
+
+Then create the user again with Step 9. To log everyone out, after a laptop with a live cookie goes missing for example, run `DELETE FROM sessions`. With JWTs, the only equivalent is rotating the signing key.
+
+**A secret reached a commit.** Rotate it first: after you rewrite your history, the old copy stays readable in forks and caches. The `postgres` image reads `POSTGRES_PASSWORD` only when it creates an empty data directory, which means a new value in `.env` changes nothing in the `pgdata` volume. Change the password inside Postgres, where `\password` asks for it twice without showing it:
+
+```sh
+docker compose exec postgres psql -U monitor -d monitor -c '\password monitor'
+```
+
+Put the same value in `.env`, then run `make up`, which recreates the containers whose settings changed.
+
+| What you see | What it points to |
+| --- | --- |
+| `401` `login required` with a cookie that worked before | The session passed its 24 hours, someone deleted it, or the cookie never reached the api |
+| `401` `wrong email or password` | A wrong password, an email with no account, or a password over 72 bytes |
+| `429` with `Retry-After` | Five attempts for that email in 15 minutes |
+| `415` from `/api/login` | The body is a form, or the request has no `Content-Type: application/json` |
+| `403` `cross-origin request refused` | A page on another origin sent the write, or a proxy in front of the api serves the page from a different origin |
+| `password must have at least 15 characters` from `-create-user` | The password on stdin is shorter than 15 characters, or stdin is empty |
+
 </OperateIt>
 
 ## AI This Week
 
 <AiThisWeek>
-This section is not written yet.
+
+Stage 2, review everything: the assistant writes code, and you read every line, test it and explain it back.
+
+The status page stays public and has no control that changes data, which leaves no place for a login form on it yet. Build one on the side, for the controls that come later.
+
+**Do:** ask it for a React `LoginForm` component that calls `login` from `web/src/auth.ts` and shows the error message. Then write its Testing Library test yourself, next to `StatusPage.test.tsx` from Week 10: the password input has `type="password"` and `autoComplete="current-password"`, a `401` shows `wrong email or password`, and a `429` shows the wait from `retryAfter`. Each check you write proves that you understand one more line of the generated code.
+
+**Do not:** merge a generated change to the cookie, `requireUser` or the limiter until you can name what each line blocks and a test fails when you delete it. Never paste your `.env`, a session token or a password hash into the chat.
+
 </AiThisWeek>
 
 ## Side Lab
 
-<SideLab title="Optional lab: not written yet">
-This section is not written yet.
+<SideLab title="Make a JWT by hand and see what logout cannot do">
+
+The site examples hold a small JWT signer in `examples/go/week11/jwt.go`, written with the standard library. It signs with HMAC, short for hash-based message authentication code, over SHA-256: the scheme JWT calls HS256.
+
+<CodeFrom file="go/week11/jwt.go" region="sign" lang="go" title="jwt.go" />
+
+**1. Make a token.** From `examples/go`, create a random 32-byte key and sign a token that lasts an hour:
+
+```sh
+export JWT_KEY=$(openssl rand -base64 32)
+TOKEN=$(go run ./week11/cmd/jwt -sub you@example.com)
+echo "$TOKEN"
+```
+
+**2. Read it without the key.** The middle part is base64url JSON, and `atob` in Node decodes it:
+
+```sh
+node -e "console.log(atob(process.argv[1].split('.')[1].replace(/-/g,'+').replace(/_/g,'/')))" "$TOKEN"
+```
+
+The output is the payload, such as `{"sub":"you@example.com","exp":1791707423}`. Anyone who holds the token reads it. Never put a secret in a JWT payload.
+
+**3. Forge it.** Swap in a payload for another user and keep the old signature:
+
+```sh
+FORGED=$(node -e "const [h, , s] = process.argv[1].split('.'); const p = btoa(JSON.stringify({ sub: 'root@example.com', exp: 4102444800 })); console.log([h, p.replace(/=+\$/, '').replace(/\+/g, '-').replace(/\//g, '_'), s].join('.'))" "$TOKEN")
+go run ./week11/cmd/jwt -verify "$FORGED"
+```
+
+The answer is `signature does not match`. The signature covers the header and the payload, and only the key makes a new one. `go run ./week11/cmd/jwt -verify "$TOKEN"` still answers `valid`.
+
+**4. Try to log out.** Nothing you run ends `$TOKEN` before its `exp`: `Verify` reads only the key and the clock. You have two ways out: change `JWT_KEY`, which logs out everyone, or keep a list of revoked tokens in a database and check it on every request, which is a session table again. Read `TestJWT` in `jwt_test.go` for each case, including a token with `"alg":"none"`, which `Verify` refuses.
+
 </SideLab>
 
 ## Done When
