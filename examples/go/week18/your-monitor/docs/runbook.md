@@ -3,7 +3,9 @@
 One section per alert, named after the alert. The `runbook_url` of each
 rule in `observability/rules/slo.rules.yml` links to its section.
 
-Open Prometheus and Alertmanager from your laptop first:
+Open the SSH tunnel of Week 16, then open Prometheus and Alertmanager from
+your laptop. Stop Compose first with `make down` if it runs: it holds the
+same two ports.
 
 ```sh
 kubectl -n monitoring port-forward svc/prometheus 9090 &
@@ -23,8 +25,8 @@ the sustainable rate or more, over both the last hour and the last
    and the latest run of `deploy.yml` on GitHub.
 2. Look at the pods: `kubectl -n your-monitor get pods`. Look for
    `CrashLoopBackOff`, `Pending` and restarts.
-3. For `slo="availability"`, read the api errors:
-   `kubectl -n your-monitor logs deployment/api --since=15m | grep '"status":5'`.
+3. For `slo="availability"`, read the api errors of every api pod:
+   `kubectl -n your-monitor logs -l app.kubernetes.io/name=api --prefix --since=15m --tail=-1 | grep '"status":5'`.
 4. For `slo="freshness"`, compare `monitor_jobs_oldest_seconds` with
    `sum(rate(monitor_checks_total[5m]))` in Prometheus: an age that climbs
    means stuck workers; no checks at all means no worker or no database.
@@ -62,22 +64,52 @@ errors, and plan the fix for this week.
 ## StatusPageDown
 
 **Means:** blackbox exporter has failed to load the status page api through
-the web pod for 2 minutes, or Prometheus has no probe result.
+one of its two paths for 2 minutes, or Prometheus has no probe result.
 
 **First five minutes:**
 
 1. `kubectl -n your-monitor get pods -l app.kubernetes.io/name=web` and the
    same for `api`.
-2. `kubectl -n monitoring get pods`: when blackbox exporter is down, the
+2. Compare the two `instance` labels of the alert. Only the public URL
+   failing points at DNS, the certificate or Traefik:
+   `curl -sSv https://status.example.com/api/monitors`. Both failing points
+   at the web or api pods.
+3. `kubectl -n monitoring get pods`: when blackbox exporter is down, the
    status page is fine and the probe is the problem.
-3. Read the failed probe: `probe_http_status_code` in Prometheus, or
+4. Read the failed probe: `probe_http_status_code` in Prometheus, or
    `kubectl -n monitoring logs deployment/blackbox`.
 
 **Mitigate:** as for ErrorBudgetFastBurn.
 
+## CertificateExpiresSoon
+
+**Means:** the certificate that the public probe sees expires within
+14 days. cert-manager renews 30 days before expiry, so every renewal for
+two weeks has failed.
+
+**Do:** within one working day, read why:
+`kubectl -n your-monitor describe certificate` and
+`kubectl -n cert-manager logs deployment/cert-manager --since=24h`. A
+failed HTTP-01 challenge usually means port 80 does not reach Traefik:
+check the firewall of Week 16.
+
+## Backups
+
+**Means:** healthchecks.io messages you about one of two checks, not
+Prometheus.
+
+- **pg-backup:** the backup CronJob pinged `/fail`, or sent no ping by
+  05:17 UTC. List the runs with `kubectl -n your-monitor get jobs`, then
+  read the newest: `kubectl -n your-monitor logs job/<name>`. A
+  `backup: FAILED:` line names the step. Run a backup now with
+  `kubectl -n your-monitor create job --from=cronjob/pg-backup pg-backup-manual`.
+- **restore-drill:** no drill passed in the last 8 days. Run the restore
+  drill of Week 17 on your laptop. It pings the check when it passes.
+
 ## Watchdog
 
 **Means:** nothing. It always fires, and Alertmanager pings the heartbeat
-check with it every 5 minutes. When the heartbeat service emails you that
-pings stopped, Prometheus, Alertmanager or the whole VPS is down:
+check with it every 5 minutes. When healthchecks.io tells you that the
+pings of the `vps` check stopped, Prometheus, Alertmanager or the whole
+VPS is down:
 `kubectl -n monitoring get pods`, then SSH to the VPS.

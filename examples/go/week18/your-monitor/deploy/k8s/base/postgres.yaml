@@ -1,60 +1,116 @@
-# contract stub: week 15. Postgres 17 as a StatefulSet with one
-# PersistentVolumeClaim. The Secret postgres, with the key password, is
-# created by hand: kubectl create secret generic postgres --from-literal=password=...
+# Postgres: one pod, postgres-0, with a disk of its own that outlives it.
+# region: service
+# A headless Service: no virtual address. The name postgres resolves
+# straight to the address of each ready pod, and postgres-0.postgres to
+# that one pod. A StatefulSet needs one for its pod names.
 apiVersion: v1
 kind: Service
 metadata:
   name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
 spec:
+  clusterIP: None
   selector:
-    app: postgres
+    app.kubernetes.io/name: postgres
   ports:
-    - port: 5432
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+# endregion: service
 ---
+# region: statefulset
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
 spec:
   serviceName: postgres
   replicas: 1
   selector:
     matchLabels:
-      app: postgres
+      app.kubernetes.io/name: postgres
   template:
     metadata:
       labels:
-        app: postgres
+        app.kubernetes.io/name: postgres
     spec:
+      # The image starts as root only to switch to its postgres user, 999.
+      # Start it as 999: it skips the switch. fsGroup hands the volumes that
+      # support it, such as emptyDir, to the group 999. kind's volumes are
+      # folders on the node that fsGroup leaves alone: the local-path
+      # provisioner creates each one with mode 0777.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: postgres
           image: postgres:17
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            - configMapRef:
+                name: monitor-config
+            - secretRef:
+                name: postgres
           env:
-            - name: POSTGRES_USER
-              value: monitor
-            - name: POSTGRES_DB
-              value: monitor
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: postgres
-                  key: password
+            # A directory inside the volume. Postgres refuses a data
+            # directory that another user owns, and the volume root
+            # belongs to root.
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
-          ports:
-            - containerPort: 5432
+          # region: probes
+          # Ready once it accepts connections on TCP, which the temporary
+          # server of the first start does not.
           readinessProbe:
             exec:
               command: ["pg_isready", "-h", "127.0.0.1", "-U", "monitor", "-d", "monitor"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+          # Alive while the port accepts a connection. A busy database
+          # stays alive: restarting it under load makes things worse.
+          livenessProbe:
+            tcpSocket:
+              port: postgres
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          # endregion: probes
           resources:
             requests:
               cpu: 100m
               memory: 256Mi
             limits:
+              cpu: "1"
               memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # Postgres writes its socket to /var/run/postgresql and its data to
+          # the claim. Everything else of the image stays read-only.
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+  # One PersistentVolumeClaim per pod, named data-postgres-0. Deleting the
+  # pod, or the StatefulSet, keeps the claim and the data in it.
   volumeClaimTemplates:
     - metadata:
         name: data
@@ -62,4 +118,5 @@ spec:
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:
-            storage: 5Gi
+            storage: 1Gi
+# endregion: statefulset

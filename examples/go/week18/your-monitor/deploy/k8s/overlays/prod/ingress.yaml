@@ -1,16 +1,20 @@
-# contract stub: week 16. Traefik routes the status page to web, and
-# cert-manager gets its certificate from the letsencrypt ClusterIssuer.
+# region: ingress
+# Traefik routes https://status.example.com to the web Service. The
+# cert-manager annotation asks for a certificate for every host under
+# tls, and cert-manager stores it in the Secret status-page-tls.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: your-monitor
+  name: status-page
   annotations:
-    cert-manager.io/cluster-issuer: letsencrypt
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.middlewares: your-monitor-redirect-https@kubernetescrd
 spec:
   ingressClassName: traefik
   tls:
-    - hosts: [status.example.com]
-      secretName: status-tls
+    - hosts:
+        - status.example.com
+      secretName: status-page-tls
   rules:
     - host: status.example.com
       http:
@@ -22,3 +26,4 @@ spec:
                 name: web
                 port:
                   number: 8080
+# endregion: ingress

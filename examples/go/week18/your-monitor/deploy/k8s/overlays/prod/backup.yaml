@@ -1,0 +1,86 @@
+# region: backup-cronjob
+# Every day at 03:17 UTC, a pod of the backup image runs backup.sh: a dump
+# of the database, encrypted with your age public key, uploaded with its
+# row counts to object storage off the VPS. Nothing stays on the box.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pg-backup
+spec:
+  schedule: "17 3 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid # never two dumps at once
+  startingDeadlineSeconds: 3600 # a run missed by up to an hour still starts
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2 # retry a failed backup twice
+      activeDeadlineSeconds: 1800
+      template:
+        spec:
+          restartPolicy: Never
+          imagePullSecrets:
+            - name: ghcr-pull
+          # The postgres user of the image, and the restrictions of the
+          # Week 15 programs, which the namespace enforces.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 999
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              image: your-monitor-backup
+              command: ["backup.sh"]
+              # The database settings of the programs, the age public key
+              # and the remote from backup-config, and the upload key from
+              # the offsite Secret, which you create by hand.
+              envFrom:
+                - configMapRef:
+                    name: monitor-config
+                - secretRef:
+                    name: postgres
+                - configMapRef:
+                    name: backup-config
+                - secretRef:
+                    name: offsite
+              env:
+                - name: PGHOST
+                  value: postgres
+                - name: PGUSER
+                  value: $(POSTGRES_USER)
+                - name: PGDATABASE
+                  value: $(POSTGRES_DB)
+                - name: PGPASSWORD
+                  value: $(POSTGRES_PASSWORD)
+                - name: RCLONE_CONFIG
+                  value: /dev/null # every setting comes from the environment
+                - name: HOME
+                  value: /tmp
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: work
+                  mountPath: /work
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            # The dump exists unencrypted only here, for the seconds
+            # between pg_dump and age, and goes with the pod.
+            - name: work
+              emptyDir:
+                sizeLimit: 2Gi
+            - name: tmp
+              emptyDir: {}
+# endregion: backup-cronjob

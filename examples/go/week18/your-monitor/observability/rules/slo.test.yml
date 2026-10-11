@@ -13,7 +13,9 @@ tests:
   # The api answers 100 status page requests a minute. At minute 60, every
   # one of them starts failing. The 5-minute window crosses 14.4 times the
   # budget at once; the 1-hour window needs 0.072 * 60 = 4.3 minutes of
-  # errors to reach it. The page goes out between minute 64 and 65.
+  # errors to reach it. The input moves a minute at a time, so the 1-hour
+  # burn rate jumps from 13.3 at minute 64 to 16.7 at minute 65: 500 failed
+  # requests out of the last hour's 6,000. The page goes out at minute 65.
   - name: a full outage pages within five minutes
     interval: 1m
     input_series:
@@ -122,6 +124,11 @@ tests:
         exp_samples:
           - labels: '{slo="availability"}'
             value: 0
+      - expr: slo:sli_error:ratio_rate30m{slo="availability"} > bool 0.5
+        eval_time: 85m
+        exp_samples:
+          - labels: '{slo="availability"}'
+            value: 1
   # endregion: page-ends
 
   # region: slow-leak
@@ -160,23 +167,109 @@ tests:
               runbook_url: https://github.com/your-user/your-monitor/blob/main/docs/runbook.md#errorbudgetticket
   # endregion: slow-leak
 
-  # region: worker-stops
-  # Every worker stops at minute 60. The scheduler keeps queuing, and the
-  # oldest job ages by 60 seconds a minute. A 30-second step counts as late
-  # once the oldest job is past 50 seconds, or once no check has finished
-  # for 2 minutes. The 1-hour window needs 14.4 * 1% = 14.4% of its hour,
-  # 8.64 minutes, late before the page goes out.
-  - name: stopped workers page through the freshness SLO
+  # region: slow-burn
+  # One request in 20 fails, for hours: ten times the rate the budget
+  # allows. The fast burn stays silent, because 10 is under 14.4. The slow
+  # burn pages: at this rate, the 30-day budget lasts 3 days.
+  - name: five percent errors page through the slow burn
     interval: 1m
     input_series:
       - series: 'http_requests_total{method="GET", route="/api/monitors", code="200"}'
-        values: '0+100x90'
+        values: '0+95x480'
+      - series: 'http_requests_total{method="GET", route="/api/monitors", code="500"}'
+        values: '0+5x480'
       - series: 'up{job="scheduler"}'
-        values: '1x420'
+        values: '1x480'
+      - series: 'monitor_jobs_oldest_seconds'
+        values: '1x480'
+      - series: 'monitor_checks_total{result="up"}'
+        values: '0+6x480'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: ErrorBudgetFastBurn
+        exp_alerts: []
+      - eval_time: 7h
+        alertname: ErrorBudgetSlowBurn
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              slo: availability
+            exp_annotations:
+              summary: "The availability SLO burns its error budget 10.0 times too fast."
+              description: "At 6 times or more, six hours spend 5% of the 30-day budget, and the whole budget is gone in 5 days or less."
+              runbook_url: https://github.com/your-user/your-monitor/blob/main/docs/runbook.md#errorbudgetslowburn
+    promql_expr_test:
+      - expr: slo:sli_error:ratio_rate30m
+        eval_time: 7h
+        exp_samples:
+          - labels: 'slo:sli_error:ratio_rate30m{slo="availability"}'
+            value: 0.05
+          - labels: 'slo:sli_error:ratio_rate30m{slo="freshness"}'
+            value: 0
+      - expr: slo:error_budget:remaining
+        eval_time: 7h
+        exp_samples:
+          - labels: 'slo:error_budget:remaining{slo="availability"}'
+            value: -9
+          - labels: 'slo:error_budget:remaining{slo="freshness"}'
+            value: 1
+
+  # endregion: slow-burn
+
+  # A 5% burst for one hour, then six and a half clean hours. The 3-day
+  # window still holds the burst, but the 6-hour window is clean: the
+  # problem is over, and the ticket stays shut.
+  - name: an old burst opens no ticket
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{method="GET", route="/api/monitors", code="200"}'
+        values: '0+95x60 5700+100x390'
+      - series: 'http_requests_total{method="GET", route="/api/monitors", code="500"}'
+        values: '0+5x60 300x390'
+    alert_rule_test:
+      - eval_time: 7h30m
+        alertname: ErrorBudgetTicket
+        exp_alerts: []
+    promql_expr_test:
+      - expr: slo:burn_rate:3d > bool 1
+        eval_time: 7h30m
+        exp_samples:
+          - labels: '{slo="availability"}'
+            value: 1
+
+  # Nine clean hours, then six hours at 1.2% errors. The 6-hour window
+  # burns at 2.4, but over all 15 hours, 0.48% of requests failed: under
+  # the budget, so no ticket yet.
+  - name: six bad hours after a clean night open no ticket
+    interval: 5m
+    input_series:
+      - series: 'http_requests_total{method="GET", route="/api/monitors", code="200"}'
+        values: '0+500x108 54000+494x72'
+      - series: 'http_requests_total{method="GET", route="/api/monitors", code="500"}'
+        values: '0x108 0+6x72'
+    alert_rule_test:
+      - eval_time: 15h
+        alertname: ErrorBudgetTicket
+        exp_alerts: []
+    promql_expr_test:
+      - expr: slo:burn_rate:6h > bool 1
+        eval_time: 15h
+        exp_samples:
+          - labels: '{slo="availability"}'
+            value: 1
+  # region: slow-worker
+  # The workers keep checking, but too slowly: from minute 60, the oldest
+  # job ages by 60 seconds a minute while the check counter still grows.
+  # The queue age alone makes each step late.
+  - name: a slow worker pages through the queue age
+    interval: 1m
+    input_series:
+      - series: 'up{job="scheduler"}'
+        values: '1x120'
       - series: 'monitor_jobs_oldest_seconds'
         values: '1x60 60+60x30'
       - series: 'monitor_checks_total{result="up"}'
-        values: '0+6x60 360x30'
+        values: '0+6x120'
     alert_rule_test:
       - eval_time: 69m
         alertname: ErrorBudgetFastBurn
@@ -191,7 +284,7 @@ tests:
               summary: "The freshness SLO burns its error budget 15.8 times too fast."
               description: "At 14.4 times or more, one hour spends 2% of the 30-day budget, and the whole budget is gone in 50 hours or less."
               runbook_url: https://github.com/your-user/your-monitor/blob/main/docs/runbook.md#errorbudgetfastburn
-  # endregion: worker-stops
+  # endregion: slow-worker
 
   # region: scheduler-gone
   # The scheduler pod disappears at minute 60, and with it every series it
@@ -313,13 +406,17 @@ tests:
   # endregion: cold-start
 
   # region: status-page-down
-  # The probe fails from minute 10: the web pod answers 502, or nobody
-  # answers. After 2 minutes pending, StatusPageDown fires. A missing
-  # probe result, when blackbox exporter itself is gone, fires it too.
+  # The public probe fails from minute 10: the certificate expired, DNS
+  # points elsewhere, or Traefik is down. The probe inside the cluster
+  # still passes. After 2 minutes pending, StatusPageDown fires for the
+  # failing instance. A missing probe result, when blackbox exporter
+  # itself is gone, fires it too.
   - name: a failing probe pages after two minutes
     interval: 1m
     input_series:
       - series: 'probe_success{job="status-page-probe", instance="http://web.your-monitor.svc:8080/api/monitors"}'
+        values: '1x20'
+      - series: 'probe_success{job="status-page-probe", instance="https://status.example.com/api/monitors"}'
         values: '1x10 0x10'
     alert_rule_test:
       - eval_time: 12m
@@ -332,7 +429,7 @@ tests:
               severity: page
               slo: availability
               job: status-page-probe
-              instance: http://web.your-monitor.svc:8080/api/monitors
+              instance: https://status.example.com/api/monitors
             exp_annotations:
               summary: "The status page has failed every probe for 2 minutes."
               description: "Blackbox exporter gets an error or a status outside 200 to 299 from the status page, or Prometheus gets no probe result at all."
@@ -356,6 +453,31 @@ tests:
               description: "Blackbox exporter gets an error or a status outside 200 to 299 from the status page, or Prometheus gets no probe result at all."
               runbook_url: https://github.com/your-user/your-monitor/blob/main/docs/runbook.md#statuspagedown
   # endregion: status-page-down
+
+  # region: certificate
+  # The certificate of the public page expires in 13 days: a ticket. The
+  # one that expires in 60 days opens nothing.
+  - name: a certificate that expires within 14 days opens a ticket
+    interval: 1m
+    input_series:
+      - series: 'probe_ssl_earliest_cert_expiry{job="status-page-probe", instance="https://status.example.com/api/monitors"}'
+        values: '1123200x10'
+      - series: 'probe_ssl_earliest_cert_expiry{job="status-page-probe", instance="https://other.example.com/api/monitors"}'
+        values: '5184000x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: CertificateExpiresSoon
+        exp_alerts:
+          - exp_labels:
+              severity: ticket
+              slo: availability
+              job: status-page-probe
+              instance: https://status.example.com/api/monitors
+            exp_annotations:
+              summary: "The certificate of https://status.example.com/api/monitors expires in 12d 23h 59m 0s."
+              description: "cert-manager renews a Let's Encrypt certificate 30 days before expiry. A certificate this close to expiry means every renewal has failed for two weeks."
+              runbook_url: https://github.com/your-user/your-monitor/blob/main/docs/runbook.md#certificateexpiressoon
+  # endregion: certificate
 
   - name: the watchdog always fires
     alert_rule_test:

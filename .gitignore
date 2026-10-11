@@ -4,3 +4,6 @@ dist/
 .astro/
 test-results/
 playwright-report/
+# The Postgres password of the kind cluster from Week 15 on, which
+# make k8s-check writes in the example tree.
+examples/go/week*/your-monitor/deploy/k8s/overlays/kind/postgres.env

@@ -44,9 +44,8 @@ ENTRYPOINT ["/alerter"]
 # endregion: targets
 
 # region: web
-# contract stub: week 10. Stage web-build: Node builds the page into static
-# files. The package files come first, in a layer of their own, as go.mod
-# does above.
+# Week 10. Stage web-build: Node builds the page into static files. The
+# package files come first, in a layer of their own, as go.mod does above.
 FROM node:22-alpine AS web-build
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
@@ -61,3 +60,21 @@ COPY web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=web-build /web/dist /usr/share/nginx/html
 EXPOSE 8080
 # endregion: web
+
+# region: backup
+# The backup image: pg_dump and psql of Postgres 17, age to encrypt and
+# rclone to upload. rclone's own image holds a static binary, and Debian
+# packages age. postgres:17 removes its CA certificates after its own
+# build: without ca-certificates, rclone trusts no https server. curl
+# pings the healthchecks.io check of Week 18. The two scripts run as the
+# postgres user of the image.
+FROM postgres:17 AS backup
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends age ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=rclone/rclone:1.75.1 /usr/local/bin/rclone /usr/local/bin/rclone
+COPY --chmod=755 deploy/backup/backup.sh deploy/backup/restore-drill.sh /usr/local/bin/
+USER 999:999
+ENTRYPOINT []
+CMD ["backup.sh"]
+# endregion: backup

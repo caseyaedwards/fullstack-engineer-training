@@ -14,15 +14,16 @@ on:
 permissions:
   contents: read
 
-# A new push to a pull request cancels the run of its older commit.
-# Runs on main never cancel each other: each one pushes images.
+# A pull request gets one group: a new push cancels the run of its older
+# commit. A push to main gets a group of its own, named by its run ID, and
+# no other run shares it: every commit on main builds its images.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 # endregion: head
 
+# region: lint
 jobs:
-  # region: lint
   lint:
     runs-on: ubuntu-24.04
     steps:
@@ -50,6 +51,7 @@ jobs:
   # endregion: lint
 
   # region: test
+# The Go tests, against a Postgres 17 service container.
   test:
     runs-on: ubuntu-24.04
     # A Postgres 17 container that runs next to the job. Its port 5432 is
@@ -78,10 +80,14 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      # Week 17: the backup tests run backup.sh and restore-drill.sh, which
+      # need age and rclone. The runner image has the Postgres server tools.
+      - run: sudo apt-get update && sudo apt-get install -y age rclone
       - run: go test -race ./...
   # endregion: test
 
   # region: web
+# The Vitest tests and the production build of web/.
   web:
     runs-on: ubuntu-24.04
     defaults:
@@ -102,6 +108,7 @@ jobs:
   # endregion: web
 
   # region: e2e
+# The Playwright tests, against the Vite dev server.
   e2e:
     runs-on: ubuntu-24.04
     defaults:
@@ -130,6 +137,7 @@ jobs:
   # endregion: e2e
 
   # region: images
+# The images, built and pushed for a push to main.
   images:
     # Only after every check passes, and only for a push to main.
     needs: [lint, test, web, e2e]
@@ -139,10 +147,10 @@ jobs:
     permissions:
       contents: read
       packages: write
-    # Five copies of this job run side by side, one per Dockerfile target.
+    # Six copies of this job run side by side, one per Dockerfile target.
     strategy:
       matrix:
-        target: [api, worker, scheduler, alerter, web]
+        target: [api, worker, scheduler, alerter, web, backup]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -1,6 +1,7 @@
 # region: datasources
-# Grafana reads this file at start and adds both data sources, which saves
-# clicking through Connections > Data sources by hand.
+# Grafana reads this file at start and adds the data source, which saves
+# clicking through Connections > Data sources by hand. Traces stay in the
+# Jaeger UI at localhost:16686.
 apiVersion: 1
 
 datasources:
@@ -10,10 +11,4 @@ datasources:
     access: proxy # the Grafana server sends the queries, not your browser
     url: http://prometheus:9090
     isDefault: true
-
-  - name: Jaeger
-    uid: jaeger
-    type: jaeger
-    access: proxy
-    url: http://jaeger:16686
 # endregion: datasources

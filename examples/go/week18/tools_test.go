@@ -54,7 +54,7 @@ func copyFile(t *testing.T, from, to string, replace ...string) {
 func TestPromtoolChecksTheRules(t *testing.T) {
 	promtool := tool(t, "promtool", "PROMTOOL")
 	out, err := run(t, promtool, "check", "rules", obs+"/rules/slo.rules.yml")
-	if err != nil || !strings.Contains(out, "SUCCESS: 26 rules found") {
+	if err != nil || !strings.Contains(out, "SUCCESS: 27 rules found") {
 		t.Fatalf("promtool check rules: %v\n%s", err, out)
 	}
 }
@@ -81,6 +81,14 @@ func TestTheUnitTestsCatchBrokenRules(t *testing.T) {
 		{"queue age only", "*\n              (sum(increase(monitor_checks_total[2m])) > bool 0)", ""},
 		{"budget of 5%", "vector(0.005)", "vector(0.05)"},
 		{"no absent probe", "or absent(probe_success{job=\"status-page-probe\"})", ""},
+		{"slow burn needs 100 times", "slo:burn_rate:6h > 6", "slo:burn_rate:6h > 600"},
+		{"slow burn never fires", "slo:burn_rate:6h > 6 and slo:burn_rate:30m > 6", "vector(0) > 1"},
+		{"ticket without the 6-hour window", "slo:burn_rate:3d > 1 and slo:burn_rate:6h > 1", "slo:burn_rate:3d > 1"},
+		{"ticket without the 3-day window", "slo:burn_rate:3d > 1 and slo:burn_rate:6h > 1", "slo:burn_rate:6h > 1"},
+		{"queue age of 500 seconds", "<= bool 50", "<= bool 500"},
+		{"30-minute ratio over 5 minutes", "[30m])) or vector(0))\n          /\n          sum(rate(http_requests_total{method=\"GET\", route=~\"/api/.+\"}[30m]))", "[5m])) or vector(0))\n          /\n          sum(rate(http_requests_total{method=\"GET\", route=~\"/api/.+\"}[30m]))"},
+		{"budget left without the budget", "1 - slo:sli_error:ratio_rate30d / on(slo) slo:error_budget:ratio", "1 - slo:sli_error:ratio_rate30d"},
+		{"no certificate ticket", "- time() < 14 * 86400", "- time() < 7 * 86400"},
 	} {
 		t.Run(m.name, func(t *testing.T) {
 			t.Parallel()
@@ -140,12 +148,13 @@ func TestAmtoolChecksTheConfig(t *testing.T) {
 func TestAmtoolRoutesEachAlert(t *testing.T) {
 	amtool := tool(t, "amtool", "AMTOOL")
 	for labels, want := range map[string]string{
-		"alertname=ErrorBudgetFastBurn severity=page slo=availability": "page",
-		"alertname=ErrorBudgetSlowBurn severity=page slo=freshness":    "page",
-		"alertname=StatusPageDown severity=page slo=availability":      "page",
-		"alertname=ErrorBudgetTicket severity=ticket slo=freshness":    "ticket",
-		"alertname=Watchdog severity=heartbeat":                        "heartbeat",
-		"alertname=SomethingNew":                                       "ticket",
+		"alertname=ErrorBudgetFastBurn severity=page slo=availability":      "page",
+		"alertname=ErrorBudgetSlowBurn severity=page slo=freshness":         "page",
+		"alertname=StatusPageDown severity=page slo=availability":           "page",
+		"alertname=ErrorBudgetTicket severity=ticket slo=freshness":         "ticket",
+		"alertname=CertificateExpiresSoon severity=ticket slo=availability": "ticket",
+		"alertname=Watchdog severity=heartbeat":                             "heartbeat",
+		"alertname=SomethingNew":                                            "ticket",
 	} {
 		args := append([]string{"config", "routes", "test", "--config.file=" + obs + "/alertmanager.yml"}, strings.Fields(labels)...)
 		out, err := run(t, amtool, args...)

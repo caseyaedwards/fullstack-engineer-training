@@ -32,6 +32,8 @@ test('matchLine finds contractions, including curly apostrophes, but not possess
   assert.deepEqual(words("It isn't here, you're late, we've gone, they'll come, I'd go."), ["isn't", "you're", "we've", "they'll", "i'd"]);
   assert.deepEqual(words('It’s done and that’s it. Let’s go.'), ['it’s', 'that’s', 'let’s']);
   assert.deepEqual(words("The server's certificate and Go's client."), []);
+  // A proper name: the certificate authority Let's Encrypt.
+  assert.deepEqual(words("Let's Encrypt signs it. Let’s Encrypt it. Let's go."), ["let's"]);
 });
 
 test('matchLine finds e.g., i.e. and click here', () => {

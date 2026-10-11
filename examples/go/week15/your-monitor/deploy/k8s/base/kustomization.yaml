@@ -1,0 +1,35 @@
+# region: base
+# The manifests that every cluster shares. An overlay adds what differs
+# from one cluster to the next: the namespace object, the image tags and
+# the Postgres password.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Every object goes into this namespace.
+namespace: your-monitor
+
+# Added to every object and pod template, but not to the selectors: the
+# selector of a Deployment cannot change once the Deployment exists.
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: your-monitor
+    includeTemplates: true
+
+resources:
+  - postgres.yaml
+  - api.yaml
+  - worker.yaml
+  - scheduler.yaml
+  - alerter.yaml
+  - web.yaml
+
+# Settings that are not secret. Kustomize names the ConfigMap
+# monitor-config-<hash of the content> and rewrites every reference to
+# it. A changed value gives a new name, and the pods that use it restart.
+configMapGenerator:
+  - name: monitor-config
+    literals:
+      - POSTGRES_USER=monitor
+      - POSTGRES_DB=monitor
+      - WORKERS=10
+# endregion: base

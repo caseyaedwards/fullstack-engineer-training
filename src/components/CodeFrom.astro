@@ -2,9 +2,9 @@
 // Shows one named region of a tested example file, so the code on the page is the
 // code the examples/ tests run. Regions are marked in the source with
 //   // region: <name>   ...   // endregion: <name>
-// (or `#` comments, `--` comments in SQL, or `<!-- region: <name> -->` in Markdown).
-// Marker lines are not shown. Any problem throws, which fails
-// the build and names the file and region.
+// (or `#` comments, `--` comments in SQL, `/* region: <name> */` in CSS, or
+// `<!-- region: <name> -->` in Markdown). Marker lines are not shown. Any
+// problem throws, which fails the build and names the file and region.
 import { posix } from 'node:path';
 import { Code } from '@astrojs/starlight/components';
 
@@ -20,11 +20,22 @@ const { file, region, lang, title } = Astro.props;
 
 // Vite resolves this glob from the project root, so it does not depend on the cwd
 // or on where Astro puts the bundled component. node_modules are left out.
-const sources = import.meta.glob('/examples/**/*', {
-  query: '?raw',
-  import: 'default',
-  eager: false,
-}) as Record<string, () => Promise<string>>;
+// The glob skips names that start with a dot. The second glob adds them, such as
+// .golangci.yml and .github/workflows/ci.yml, for examples/go only. `exhaustive`
+// also stops leaving out node_modules, which the last pattern excludes again.
+const sources = {
+  ...import.meta.glob('/examples/**/*', {
+    query: '?raw',
+    import: 'default',
+    eager: false,
+  }),
+  ...import.meta.glob(['/examples/go/**/.*', '/examples/go/**/.*/**/*', '!/examples/go/**/node_modules/**'], {
+    query: '?raw',
+    import: 'default',
+    eager: false,
+    exhaustive: true,
+  }),
+} as Record<string, () => Promise<string>>;
 
 const where = `<CodeFrom file="${file}" region="${region}">`;
 
@@ -38,7 +49,7 @@ if (!load) {
   throw new Error(`${where}: no file at examples/${normalized}.`);
 }
 
-const marker = /^\s*(?:\/\/|#|--|<!--)\s*(region|endregion):\s*(\S+?)\s*(?:-->)?\s*$/;
+const marker = /^\s*(?:\/\/|#|--|\/\*|<!--)\s*(region|endregion):\s*(\S+?)\s*(?:\*\/|-->)?\s*$/;
 const lines = (await load()).split(/\r?\n/);
 
 let start = -1;

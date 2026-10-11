@@ -12,7 +12,7 @@ done:
   - id: rule-tests-pass
     text: promtool check rules and promtool test rules pass on your rules, including a test in which the fast-burn alert fires and one in which a short blip does not page.
   - id: page-reaches-phone
-    text: Prometheus, Alertmanager and blackbox exporter run on your VPS, a test page sent with amtool rings your phone, and your heartbeat check shows a ping from the last 10 minutes.
+    text: Prometheus, Alertmanager and blackbox exporter run on your VPS, a test page sent with amtool rings your phone, and the VPS heartbeat check shows a ping from the last 10 minutes.
   - id: runbook-and-rotation
     text: docs/oncall.md and docs/runbook.md are in your repository, and every alert links to a runbook section that a test checks.
   - id: drill-run
@@ -52,7 +52,7 @@ A **service level indicator** (SLI) is a number that says how well the service w
 
 A **service level objective** (SLO) is a target for an SLI over a window of time: 99.5% of status page requests succeed, measured over the last 30 days. The window rolls: every minute, the oldest minute drops out.
 
-The **error budget** is what the target allows to fail: 100% minus the SLO. A 99.5% SLO has a budget of 0.5%. Over 30 days, 0.5% of the time is 0.005 × 30 × 24 hours = 3.6 hours, and 0.5% of 172,800 requests is 864 failed requests.
+The **error budget** is what the target allows to fail: 100% minus the SLO. A 99.5% SLO has a budget of 0.5%. Over 30 days, 0.5% of the time is 0.005 × 30 × 24 hours = 3.6 hours, and 0.5% of 345,600 requests is 1,728 failed requests.
 
 The budget turns reliability into a decision. While budget is left, you ship features, deploy on a Friday, try the risky migration. When the budget is spent, reliability work comes first until it recovers. A target of 100% leaves no budget: every deploy, every Postgres restart and every reboot of the VPS breaks it. Pick a target that the setup can meet: one VPS, one Postgres, one person who sleeps.
 
@@ -65,17 +65,18 @@ Your monitor does two jobs for its users: it shows a status page, and it checks 
 | Status page availability | `GET` requests to `/api/` routes that the api answers with a status under 500 | 99.5% | 0.5% of requests |
 | Check freshness | 30-second steps in which checks run on schedule | 99% | 7 hours and 12 minutes |
 
-The availability SLI counts **requests**: `http_requests_total` already carries the route and the status code of each one. A `404` for a monitor that does not exist and a `429` from the rate limit of Week 17 count as good: the api did its job. A `GET` that matches no route carries `route="unmatched"` and stays out of the SLI: no status page sends it.
+The availability SLI counts **requests**: `http_requests_total` already carries the route and the status code of each one. A `404` for a monitor that does not exist counts as good: the api did its job. A `429` from the rate limit of Week 17 never reaches the request counter: the limiter answers before the code that counts, which keeps it out of the SLI. A `GET` that matches no route carries `route="unmatched"` and stays out of the SLI: no status page sends it.
 
 The freshness SLI counts **time**, because no request asks whether a check ran on time. Every 30 seconds, Prometheus records 1 when checks run on schedule and 0 when they do not. On schedule means two things. First, the oldest job in the queue has waited 50 seconds or less: a due monitor waits up to 5 seconds for the next scheduler round, and a check takes up to 5 seconds, the worker `-timeout`, which keeps every monitor checked within its interval plus 60 seconds. Second, at least one check has finished in the last 2 minutes. Missing data counts as late.
 
-A status page that nobody opens sends no requests, and a ratio of zero requests says nothing. A **probe** fixes that: **blackbox exporter**, a small Prometheus program, loads the status page every 15 seconds the way a browser does, through the web pod. Each probe is one more valid event, 4 a minute, 172,800 in 30 days. It also sees what the api cannot see.
+A status page that nobody opens sends no requests, and a ratio of zero requests says nothing. A **probe** fixes that: **blackbox exporter**, a small Prometheus program, loads the status page api every 15 seconds through two paths. One goes through your domain: DNS, the certificate, Traefik and the web pod. The other goes straight to the web Service inside the cluster. Each probe is one more valid event, 8 a minute, 345,600 in 30 days. The probes also see what the api cannot see.
 
 <Diagram
   id="sli-sources"
   title="Where each SLI is measured"
   code={`direction: down
 bb: blackbox exporter
+traefik: Traefik
 web: "web (nginx)"
 api: api
 pg: Postgres
@@ -83,7 +84,9 @@ sched: scheduler
 worker: worker
 prom: Prometheus
 
-bb -> web: GET /api/monitors
+bb -> traefik: "GET https://status.example.com/api/monitors"
+traefik -> web
+bb -> web: "GET http://web.your-monitor.svc:8080/api/monitors"
 web -> api: proxy /api
 api -> pg: SQL
 sched -> pg: queue jobs
@@ -95,7 +98,7 @@ prom -> bb: probe_success
 `}
   steps={[
     { hl: ['prom', 'api', 'prom->api'], caption: 'Availability is counted inside the api. Every answer increments http_requests_total with its route and status code, and Prometheus scrapes the counter every 15 seconds.' },
-    { hl: ['bb', 'web', 'api', 'bb->web', 'web->api', 'prom->bb'], caption: 'The probe sends real requests through nginx to the api, 4 a minute, which keeps the SLI fed when no user visits. probe_success also tells you when nginx answers 502 because no api pod is left: the api counter never sees that request.' },
+    { hl: ['bb', 'traefik', 'web', 'api', 'bb->traefik', 'traefik->web', 'bb->web', 'web->api', 'prom->bb'], caption: 'The probes send real requests through nginx to the api, 8 a minute, which keeps the SLI fed when no user visits. probe_success also tells you when the certificate, Traefik or nginx fails: the api counter never sees those requests.' },
     { hl: ['prom', 'sched', 'prom->sched', 'sched->pg'], caption: 'Freshness, part one: the scheduler measures the age of the oldest waiting job each round and keeps it in a gauge.' },
     { hl: ['prom', 'worker', 'prom->worker', 'worker->pg'], caption: 'Freshness, part two: the check counter of the worker must grow. When the scheduler cannot reach Postgres, its gauge keeps its last value and looks healthy. The stopped counter gives it away.' },
   ]}
@@ -151,13 +154,13 @@ am -> ticket: severity=ticket
 am -> hb: Watchdog
 page -> you
 ticket -> you
-hb -> you: email when pings stop
+hb -> you: Telegram when pings stop
 `}
   steps={[
-    { hl: ['rec', 'alerts', 'rec->alerts'], caption: 'Every 30 seconds, recording rules turn the raw counters into error ratios over five windows, and divide each by the budget. Alert rules compare those burn rates with 14.4, 6 and 1.' },
+    { hl: ['rec', 'alerts', 'rec->alerts'], caption: 'Every 30 seconds, recording rules turn the raw counters into error ratios over six windows, from 5 minutes to 30 days, and divide five of them by the budget into burn rates. Alert rules compare those burn rates with 14.4, 6 and 1.' },
     { hl: ['alerts', 'am', 'alerts->am'], caption: 'Prometheus sends each firing alert to Alertmanager, and sends it again every minute while it fires. Prometheus decides that something is wrong; Alertmanager decides who hears about it.' },
     { hl: ['am', 'page', 'ticket', 'am->page', 'am->ticket', 'page->you', 'ticket->you'], caption: 'Alertmanager groups alerts, routes them by their severity label, and holds back a ticket while a page fires for the same SLO. A page rings only during your on-call hours.' },
-    { hl: ['am', 'hb', 'am->hb', 'hb->you'], caption: 'The Watchdog alert always fires. Alertmanager pings an outside heartbeat check with it every 5 minutes. When the VPS, Prometheus or Alertmanager dies, the pings stop, and the heartbeat service emails you.' },
+    { hl: ['am', 'hb', 'am->hb', 'hb->you'], caption: 'The Watchdog alert always fires. Alertmanager pings an outside heartbeat check with it every 5 minutes. When the VPS, Prometheus or Alertmanager dies, the pings stop, and the heartbeat service sends you a Telegram message of its own.' },
   ]}
 />
 
@@ -165,7 +168,7 @@ hb -> you: email when pings stop
 
 A **page** interrupts you: it rings your phone and asks for action now. A **ticket** asks for action within a working day. Every alert must be one or the other and must name a runbook: a page you cannot act on teaches you to ignore pages.
 
-Alerts run on your monitoring, and your monitoring runs on the same VPS as the app. When the VPS dies, nothing is left to page you. A **dead man's switch** turns silence into a signal: an alert that always fires sends a heartbeat to a service outside your VPS, and that service alerts you when the heartbeat stops. This page uses healthchecks.io, which has a free plan with email alerts.
+Alerts run on your monitoring, and your monitoring runs on the same VPS as the app. When the VPS dies, nothing is left to page you. A **dead man's switch** turns silence into a signal: an alert that always fires sends a heartbeat to a service outside your VPS, and that service alerts you when the heartbeat stops. This page uses healthchecks.io, which has a free plan and sends its alerts by email and through its own Telegram bot.
 
 ## Build
 
@@ -192,6 +195,13 @@ An SLO that lives only in a rule file gets changed without a discussion. Write i
 <CodeFrom file="go/week18/your-monitor/docs/slo.md" region="slos" lang="md" title="docs/slo.md" />
 
 The **budget policy** at the end is the part that changes behavior: it says what you stop doing when the budget runs out.
+
+The freshness SLI needs a check to finish every 2 minutes. Monitors run every 30 to 3,600 seconds, and with only hourly ones, or none, most steps read late and the fast burn pages with nothing wrong. Add the **self-check**: a monitor of your own status page at the shortest interval, logged in as in <a href={weekHref(15)}>Week 15</a>:
+
+```sh
+printf '{"email":"you@example.com","password":"%s"}' "$PASSWORD" | curl -sS -c cookies.txt -H 'Content-Type: application/json' -d @- https://status.example.com/api/login
+curl -sS -b cookies.txt -H 'Content-Type: application/json' -d '{"url":"https://status.example.com/healthz","interval_seconds":30}' https://status.example.com/api/monitors
+```
 
 ### Step 2: Record the SLIs
 
@@ -225,11 +235,11 @@ An alert you have never seen fire is an alert you hope works. `promtool`, which 
 
 <CodeFrom file="go/week18/your-monitor/observability/rules/slo.test.yml" region="fast-burn-fires" lang="yaml" title="observability/rules/slo.test.yml" />
 
-The page fires between minute 64 and 65, the 4.3 minutes from Concepts. `16.7` in the summary is the one-hour burn rate as Prometheus computes it: `rate()` extrapolates to the edges of the window, which puts it above the 14.4 that the raw count gives. An empty `exp_alerts` asserts that an alert does not fire:
+The page fires at minute 65, the 4.3 minutes from Concepts. `16.7` is 500 failed requests out of the last hour's 6,000. The input moves a minute at a time: the burn rate jumps from 13.3 at minute 64 to 16.7 at minute 65. An empty `exp_alerts` asserts that an alert does not fire:
 
 <CodeFrom file="go/week18/your-monitor/observability/rules/slo.test.yml" region="blip-does-not-page" lang="yaml" title="observability/rules/slo.test.yml" />
 
-`promql_expr_test` checks any expression: here, that the short window crosses 14.4 and the long one does not, which is the reason for the silence. The file holds nine more tests: the page resolves minutes after a fix, a slow leak opens a ticket and pages nobody, stopped workers, a missing scheduler, a frozen queue gauge, the first start of Prometheus, a failing probe, a missing probe and the Watchdog. Run them with the `promtool` of the Prometheus image that Compose runs:
+`promql_expr_test` checks any expression: here, that the short window crosses 14.4 and the long one does not, which is the reason for the silence. The file holds thirteen more tests: the page resolves minutes after a fix, 5% errors page through the slow burn, a slow leak opens a ticket and pages nobody, two cases where only one ticket window burns, stopped workers, slow workers, a missing scheduler, a frozen queue gauge, the first start of Prometheus, a failing and a missing probe, an expiring certificate, and the Watchdog. Run them with the `promtool` of the Prometheus image that Compose runs:
 
 ```sh
 docker compose run --rm --no-deps --entrypoint promtool prometheus check rules /etc/prometheus/rules/slo.rules.yml
@@ -238,7 +248,7 @@ docker compose run --rm --no-deps --entrypoint promtool prometheus test rules /e
 
 ```txt
 Checking /etc/prometheus/rules/slo.rules.yml
-  SUCCESS: 26 rules found
+  SUCCESS: 27 rules found
 
   SUCCESS
 ```
@@ -265,15 +275,19 @@ Alertmanager receives the alerts that Prometheus fires, groups them, silences th
 
 1. In Telegram, open a chat with `@BotFather`, send `/newbot`, and answer its two questions. BotFather replies with a **token**, the password of your bot.
 2. Send any message to your new bot, then read the ID of your chat with it: `curl -s "https://api.telegram.org/bot<token>/getUpdates"`. The number after `"chat":{"id":` is your chat ID.
-3. On healthchecks.io, create a check with a period of 5 minutes and a grace time of 10 minutes, and copy its ping URL.
-4. Write the three values into `observability/secrets/`, one per file, and add `observability/secrets/` to `.gitignore`:
+3. On healthchecks.io, create two checks, `laptop` and `vps`, each with a period of 5 minutes and a grace time of 10 minutes, and copy both ping URLs. Each stack pings its own: a laptop that runs `make up` must not keep a dead VPS green.
+4. In the integrations of your healthchecks.io project, add Telegram: it sends you to `@HealthchecksBot`, where you send `/start`. Turn the integration on for the `vps` check: a dead VPS then rings your phone, not only your inbox.
+5. Write the four values into `observability/secrets/`, one per file, and add `observability/secrets/` to `.gitignore`:
 
 ```sh
 mkdir -p observability/secrets
 printf '%s' '<token>' > observability/secrets/telegram-bot-token
 printf '%s' '<chat ID>' > observability/secrets/telegram-chat-id
-printf '%s' '<ping URL>' > observability/secrets/heartbeat-url
+printf '%s' '<laptop ping URL>' > observability/secrets/heartbeat-url-laptop
+printf '%s' '<vps ping URL>' > observability/secrets/heartbeat-url-vps
 ```
+
+Create all four before `make up`: Docker turns a missing file of a bind mount into an empty folder. `.dockerignore` lists `observability/secrets` too, which keeps the token out of the images that `COPY . .` builds.
 
 Then the **routing tree**. Every alert enters at the top and goes down to the first child route whose matchers it meets:
 
@@ -297,7 +311,7 @@ Checking 'observability/alertmanager.yml'  SUCCESS
 Found:
  - global config
  - route
- - 1 inhibit rules
+ - 2 inhibit rules
  - 3 receivers
  - 0 templates
 
@@ -317,7 +331,7 @@ The same file gains a `status-page-probe` job, which Step 7 explains, and an `al
 
 <CodeFrom file="go/week18/your-monitor/compose.yaml" region="alertmanager" lang="yaml" title="compose.yaml" />
 
-Run `make up`, open `localhost:9090/rules` to see every rule with its last value, and `localhost:9090/alerts` to see the Watchdog firing. `localhost:9093` is Alertmanager. Within 5 minutes, your heartbeat check on healthchecks.io shows its first ping.
+Run `make up`, open `localhost:9090/rules` to see every rule with its last value, and `localhost:9090/alerts` to see the Watchdog firing. `localhost:9093` is Alertmanager. Within 5 minutes, the `laptop` check on healthchecks.io shows its first ping. The laptop stack sends real pages too, during your on-call hours: run `make down` when you stop working on it.
 
 ### Step 7: Deploy to the VPS
 
@@ -329,24 +343,26 @@ In the cluster, Prometheus finds its targets through the Kubernetes API with **s
 
 <CodeFrom file="go/week18/your-monitor/observability/k8s/prometheus.yml" region="prometheus-k8s" lang="yaml" title="observability/k8s/prometheus.yml" />
 
-The probe job passes the status page URL to blackbox exporter as the `target` parameter, which is what its three `relabel_configs` do. To list pods, Prometheus needs one right in the `your-monitor` namespace, and only that one:
+Put your domain in the first target of the probe job. Each target URL goes to blackbox exporter as the `target` parameter, which is what the three `relabel_configs` do, and stays as the `instance` label: `StatusPageDown` fires for either path. To list pods, Prometheus needs one right in the `your-monitor` namespace, and only that one:
 
 <CodeFrom file="go/week18/your-monitor/observability/k8s/prometheus.yaml" region="rbac" lang="yaml" title="observability/k8s/prometheus.yaml" />
 
-`k8s/prometheus.yaml` also holds a 5 GiB volume and a Deployment with `--storage.tsdb.retention.time=35d`: the 30-day window needs 30 days of data, and the default keeps 15. `k8s/alertmanager.yaml` and `k8s/blackbox.yaml` hold one small Deployment each, pinned to the image versions of `compose.yaml`. Apply it all from your laptop, with the administrator kubeconfig of <a href={weekHref(16)}>Week 16</a>, then create the Secret:
+`k8s/prometheus.yaml` also holds a 5 GiB volume and a Deployment with `--storage.tsdb.retention.time=35d`: the 30-day window needs 30 days of data, and the default keeps 15. `k8s/alertmanager.yaml` and `k8s/blackbox.yaml` hold one small Deployment each, pinned to the image versions of `compose.yaml`. Open the SSH tunnel of <a href={weekHref(16)}>Week 16</a>, apply it all from your laptop with the administrator kubeconfig, then create the Secret with the `vps` heartbeat URL:
 
 ```sh
+kubectl apply -k deploy/k8s/cluster
 kubectl apply -k observability
 kubectl -n monitoring create secret generic alertmanager-secrets \
   --from-file=observability/secrets/telegram-bot-token \
   --from-file=observability/secrets/telegram-chat-id \
-  --from-file=observability/secrets/heartbeat-url
+  --from-file=heartbeat-url=observability/secrets/heartbeat-url-vps
 kubectl -n monitoring get pods
 ```
 
-The Alertmanager pod waits in `ContainerCreating` until the Secret exists, then starts. Neither Prometheus nor Alertmanager gets an Ingress: they have no login, and the internet has no business with them. Reach them through the Kubernetes API instead, and send yourself a test page:
+The first command applies the Service policy of Week 16, whose binding now names `monitoring` next to `your-monitor`: no Service of the monitoring stack can open a port on the VPS either. The Alertmanager pod waits in `ContainerCreating` until the Secret exists, then starts. Neither Prometheus nor Alertmanager gets an Ingress: they have no login, and the internet has no business with them. Reach them through the Kubernetes API instead. Run `make down` first: Compose holds ports 9090 and 9093 on your laptop. Then send yourself a test page, inside your on-call hours, because outside them the page waits:
 
 ```sh
+make down
 kubectl -n monitoring port-forward svc/prometheus 9090 &
 kubectl -n monitoring port-forward svc/alertmanager 9093 &
 amtool --alertmanager.url=http://127.0.0.1:9093 alert add alertname=TestPage severity=page slo=availability --annotation='summary="A test page from amtool."'
@@ -375,6 +391,15 @@ A **runbook** tells the person holding the pager what to do first, written while
 <CodeFrom file="go/week18/your-monitor/docs/runbook.md" region="fast-burn" lang="md" title="docs/runbook.md" />
 
 The runbook says **mitigate** first: restore the service by rollback, restart or scale, before you understand the cause. A rollback that fixes the symptom in two minutes beats a root cause found in forty.
+
+Prometheus cannot see the backups of <a href={weekHref(17)}>Week 17</a>: the CronJob runs once a day, and the drill runs on your laptop. Two more healthchecks.io checks watch them, and the runbook section `Backups` says what to do when one alerts:
+
+1. `pg-backup`, with the cron schedule `17 3 * * *`, time zone UTC and a grace time of 2 hours: the 1-hour start deadline, the 30-minute run limit and the retries of the CronJob. `backup.sh` reads its ping URL from the `offsite` Secret, pings `/fail` first thing in `fail()`, which alerts you at once on a failed run, and pings the URL itself as its last line. The backup image gains `curl` for it: push, and CI builds the image.
+2. `restore-drill`, with a period of 7 days and a grace time of 1 day. Append `&& curl -fsS -m 10 --retry 3 https://hc-ping.com/<uuid>` to the drill command of Week 17: the ping goes out only when the drill passes.
+
+```sh
+kubectl -n your-monitor patch secret offsite --type=merge -p '{"stringData":{"BACKUP_PING_URL":"https://hc-ping.com/<uuid>"}}'
+```
 
 ### Step 9: Run the Incident Drill
 
@@ -422,7 +447,7 @@ A **postmortem** is the written record of an incident: what happened, why, and w
 
 <CodeFrom file="go/week18/your-monitor/docs/postmortems/TEMPLATE.md" region="template" lang="md" title="docs/postmortems/TEMPLATE.md" />
 
-Fill it from your notes. For the drill, the causes form a chain: Postgres runs as one pod with no replica, the api and the workers have no other store, and nothing stops a scale to zero. Detection is a number you measured: the minutes from the trigger to the first page. Actions come in three kinds: **prevent** the cause, **detect** it sooner, **mitigate** it faster. For example, a detect action: a page when the Postgres pod is not ready for one minute, which beats the 2 minutes of `StatusPageDown`. A mitigate action: the scale command as a line at the top of the runbook. A test keeps every postmortem in the folder on the sections of the template:
+Fill it from your notes. For the drill, the causes form a chain: Postgres runs as one pod with no replica, the api and the workers have no other store, and nothing stops a scale to zero. Detection is a number you measured: the minutes from the trigger to the first page. Actions come in three kinds: **prevent** the cause, **detect** it sooner, **mitigate** it faster. For example, a detect action: a `tcp_connect` probe of `postgres.your-monitor.svc:5432` through the blackbox exporter you already run, paging after one minute of failures, which beats the 2 minutes of `StatusPageDown`. An alert on a Postgres pod that is not ready needs kube-state-metrics, which this stack does not run. A mitigate action: the scale command as a line at the top of the runbook. A test keeps every postmortem in the folder on the sections of the template:
 
 <CodeFrom file="go/week18/your-monitor/observability/slo_test.go" region="postmortem-test" lang="go" title="observability/slo_test.go" />
 
@@ -434,10 +459,10 @@ Read the budget every Monday, as `docs/oncall.md` says. Paste these into `localh
 
 | Question | Query | Healthy |
 | --- | --- | --- |
-| How much budget is left? | `slo:error_budget:remaining` | Above 0.5 for both SLOs, after the drill too |
+| How much budget is left? | `slo:error_budget:remaining` | Above 0.5 for both SLOs, once Prometheus holds 30 days of data |
 | How fast does it burn right now? | `slo:burn_rate:1h` | Under 1 |
 | What fails? | `sum by (route, code) (rate(http_requests_total{code=~"5.."}[1h]))` | Empty |
-| Does the probe work? | `probe_success{job="status-page-probe"}` | 1 |
+| Do the probes work? | `probe_success{job="status-page-probe"}` | 1 for both instances |
 | How late are the checks? | `monitor_jobs_oldest_seconds` | Under 10 seconds |
 | Do the rules evaluate? | `rate(prometheus_rule_evaluation_failures_total[5m])` | 0 |
 
@@ -455,7 +480,7 @@ Watch for these patterns:
 
 <OperateIt>
 
-**The VPS goes down.** Nothing on the VPS can page you. When the pings stop, healthchecks.io waits out the 5-minute period and the 10-minute grace time, then emails you. This is the one alert that does not depend on your own stack.
+**The VPS goes down.** Nothing on the VPS can page you. When the pings stop, healthchecks.io waits out the 5-minute period and the 10-minute grace time, then messages you through its Telegram bot. This is the one alert that does not depend on your own stack.
 
 **Telegram refuses the message.** Someone revoked the token in BotFather, or the Secret holds a typo or misses a key. Alertmanager logs one line per failed try, and retries. With a missing file:
 
@@ -470,20 +495,20 @@ level=WARN source=retry_stage.go:165 msg="Notify attempt failed, will retry late
 **You plan an outage.** An upgrade of Postgres takes 10 minutes. Silence the pages before you start, with a comment and an end time:
 
 ```sh
-amtool --alertmanager.url=http://127.0.0.1:9093 silence add 'slo="availability"' --duration=1h --comment="Postgres upgrade"
+amtool --alertmanager.url=http://127.0.0.1:9093 silence add 'severity=~"page|ticket"' --duration=1h --comment="Postgres upgrade"
 ```
 
-A silence hides the alert, not the cost: the budget still pays for the 10 minutes. Expire the silence with `amtool silence expire <ID>` when the work ends. On the VPS, silences live in an `emptyDir`, and a new Alertmanager pod starts with none.
+A silence hides the alert, not the cost: the budget still pays for the 10 minutes. The matcher covers both SLOs, because a stopped Postgres burns freshness too. Expire the silence with `amtool --alertmanager.url=http://127.0.0.1:9093 silence expire <ID>` when the work ends. On the VPS, silences live in an `emptyDir`, and a new Alertmanager pod starts with none.
 
 **Alerts flap.** A page fires, resolves and fires again every few minutes, because the burn rate sits on the threshold. Fix the cause. Raising the threshold to stop the noise also hides the next real outage.
 
 | What you see | What it points to |
 | --- | --- |
-| Heartbeat email, no page | The VPS, Prometheus or Alertmanager is down |
+| A healthchecks.io message about `vps`, no page | The VPS, Prometheus or Alertmanager is down |
 | `Notify attempt failed` in the Alertmanager log | Wrong or missing token or chat ID, or no route to Telegram |
 | An alert that never fires in a drill | A rule that names a missing metric or label |
 | `ContainerCreating` on the Alertmanager pod | The `alertmanager-secrets` Secret does not exist |
-| `StatusPageDown` with no `ErrorBudgetFastBurn` | Requests never reach the api: web, the api pods, or blackbox exporter |
+| `StatusPageDown` with no `ErrorBudgetFastBurn` for more than 5 minutes | Requests never reach the api: web, the api pods, or blackbox exporter |
 | A page at 07:00 for something that broke at 02:00 | The on-call hours held it back, as `docs/oncall.md` promises |
 
 </OperateIt>
@@ -506,7 +531,7 @@ Stage 3, pair partner, for the last week of the course. Use the assistant for sc
 
 Companies that run large services publish their postmortems. Reading them is the cheapest way to learn from outages you did not have to live through.
 
-**1. Pick one.** Read the Cloudflare blog post Details of the Cloudflare outage on July 2, 2019. A change to one firewall rule took down a large share of the traffic of Cloudflare.
+**1. Pick one.** Read the Cloudflare blog post [Details of the Cloudflare outage on July 2, 2019](https://blog.cloudflare.com/details-of-the-cloudflare-outage-on-july-2-2019/). A change to one firewall rule took down a large share of the traffic of Cloudflare.
 
 **2. Map it.** Copy `TEMPLATE.md` and fill in each section from the post: the summary in three sentences, the impact with its numbers, the timeline in UTC, how they detected it, and the chain of causes. Mark each action of the post as prevent, detect or mitigate.
 

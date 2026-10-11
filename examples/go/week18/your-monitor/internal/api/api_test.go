@@ -27,7 +27,7 @@ func newTestHandler(t *testing.T) http.Handler {
 	if _, err := store.Create(context.Background(), monitor.Monitor{URL: "https://example.com", IntervalSeconds: 60}); err != nil {
 		t.Fatal(err)
 	}
-	return NewHandler(store, nil, nil, fakeAuth{})
+	return NewHandler(store, &spyResults{}, nil, fakeAuth{})
 }
 
 // serve sends one request to h and returns the recorded response. A
@@ -61,7 +61,7 @@ func TestHealthz(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			NewHandler(monitor.NewMemStore(), nil, nil, fakeAuth{}).ServeHTTP(rec, httptest.NewRequest(tt.method, tt.path, nil))
+			NewHandler(monitor.NewMemStore(), &spyResults{}, nil, fakeAuth{}).ServeHTTP(rec, httptest.NewRequest(tt.method, tt.path, nil))
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d", rec.Code, tt.wantStatus)
 			}
@@ -104,6 +104,7 @@ func TestErrors(t *testing.T) {
 		{"not JSON", "POST", "/api/monitors", jsonType, `{"url": https://example.org}`, 400, "body is not valid JSON"},
 		{"cut off", "POST", "/api/monitors", jsonType, `{"url": "https://example.org"`, 400, "body is not valid JSON"},
 		{"array", "POST", "/api/monitors", jsonType, `[]`, 400, "body must be a JSON object, got a JSON array"},
+		{"null", "POST", "/api/monitors", jsonType, `null`, 400, "body must be a JSON object, got a JSON null"},
 		{"two objects", "POST", "/api/monitors", jsonType, `{"url":"https://example.org","interval_seconds":60} {}`, 400, "body must hold a single JSON object"},
 		{"array after the object", "POST", "/api/monitors", jsonType, `{"url":"https://example.org","interval_seconds":60} []`, 400, "body must hold a single JSON object"},
 		{"text after the object", "POST", "/api/monitors", jsonType, `{"url":"https://example.org","interval_seconds":60} x`, 400, "body is not valid JSON"},
@@ -137,6 +138,24 @@ func TestErrors(t *testing.T) {
 	}
 }
 
+// TestCreateAccepts sends bodies that the API accepts, although they differ
+// from the example in openapi.yaml.
+func TestCreateAccepts(t *testing.T) {
+	tests := []struct{ name, contentType, body string }{
+		{"charset parameter", "application/json; charset=utf-8", `{"url":"https://example.org","interval_seconds":60}`},
+		// encoding/json matches field names without regard to case.
+		{"field names in another case", "application/json", `{"URL":"https://example.org","Interval_Seconds":60}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := serve(newTestHandler(t), "POST", "/api/monitors", tt.contentType, tt.body)
+			if rec.Code != http.StatusCreated {
+				t.Errorf("status = %d, want 201; body %s", rec.Code, rec.Body)
+			}
+		})
+	}
+}
+
 func TestMethodNotAllowedListsAllowedMethods(t *testing.T) {
 	rec := serve(newTestHandler(t), "PUT", "/api/monitors/1", "", "")
 	if got, want := rec.Header().Get("Allow"), "DELETE, GET, HEAD"; got != want {
@@ -151,7 +170,7 @@ func TestMethodNotAllowedListsAllowedMethods(t *testing.T) {
 // TestMonitorLifecycle runs the API on a real port and walks one monitor
 // through create, get, list and delete, as a client does.
 func TestMonitorLifecycle(t *testing.T) {
-	srv := httptest.NewServer(NewHandler(monitor.NewMemStore(), nil, nil, fakeAuth{}))
+	srv := httptest.NewServer(NewHandler(monitor.NewMemStore(), &spyResults{}, nil, fakeAuth{}))
 	t.Cleanup(srv.Close)
 
 	// The list starts empty, and empty means [], not null.
@@ -251,7 +270,7 @@ func (s brokenStore) Create(context.Context, monitor.Monitor) (monitor.Monitor, 
 func (s brokenStore) Delete(context.Context, int64) error { return s.err }
 
 func TestNilListIsAnEmptyArray(t *testing.T) {
-	rec := serve(NewHandler(brokenStore{}, nil, nil, fakeAuth{}), "GET", "/api/monitors", "", "")
+	rec := serve(NewHandler(brokenStore{}, &spyResults{}, nil, fakeAuth{}), "GET", "/api/monitors", "", "")
 	if rec.Code != http.StatusOK || rec.Body.String() != "[]\n" {
 		t.Errorf("got %d %q, want 200 %q", rec.Code, rec.Body, "[]\n")
 	}
@@ -264,7 +283,7 @@ func TestStoreFailureIsA500(t *testing.T) {
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
-	h := NewHandler(brokenStore{err: errors.New("connection refused to db:5432")}, nil, nil, fakeAuth{})
+	h := NewHandler(brokenStore{err: errors.New("connection refused to db:5432")}, &spyResults{}, nil, fakeAuth{})
 	requests := []struct{ method, path, body string }{
 		{"GET", "/api/monitors", ""},
 		{"GET", "/api/monitors/1", ""},

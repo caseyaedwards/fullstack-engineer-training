@@ -8,10 +8,12 @@ groups:
     rules:
       # region: availability
       # Status page availability. A valid event is a GET of an /api/ route,
-      # which is what the status page and the self-check send. A good event
-      # is one the api answers with a status under 500. A 404 for a monitor
-      # that does not exist, or a 429 from the rate limit, is the api doing
-      # its job. The or vector(0) gives 0 errors when no 5xx series exists.
+      # which is what the status page and the probe send. A good event is
+      # one the api answers with a status under 500: a 404 for a monitor
+      # that does not exist is the api doing its job. A 429 from the rate
+      # limit never reaches http_requests_total, and a request that matches
+      # no route carries route="unmatched": both stay out. The or vector(0)
+      # gives 0 errors when no 5xx series exists.
       - record: slo:sli_error:ratio_rate5m
         labels:
           slo: availability
@@ -65,6 +67,8 @@ groups:
       # its gauge then keeps the last value it set. When either metric is
       # missing, because the scheduler or every worker is gone, the
       # or on() vector(0) records 0: no data counts as late.
+      # The second condition needs at least one monitor checked every
+      # 60 seconds or more often: the self-check of docs/slo.md.
       # The last line records nothing at all until Prometheus has 2 minutes
       # of history: right after its first start, the 2-minute increase()
       # has too few scrapes to judge, and a late step there is a false page.
@@ -177,10 +181,12 @@ groups:
   - name: health
     interval: 30s
     rules:
-      # The probe of the status page fails, or no probe result exists. The
+      # A probe of the status page fails, or no probe result exists. The
       # availability SLI counts only the requests that reach the api: when
-      # nginx answers 502 because every api pod is gone, or the web pod
-      # itself is gone, the SLI sees nothing. The probe sees it.
+      # nginx answers 502 because every api pod is gone, or the web pod,
+      # Traefik, DNS or the certificate fails, the SLI sees nothing. The
+      # probes see it. On the VPS, the job has two targets, one per
+      # instance label, and the alert fires for either.
       - alert: StatusPageDown
         expr: |
           probe_success{job="status-page-probe"} == 0
@@ -194,9 +200,22 @@ groups:
           description: "Blackbox exporter gets an error or a status outside 200 to 299 from the status page, or Prometheus gets no probe result at all."
           runbook_url: https://github.com/your-user/your-monitor/blob/main/docs/runbook.md#statuspagedown
 
+      # The certificate that the public probe sees expires within 14 days.
+      # cert-manager renews a 90-day certificate 30 days before expiry by
+      # default, so this means every renewal has failed for two weeks.
+      - alert: CertificateExpiresSoon
+        expr: probe_ssl_earliest_cert_expiry{job="status-page-probe"} - time() < 14 * 86400
+        labels:
+          severity: ticket
+          slo: availability
+        annotations:
+          summary: "The certificate of {{ $labels.instance }} expires in {{ $value | humanizeDuration }}."
+          description: "cert-manager renews a Let's Encrypt certificate 30 days before expiry. A certificate this close to expiry means every renewal has failed for two weeks."
+          runbook_url: https://github.com/your-user/your-monitor/blob/main/docs/runbook.md#certificateexpiressoon
+
       # Always firing. Alertmanager sends it to an outside heartbeat check
       # every 5 minutes. When the pings stop, Prometheus, Alertmanager or
-      # the box is down, and the heartbeat service alerts you by email.
+      # the box is down, and the heartbeat service alerts you.
       - alert: Watchdog
         expr: vector(1)
         labels:

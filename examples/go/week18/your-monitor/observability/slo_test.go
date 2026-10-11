@@ -207,6 +207,29 @@ func TestComposeAndKubernetesLoadTheSameFiles(t *testing.T) {
 			t.Errorf("alertmanager.yml does not read %s from the mounted secrets", secret)
 		}
 	}
+	// Each stack pings its own heartbeat check: a laptop running Compose
+	// must not keep the check of a dead VPS green.
+	for _, want := range []string{
+		"./observability/secrets/telegram-bot-token:/etc/alertmanager/secrets/telegram-bot-token:ro",
+		"./observability/secrets/telegram-chat-id:/etc/alertmanager/secrets/telegram-chat-id:ro",
+		"./observability/secrets/heartbeat-url-laptop:/etc/alertmanager/secrets/heartbeat-url:ro",
+	} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("compose.yaml does not mount %s", want)
+		}
+	}
+	if strings.Contains(compose, "heartbeat-url-vps") {
+		t.Error("compose.yaml mounts the heartbeat URL of the VPS")
+	}
+	// On the VPS, the probe goes through the public URL as well as the
+	// web Service: only the public one passes DNS, the certificate and
+	// Traefik.
+	probe := sloRead(t, "k8s/prometheus.yml")
+	for _, want := range []string{"- https://status.example.com/api/monitors", "- http://web.your-monitor.svc:8080/api/monitors"} {
+		if !strings.Contains(probe, want) {
+			t.Errorf("k8s/prometheus.yml does not probe %s", strings.TrimPrefix(want, "- "))
+		}
+	}
 }
 
 // region: postmortem-test

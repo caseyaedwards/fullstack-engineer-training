@@ -49,6 +49,8 @@ test('week 18 shows the Alertmanager routes, the postmortem template and the dri
   const sh = blocks('sh').join('\n');
   assert.match(sh, /kubectl -n your-monitor scale statefulset postgres --replicas=0/);
   assert.match(sh, /kubectl -n your-monitor scale statefulset postgres --replicas=1/);
+  // The VPS pings its own heartbeat check, never the laptop's.
+  assert.match(sh, /--from-file=heartbeat-url=observability\/secrets\/heartbeat-url-vps/);
 });
 
 test('week 18 has every standard box and no stub text', () => {

@@ -81,6 +81,7 @@ The lint allows these exact forms:
 - May after a lowercase word or before a number: the month, as in in May or May 5. Will after a lowercase word: a name.
 - so far and if so.
 - rather than.
+- Let's Encrypt, the name of a certificate authority.
 - flag after Go, command-line, feature, SYN, ACK, FIN, RST or TCP.
 
 Some banned words are the correct technical term in one context: kill or terminate for a Unix process, sample for a metric data point, abort for a Postgres transaction. Name the precise term where one exists, such as `SIGKILL`. Otherwise, add a suppression comment on the line before or on the same line:

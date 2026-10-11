@@ -2,7 +2,9 @@
 # Deploy: applies the Kubernetes manifests to the cluster that the
 # KUBECONFIG secret names, with the images that CI pushed for one commit.
 # It runs only when you start it from the Actions tab or with
-# gh workflow run deploy.yml. Week 16 creates the cluster and the secret.
+# gh workflow run deploy.yml. The cluster is K3s on one VPS: the job
+# reaches its API server through an SSH tunnel, because the firewall
+# keeps port 6443 closed to the internet.
 name: Deploy
 
 on:
@@ -16,14 +18,15 @@ on:
 permissions:
   contents: read
 
-# One deploy at a time. A second run waits for the first to finish.
+# One deploy at a time. A second run waits for the first to finish. A
+# third run cancels the waiting second one: the newest request wins.
 concurrency:
   group: deploy-production
   cancel-in-progress: false
 # endregion: deploy-head
 
+# region: deploy-job
 jobs:
-  # region: deploy-job
   deploy:
     runs-on: ubuntu-24.04
     # The KUBECONFIG secret lives in this environment. Its protection
@@ -35,7 +38,7 @@ jobs:
           persist-credentials: false
       - uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
         with:
-          version: v1.33.13
+          version: v1.36.5 # Kubernetes 1.36, the version of the cluster
 
       # kubectl reads KUBECONFIG as a path to a file, not as the file itself.
       # umask 077: only the runner user can read the file.
@@ -46,6 +49,33 @@ jobs:
           umask 077
           printf '%s\n' "$KUBECONFIG_DATA" > "$RUNNER_TEMP/kubeconfig"
           echo "KUBECONFIG=$RUNNER_TEMP/kubeconfig" >> "$GITHUB_ENV"
+
+      # region: deploy-tunnel
+      # Port 6443 on the runner leads, through SSH, to 127.0.0.1:6443 on
+      # the VPS, where the API server listens. The tunnel user can open
+      # that one forward and nothing else. known_hosts holds the VPS host
+      # key that you checked yourself: ssh refuses any other key.
+      - name: Open the tunnel to the API server
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+        run: |
+          umask 077
+          printf '%s\n' "$SSH_KEY" > "$RUNNER_TEMP/deploy_key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/known_hosts"
+          ssh -f -N \
+            -i "$RUNNER_TEMP/deploy_key" \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
+            -o ExitOnForwardFailure=yes \
+            -o ServerAliveInterval=30 \
+            -L 127.0.0.1:6443:127.0.0.1:6443 \
+            "tunnel@$DEPLOY_HOST"
+          kubectl auth can-i patch deployments
+      # endregion: deploy-tunnel
 
       # The input reaches the script through an environment variable, never
       # through ${{ }} inside run:, and must be a full commit SHA.
@@ -63,20 +93,20 @@ jobs:
             echo "resources:"
             echo "  - ../overlays/prod"
             echo "images:"
-            for t in api worker scheduler alerter web; do
+            for t in api worker scheduler alerter web backup; do
               echo "  - name: your-monitor-$t"
               echo "    newName: ghcr.io/${GITHUB_REPOSITORY,,}/$t"
               echo "    newTag: $SHA"
             done
           } > "$dir/kustomization.yaml"
           cat "$dir/kustomization.yaml"
-      # endregion: deploy-job
 
-      # region: deploy-apply
+      # apply -k puts every object in the namespace that the base names.
+      # rollout status names it too, instead of trusting the kubeconfig.
       - name: Apply and wait
         run: |
           kubectl apply -k deploy/k8s/release
           for d in api worker scheduler alerter web; do
-            kubectl rollout status "deployment/$d" --timeout=5m
+            kubectl rollout status "deployment/$d" --namespace your-monitor --timeout=5m
           done
-      # endregion: deploy-apply
+# endregion: deploy-job

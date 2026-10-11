@@ -1,0 +1,18 @@
+# region: traefik-config
+# Copy this file to /var/lib/rancher/k3s/server/manifests/ on the server.
+# k3s merges these values into the Traefik chart it ships, and redeploys
+# Traefik. externalTrafficPolicy: Local keeps the address of the client
+# on every connection Traefik receives. With the default, Cluster, the
+# node rewrites it to its own address on the pod network, and every
+# visitor looks the same to Traefik and to the api.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    service:
+      spec:
+        externalTrafficPolicy: Local
+# endregion: traefik-config

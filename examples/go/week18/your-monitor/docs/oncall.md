@@ -9,11 +9,15 @@
   the time zone of `time_intervals` in `observability/alertmanager.yml`.
   Outside these hours, pages wait in Alertmanager and ring when the hours
   start, if they still fire.
-- **Response:** acknowledge a page within 15 minutes of it ringing. Away
-  from a laptop for more than an hour of on-call time: add a silence for
-  that time and accept the budget it costs.
+- **Response:** acknowledge a page within 15 minutes of it ringing.
+  Telegram has no acknowledge button: to acknowledge, add a silence for
+  the alert until the fix lands, with your name and the incident in its
+  comment. The silence also stops the hourly repeat of the page. Away from
+  a laptop for more than an hour of on-call time: add a silence for that
+  time and accept the budget it costs.
 - **Channel:** pages ring in the Telegram chat of your bot. Tickets arrive in
-  the same chat without a sound.
+  the same chat without a sound. A dead VPS, a failed backup and an overdue
+  drill arrive from healthchecks.io, in your chat with `@HealthchecksBot`.
 
 ## When a Page Rings
 
@@ -28,5 +32,8 @@
 
 - Read the budget left: `slo:error_budget:remaining` in Prometheus.
 - Read every ticket of the week, and open an issue for each one you keep.
-- Check the heartbeat service: it lists the last ping from Alertmanager.
+- Check healthchecks.io. `vps` and `laptop` list the last ping from
+  each Alertmanager. `pg-backup` shows a ping from 03:17 UTC of each day,
+  and `restore-drill` one from the last 7 days: run the drill of Week 17
+  if it is due.
 <!-- endregion: oncall -->

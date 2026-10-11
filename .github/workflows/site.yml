@@ -59,6 +59,17 @@ jobs:
           go-version: '1.24'
           cache-dependency-path: examples/go/go.sum
 
+      # The Week 15 manifest test renders the Kubernetes manifests with
+      # kubectl kustomize. It fails, rather than skips, in CI without kubectl.
+      - name: Install kubectl
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -fsSLO https://dl.k8s.io/release/v1.36.5/bin/linux/amd64/kubectl
+          curl -fsSLO https://dl.k8s.io/release/v1.36.5/bin/linux/amd64/kubectl.sha256
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+          kubectl version --client
+
       - name: Install d2
         run: |
           curl -fsSL -o d2.tar.gz https://github.com/terrastruct/d2/releases/download/v0.7.1/d2-v0.7.1-linux-amd64.tar.gz
@@ -68,6 +79,12 @@ jobs:
           d2 --version
 
       - run: npm ci
+
+      # The Week 17 backup tests encrypt with age and upload with rclone.
+      # They find initdb in /usr/lib/postgresql/16/bin, where the runner
+      # image installs Postgres 16, and fail rather than skip in CI.
+      - name: Install age and rclone
+        run: sudo apt-get update && sudo apt-get install -y age rclone
 
       # Week 18 checks its alert rules and Alertmanager config with promtool
       # and amtool, and fails rather than skips in CI when they are missing.
@@ -94,7 +111,7 @@ jobs:
         working-directory: examples/web
         run: |
           npm ci
-          npx vitest run
+          npm test
 
       - run: npm run test:unit
       - run: npm run build
@@ -102,6 +119,13 @@ jobs:
 
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+
+      # The Week 10 status page: Playwright against the Vite dev server.
+      # Both lock files hold @playwright/test 1.64.0, which shares
+      # the Chromium installed above.
+      - name: Web examples, end to end
+        working-directory: examples/web
+        run: npm run test:e2e
 
       - uses: actions/upload-pages-artifact@v3
         if: github.event_name != 'pull_request'

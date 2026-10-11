@@ -39,15 +39,20 @@ scrape_configs:
 
   # region: probe
   # Synthetic traffic and an outside view. Every 15 seconds, Prometheus
-  # asks blackbox exporter to GET the status page api through the web
-  # pod, the way a browser does. Each probe is one more request in the
-  # availability SLI, and probe_success records whether it got a 2xx.
+  # asks blackbox exporter to GET the status page api twice: once from the
+  # internet side, through DNS, the certificate, Traefik and the web pod,
+  # and once through the web Service inside the cluster. Each probe that
+  # reaches the api is one more request in the availability SLI, and
+  # probe_success records whether it got a 2xx. Put your own domain in
+  # place of status.example.com.
   - job_name: status-page-probe
     metrics_path: /probe
     params:
       module: [http_2xx]
     static_configs:
-      - targets: ["http://web.your-monitor.svc:8080/api/monitors"]
+      - targets:
+          - https://status.example.com/api/monitors
+          - http://web.your-monitor.svc:8080/api/monitors
     relabel_configs:
       # Pass the target to blackbox exporter as ?target=..., keep it as
       # the instance label, and scrape blackbox exporter itself.

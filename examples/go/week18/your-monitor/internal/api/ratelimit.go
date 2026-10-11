@@ -1,7 +1,5 @@
 package api
 
-// region: ratelimit
-
 import (
 	"context"
 	"net/http"
@@ -14,6 +12,8 @@ import (
 
 	"fsp/examples/week18/your-monitor/internal/ratelimit"
 )
+
+// region: rate-config
 
 // RateConfig sets the limit on every request from one client. A Limit of
 // 0 turns that limit off. Trusted lists the networks of the proxies in
@@ -34,6 +34,8 @@ const (
 	loginAllBurst = 3
 	loginAllRate  = 1 // per second
 )
+
+// endregion: rate-config
 
 // everyone is the single bucket that loginAll keys every request to.
 var everyone = netip.Prefix{}
@@ -68,6 +70,8 @@ func NewRateLimits(cfg RateConfig, reg prometheus.Registerer) *RateLimits {
 	return l
 }
 
+// region: limit
+
 // Limit wraps next. It runs before everything else, the span and the log
 // line included: a refused request costs a map lookup and a counter, and a
 // flood of them writes no log lines.
@@ -86,6 +90,7 @@ func (l *RateLimits) Limit(next http.Handler) http.Handler {
 				l.tooMany(w, "login", wait)
 				return
 			}
+			// A login that the shared cap refuses still spent its client token.
 			if wait := l.loginAll.Allow(everyone, now); wait > 0 {
 				l.tooMany(w, "login_all", wait)
 				return
@@ -104,6 +109,8 @@ func (l *RateLimits) tooMany(w http.ResponseWriter, limit string, wait time.Dura
 	writeError(w, http.StatusTooManyRequests, "too many requests")
 }
 
+// endregion: limit
+
 // clientKey is the context key under which Limit stores the client
 // address, for LogRequests.
 type clientKey struct{}
@@ -113,5 +120,3 @@ func clientFrom(ctx context.Context) (netip.Addr, bool) {
 	ip, ok := ctx.Value(clientKey{}).(netip.Addr)
 	return ip, ok && ip.IsValid()
 }
-
-// endregion: ratelimit

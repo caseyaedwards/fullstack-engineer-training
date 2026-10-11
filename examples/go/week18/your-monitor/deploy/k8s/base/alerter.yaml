@@ -1,46 +1,67 @@
-# contract stub: week 15.
+# The alerter: one pod applies the alert rule. Recreate keeps the copies at
+# one during a rollout, which means one notification per incident. With no
+# ALERT_WEBHOOK_URL, it writes alerts to its log, as in Compose without one.
+# region: alerter
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: alerter
+  labels:
+    app.kubernetes.io/name: alerter
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
-      app: alerter
+      app.kubernetes.io/name: alerter
   template:
     metadata:
       labels:
-        app: alerter
+        app.kubernetes.io/name: alerter
     spec:
       securityContext:
         runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: alerter
           image: your-monitor-alerter
           args: ["-metrics-addr", ":2112"]
-          env:
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: postgres
-                  key: password
-            - name: DATABASE_URL
-              value: postgres://monitor:$(POSTGRES_PASSWORD)@postgres:5432/monitor?sslmode=disable
           ports:
-            - containerPort: 2112
+            - name: metrics
+              containerPort: 2112
+          envFrom:
+            - configMapRef:
+                name: monitor-config
+            - secretRef:
+                name: postgres
+          env:
+            - name: DATABASE_URL
+              value: postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)?sslmode=disable
+          # /healthz answers 503 once the loop has run no round for 30 seconds.
           readinessProbe:
             httpGet:
               path: /healthz
-              port: 2112
+              port: metrics
+            periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /healthz
-              port: 2112
+              port: metrics
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
           resources:
             requests:
-              cpu: 50m
-              memory: 64Mi
+              cpu: 25m
+              memory: 32Mi
             limits:
-              cpu: 500m
-              memory: 256Mi
+              cpu: 250m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+# endregion: alerter

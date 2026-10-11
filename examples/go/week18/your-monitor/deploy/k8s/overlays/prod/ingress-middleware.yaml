@@ -1,10 +1,11 @@
 # region: ingress-middleware
-# Every request through the Week 16 Ingress passes the middleware first.
-# The value reads <namespace>-<middleware name>@kubernetescrd.
+# Every request through the Ingress of Week 16 passes both middlewares, in
+# this order: the redirect to https, then the rate limit. Each entry reads
+# <namespace>-<middleware name>@kubernetescrd.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: your-monitor
+  name: status-page
   annotations:
-    traefik.ingress.kubernetes.io/router.middlewares: your-monitor-ratelimit@kubernetescrd
+    traefik.ingress.kubernetes.io/router.middlewares: your-monitor-redirect-https@kubernetescrd,your-monitor-ratelimit@kubernetescrd
 # endregion: ingress-middleware

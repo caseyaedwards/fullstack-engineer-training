@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -58,19 +59,33 @@ func TestLimiterUnderParallelGuesses(t *testing.T) {
 
 // endregion: limiter-test
 
+// TestLimiterCapsItsMemory fills the map with made-up emails, as an
+// attacker can. A real user with no failed attempts still gets in.
 func TestLimiterCapsItsMemory(t *testing.T) {
 	l := newLimiter(5, time.Minute)
-	now := time.Now()
-	for i := range maxKeys {
-		l.take(string(rune(i)), now)
+	start := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
+	l.take("first@example.com", start)
+	for i := range maxKeys - 1 {
+		l.take(fmt.Sprintf("guess%d@example.com", i), start.Add(time.Second))
 	}
-	if ok, _ := l.take("new@example.com", now); ok {
-		t.Error("a new key is allowed while the map is full of fresh keys")
+	if len(l.entries) != maxKeys {
+		t.Fatalf("%d keys, want a full map of %d", len(l.entries), maxKeys)
 	}
-	if ok, _ := l.take("new@example.com", now.Add(time.Minute)); !ok {
-		t.Error("a new key is refused after the old keys expired")
+
+	if ok, _ := l.take("you@example.com", start.Add(2*time.Second)); !ok {
+		t.Fatal("a fresh email is refused while the map is full")
 	}
-	if len(l.entries) != 1 {
-		t.Errorf("%d keys after the prune, want 1", len(l.entries))
+	if len(l.entries) != maxKeys {
+		t.Errorf("%d keys after the new one, want %d", len(l.entries), maxKeys)
+	}
+	if _, found := l.entries["first@example.com"]; found {
+		t.Error("the oldest key is still there; want it evicted")
+	}
+
+	if ok, _ := l.take("late@example.com", start.Add(time.Minute+time.Second)); !ok {
+		t.Fatal("a fresh email is refused after the old keys expired")
+	}
+	if len(l.entries) != 2 {
+		t.Errorf("%d keys after the expired ones went, want 2", len(l.entries))
 	}
 }

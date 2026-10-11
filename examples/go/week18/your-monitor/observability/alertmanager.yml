@@ -40,10 +40,14 @@ route:
 
 # region: inhibit
 # While a page fires for an SLO, its ticket stays quiet: the page already
-# covers the same budget.
+# covers the same budget. And while the fast burn pages for an SLO, the
+# slow burn of the same SLO stays quiet: one incident, one page per SLO.
 inhibit_rules:
   - source_matchers: ['severity = "page"']
     target_matchers: ['severity = "ticket"']
+    equal: [slo]
+  - source_matchers: ['alertname = "ErrorBudgetFastBurn"']
+    target_matchers: ['alertname = "ErrorBudgetSlowBurn"']
     equal: [slo]
 # endregion: inhibit
 
@@ -85,7 +89,8 @@ receivers:
         chat_id_file: /etc/alertmanager/secrets/telegram-chat-id
         disable_notifications: true
         message: *message
-  # A plain POST to the ping URL of your heartbeat check.
+  # A plain POST to the ping URL of your heartbeat check: the laptop and
+  # the VPS each mount their own URL at this path.
   - name: heartbeat
     webhook_configs:
       - url_file: /etc/alertmanager/secrets/heartbeat-url

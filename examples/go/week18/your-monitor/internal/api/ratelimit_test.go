@@ -17,8 +17,6 @@ import (
 	"fsp/examples/week18/your-monitor/internal/monitor"
 )
 
-// region: ratelimit-test
-
 // pods is the k3s pod network, where Traefik and nginx run.
 var pods = []netip.Prefix{netip.MustParsePrefix("10.42.0.0/16")}
 
@@ -79,6 +77,8 @@ func TestRateLimitPerClient(t *testing.T) {
 	}
 }
 
+// region: spoof-test
+
 // TestSpoofedHeaderDoesNotEscapeTheLimit: a client that talks to the api
 // directly, past Traefik, writes a new X-Forwarded-For on every request.
 // The api ignores it, because the peer is not a trusted proxy.
@@ -97,6 +97,8 @@ func TestSpoofedHeaderDoesNotEscapeTheLimit(t *testing.T) {
 		t.Errorf("statuses %v, want the third request refused", codes)
 	}
 }
+
+// endregion: spoof-test
 
 // TestLoginLimits: the login limits apply even with the client limit off.
 // Each client gets 5 logins at once; all clients together get 3 a second.
@@ -157,5 +159,3 @@ func TestRequestLogNamesTheClient(t *testing.T) {
 		t.Errorf("client = %v, want 203.0.113.7", line["client"])
 	}
 }
-
-// endregion: ratelimit-test

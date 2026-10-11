@@ -1,17 +1,22 @@
 ---
 title: "Week 15: Kubernetes on the Laptop"
+description: Run the whole uptime monitor on a Kubernetes 1.36 cluster on your laptop with kind, from manifests you write, check and apply with Kustomize.
 week: 15
 phase: run
-hours: [5, 8]
+hours: [6, 8]
 aiStage: 3
 tracks: [kubernetes, containers]
 done:
-  - id: item-1
-    text: "Placeholder item 1: this week is not written yet"
-  - id: item-2
-    text: "Placeholder item 2: this week is not written yet"
-  - id: item-3
-    text: "Placeholder item 3: this week is not written yet"
+  - id: stack-on-kind
+    text: kubectl get pods lists api, worker, scheduler, alerter, web and postgres-0 as Running and 1/1 ready, and the status page on 127.0.0.1:3000 shows a monitor you added through the cluster.
+  - id: manifests-checked
+    text: make k8s-check reports every object valid against Kubernetes 1.36, and the manifest tests in deploy/k8s pass under go test -race with kubectl on your PATH.
+  - id: probes-seen
+    text: You have broken the readiness probe of the api and the liveness probe of web on purpose, and you can say what each probe did from kubectl get pods and the events.
+  - id: data-survives
+    text: You delete the postgres-0 pod, and your monitors and their history are there when the new postgres-0 is ready.
+  - id: three-failures
+    text: From kubectl get pods, describe and logs alone, you can tell ErrImageNeverPull, a pod Pending for lack of CPU, and CrashLoopBackOff from a wrong database password apart.
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -21,43 +26,528 @@ import AiThisWeek from '../../../components/AiThisWeek.astro';
 import SideLab from '../../../components/SideLab.astro';
 import ReadWith from '../../../components/ReadWith.astro';
 import DoneWhen from '../../../components/DoneWhen.astro';
+import Diagram from '../../../components/Diagram.astro';
+import CodeFrom from '../../../components/CodeFrom.astro';
+import { weekHref, trackHref } from '../../../lib/links';
 
 <WeekHeader />
 
+At the end of <a href={weekHref(14)}>Week 14</a>, CI tests every change and pushes one image per program to GHCR, and `deploy.yml` waits for a cluster to apply manifests to. Compose still runs the monitor, on one machine, from one file. This week, you write those manifests and run the whole monitor on Kubernetes: a cluster of one node, inside Docker, on your laptop. <a href={weekHref(16)}>Week 16</a> applies the same manifests to a server on the internet.
+
 ## Goals
 
-This section is not written yet.
+- Explain what the API server, the scheduler, the controllers and the kubelet each do when you apply a manifest.
+- Describe the monitor as Kubernetes objects: a Deployment and a Service per program, a StatefulSet with a volume for Postgres, a ConfigMap and a Secret.
+- Give every container readiness and liveness probes on `/healthz`, CPU and memory requests and limits, a non-root user and a read-only root filesystem.
+- Check the manifests before any cluster sees them, then run the monitor on kind with Kubernetes 1.36.
+- Tell a pod that cannot pull its image, cannot be placed or keeps crashing apart, from `kubectl` output alone.
 
 ## Concepts
 
-This section is not written yet.
+:::note
+Every `kubectl` and `kind` output on this page is an example, written from the Kubernetes and kind documentation, not a capture of one run. Your pod names, addresses and ages differ. The `make k8s-check` and `kubeconform` outputs are real runs against the files of this week.
+:::
+
+### From Compose to a Cluster
+
+Compose starts containers on one machine and restarts the ones that exit. **Kubernetes** runs containers on a **cluster**: a set of machines, called **nodes**, managed as one. You never tell Kubernetes to start a container. You send it **objects**, YAML documents that describe what you want to run, called **manifests**. Kubernetes stores them and works, without end, to make the cluster match them.
+
+That work is a **control loop**: compare what you asked for with what runs, act on the difference, repeat. Your scheduler from <a href={weekHref(9)}>Week 9</a> is one: every five seconds it compares the due monitors with the queue and adds the missing jobs. Kubernetes runs dozens of these loops. When a node fails or a container exits, the next pass of a loop sees the difference and repairs it.
+
+**kind**, short for Kubernetes in Docker, makes each node a Docker container. Inside that container run the same programs as on a real server. The diagram shows the parts that act when you apply a manifest:
+
+<Diagram
+  id="kind-cluster"
+  title="What happens on a kind node when you apply a manifest"
+  code={`direction: right
+you: "you\\n(kubectl)"
+laptop: your laptop {
+  docker: "Docker\\nimage store"
+  node: "kind node: container your-monitor-control-plane" {
+    api: "API server"
+    etcd: etcd
+    ctrl: "controller\\nmanager"
+    sched: scheduler
+    kubelet: kubelet
+    ctd: "containerd\\nimage store"
+    pods: pods
+    api -> etcd: stores objects
+    ctrl -> api: "creates pods"
+    sched -> api: "picks a node"
+    kubelet -> api: "watches its pods"
+    kubelet -> ctd: "starts containers"
+    ctd -> pods: runs
+  }
+  docker -> node.ctd: "kind load docker-image"
+}
+you -> laptop.node.api: "kubectl apply"
+`}
+  steps={[
+    { hl: ['you', 'laptop.node.api', 'laptop.node.etcd', 'you->laptop.node.api', 'laptop.node.api->laptop.node.etcd'], caption: 'kubectl sends your manifests to the API server, the front door of the cluster. It checks each object against its schema and stores it in etcd, the cluster database. Nothing runs yet: an object records what you want.' },
+    { hl: ['laptop.node.ctrl', 'laptop.node.api', 'laptop.node.ctrl->laptop.node.api'], caption: 'The controller manager runs one control loop per type of workload. The Deployment loop sees that api asks for two pods, finds none, and creates two Pod objects through the API server.' },
+    { hl: ['laptop.node.sched', 'laptop.node.api', 'laptop.node.sched->laptop.node.api'], caption: 'The scheduler picks a node for each new pod: one with enough unreserved CPU and memory for the requests of its containers. A kind cluster has one node, which makes the choice short.' },
+    { hl: ['laptop.docker', 'laptop.node.ctd', 'laptop.docker->laptop.node.ctd'], caption: 'The node keeps images in containerd, an image store of its own. It never sees the images that Docker on your laptop builds. kind load docker-image copies one across.' },
+    { hl: ['laptop.node.kubelet', 'laptop.node.ctd', 'laptop.node.pods', 'laptop.node.kubelet->laptop.node.api', 'laptop.node.kubelet->laptop.node.ctd', 'laptop.node.ctd->laptop.node.pods'], caption: 'The kubelet, the agent on each node, sees the pods placed on its node and starts their containers through containerd. It also runs their probes and reports their state to the API server.' },
+  ]}
+/>
+
+### Pods, Deployments and Labels
+
+A **pod** is the unit Kubernetes runs: one or more containers that share an IP address and can share volumes. Every program of the monitor runs one container per pod. Pods are disposable. A replaced pod gets a new name and a new IP address, and nothing on its filesystem survives.
+
+You do not create pods yourself. A **Deployment** holds a pod template and a number of copies, called **replicas**. Its control loop keeps that many pods running from the template. When you change the template, it replaces the pods a few at a time: a **rolling update**. A Deployment finds its pods by **labels**, key and value pairs on every object, such as `app.kubernetes.io/name: api`. Its **selector** is a query on those labels. A selector that matches no pod template is a classic Kubernetes typo, and this week's tests check for it.
+
+### Services: A Stable Name for Changing Pods
+
+The web container sends `/api/` requests to `http://api:8080`, as in Compose. In Kubernetes, `api` is the name of a **Service**: a stable virtual IP address, the **ClusterIP**, plus a DNS name. The Service selects pods by label and keeps the list of the ready ones in **EndpointSlice** objects. On every node, `kube-proxy` turns that list into rules that send each connection for the ClusterIP to one ready pod. Pods come and go. The name and the address stay.
+
+A **namespace** is a named group of objects inside one cluster. Everything of the monitor lives in `your-monitor`. CoreDNS, the DNS server of the cluster, answers for names of the form `api.your-monitor.svc.cluster.local`, and the search list of every pod makes the short name `api` work inside the same namespace.
+
+Three Service types matter this week. **ClusterIP**, the default, answers inside the cluster only. **NodePort** also opens one port, from `30000` to `32767`, on every node. **Headless**, with `clusterIP: None`, has no virtual address at all: its name resolves straight to the addresses of the ready pods. Postgres uses one.
+
+<Diagram
+  id="request-path"
+  title="From your browser to Postgres inside the kind node"
+  code={`direction: right
+browser: "browser\\n127.0.0.1:3000"
+node: "kind node" {
+  websvc: "Service web\\nNodePort 30080"
+  web: "pod web\\nnginx"
+  apisvc: "Service api\\nClusterIP"
+  api1: "pod api"
+  api2: "pod api"
+  loops: "pods worker,\\nscheduler, alerter"
+  pgsvc: "Service postgres\\nheadless"
+  pg: "pod postgres-0"
+  pvc: "claim\\ndata-postgres-0"
+  websvc -> web
+  web -> apisvc: "/api/"
+  apisvc -> api1
+  apisvc -> api2
+  api1 -> pgsvc
+  api2 -> pgsvc
+  loops -> pgsvc
+  pgsvc -> pg
+  pg -> pvc
+}
+browser -> node.websvc: "port mapping"
+`}
+  steps={[
+    { hl: ['browser', 'node.websvc', 'browser->node.websvc'], caption: 'kind-config.yaml maps port 3000 of your laptop, on 127.0.0.1 only, to port 30080 of the node container. The web Service listens on that NodePort.' },
+    { hl: ['node.websvc', 'node.web', 'node.websvc->node.web'], caption: 'The Service passes the connection to a ready web pod. nginx answers files itself, and passes every path under /api/ on.' },
+    { hl: ['node.web', 'node.apisvc', 'node.api1', 'node.api2', 'node.web->node.apisvc', 'node.apisvc->node.api1', 'node.apisvc->node.api2'], caption: 'nginx connects to api:8080, the ClusterIP of the api Service. kube-proxy picks one of the two ready api pods for each connection. A pod that fails its readiness probe drops out of the list.' },
+    { hl: ['node.api1', 'node.api2', 'node.loops', 'node.pgsvc', 'node.pg', 'node.api1->node.pgsvc', 'node.api2->node.pgsvc', 'node.loops->node.pgsvc', 'node.pgsvc->node.pg'], caption: 'Every program reaches Postgres as postgres:5432. The Service is headless: the name resolves to the address of postgres-0 itself.' },
+    { hl: ['node.pg', 'node.pvc', 'node.pg->node.pvc'], caption: 'Postgres keeps its files on a PersistentVolumeClaim. The claim outlives the pod: a new postgres-0 mounts the same disk and finds every row.' },
+  ]}
+/>
+
+### Probes: Ready, and Alive
+
+For each probe a container defines, the kubelet runs it every 10 seconds by default, with a timeout of one second. A container without probes is never probed. An HTTP probe passes on any status from `200` to `399`.
+
+- **Readiness** asks: can this pod take requests now? While it fails, the pod stays out of its Service, and a rolling update waits for it. The container keeps running.
+- **Liveness** asks: is this container stuck for good? After `failureThreshold` failures in a row, three by default, the kubelet restarts the container.
+
+The api answers `/healthz` from its HTTP handler: when it answers at all, it can take requests. The worker, the scheduler and the alerter run a loop, and their HTTP server keeps answering while that loop hangs. A `/healthz` that always says ok proves only that the server runs. This week, their `/healthz` reports whether the loop has made a pass lately.
+
+Keep liveness cheap and narrow. A liveness probe that checks Postgres restarts every api pod when Postgres goes down, and the restarts fix nothing.
+
+### Requests, Limits and the Container User
+
+Each container states **requests** and **limits** for CPU and memory. The scheduler places a pod only on a node with the requested amount unreserved. A limit is a ceiling the kernel enforces: above its CPU limit, a container is slowed down, and above its memory limit, the kernel stops it and the container shows `OOMKilled`. CPU counts in millicores: `100m` is a tenth of one core. Memory counts in bytes with binary suffixes: `64Mi` is 64 mebibytes. Write `Mi`, not `M`, and never `m`, which means millibytes.
+
+A **security context** sets who the container runs as. The Go images from <a href={weekHref(6)}>Week 6</a> run as user `65532` and write no files, which makes five settings free: refuse root, forbid privilege escalation, drop every Linux capability, apply the default **seccomp** profile of the container runtime, which blocks rare and risky system calls, and mount the image read-only. The `restricted` Pod Security Standard demands the first four. A label on the namespace makes the API server refuse any pod that breaks them. The read-only image is a rule of this repository, on top of the standard, and the manifest tests of Step 9 enforce it.
+
+### State: StatefulSet, Volumes, ConfigMap and Secret
+
+Postgres needs a disk that survives its pod, and a stable name. A **StatefulSet** gives each pod a fixed name, `postgres-0`, and a **PersistentVolumeClaim** (PVC) of its own, `data-postgres-0`. A claim asks for storage. The cluster answers it with a **PersistentVolume**, which kind creates as a folder inside the node container. Delete the pod, and the StatefulSet makes a new `postgres-0` that mounts the same claim.
+
+A **ConfigMap** holds settings, and a **Secret** holds passwords and keys. Containers read both as environment variables. A Secret is not encrypted: etcd stores it as it is, and the API shows its values in base64, which anyone can decode. What protects it is who can read it, and the <a href={trackHref('kubernetes')}>Kubernetes track</a> covers that access control.
+
+### Kustomize: A Base and an Overlay for Each Cluster
+
+Your laptop and the server of Week 16 run the same programs with different images, passwords and ways in. **Kustomize**, built into `kubectl`, keeps the shared manifests in a **base** and the differences in one **overlay** per cluster. `kubectl kustomize DIR` prints the merged objects, and `kubectl apply -k DIR` sends them. The `deploy.yml` from Week 14 already relies on it: it writes a small overlay that swaps each image name for a GHCR image.
 
 ## Build
 
-This section is not written yet.
+You add a health check to three programs, then write the manifests, check them, and run them on kind. At the end, the repository holds:
+
+```txt
+your-monitor/
+├── internal/obs/health.go        Health and OpsMux (Step 2)
+├── web/nginx.conf                a /healthz location (Step 2)
+├── Makefile                      kind-up, kind-load, k8s-check, kind-deploy, kind-down
+└── deploy/k8s/
+    ├── kind-config.yaml          the cluster (Step 3)
+    ├── manifests_test.go         the manifest tests (Step 9)
+    ├── base/                     one file per program, and kustomization.yaml
+    └── overlays/kind/            kustomization.yaml, namespace.yaml, postgres.env (not in Git)
+```
+
+The snippets come from the example code that this site tests, under `examples/go/week15/your-monitor/`. In your repository, the import paths start with your module path.
+
+### Step 1: Install the Tools
+
+You need three programs: kind, `kubectl`, and `kubeconform`, which checks manifests against the Kubernetes schemas. The Docker you installed in <a href={weekHref(0)}>Week 0</a> runs the node.
+
+The node image this page pins, Kubernetes 1.36, comes from the release notes of kind `v0.33.0`, which list one image for each supported minor version, pinned by digest. kind itself defaults to a newer Kubernetes. Install that release with Go:
+
+```sh
+go install sigs.k8s.io/kind@v0.33.0
+go install github.com/yannh/kubeconform/cmd/kubeconform@latest
+kind version
+```
+
+`kind version` prints a line such as `kind v0.33.0 go1.27.2 darwin/arm64`. When a newer kind exists, its release notes list the 1.36 image to pin instead.
+
+`kubectl` talks to clusters at most one minor version away from its own. Homebrew installs the newest release, 1.37 at the time of writing, which still fits a 1.36 cluster. Homebrew moves on to 1.38 when it ships, and that `kubectl` no longer fits. Download the newest 1.36 release from the Kubernetes release server instead, check its checksum, and install it:
+
+```sh
+os=$(uname -s | tr '[:upper:]' '[:lower:]')
+arch=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+version=$(curl -fsSL https://dl.k8s.io/release/stable-1.36.txt)
+curl -fsSLO "https://dl.k8s.io/release/$version/bin/$os/$arch/kubectl"
+curl -fsSLO "https://dl.k8s.io/release/$version/bin/$os/$arch/kubectl.sha256"
+echo "$(cat kubectl.sha256)  kubectl" | shasum -a 256 --check
+sudo install -m 0755 kubectl /usr/local/bin/kubectl
+rm kubectl kubectl.sha256
+kubectl version --client
+```
+
+`shasum` prints `kubectl: OK`, and the last command prints `Client Version: v1.36` followed by the patch number. When it names another version, an older `kubectl` comes first on your `PATH`: `which -a kubectl` lists every copy.
+
+### Step 2: Give Every Program a Health Endpoint
+
+Create `internal/obs/health.go`. The loop of a program calls `Beat` on every pass, and `/healthz` answers `503` once the last beat is older than `maxAge`:
+
+<CodeFrom file="go/week15/your-monitor/internal/obs/health.go" region="health" lang="go" title="internal/obs/health.go" />
+
+`last` is an `atomic.Int64`: ten worker goroutines beat while the HTTP server reads, and atomic loads and stores need no lock. `OpsMux` serves `/metrics` and `/healthz` on the ops port of a program:
+
+<CodeFrom file="go/week15/your-monitor/internal/obs/health.go" region="ops-mux" lang="go" title="internal/obs/health.go" />
+
+In `cmd/scheduler/main.go`, create the `Health` before the metrics server and serve `OpsMux` on `-metrics-addr`:
+
+<CodeFrom file="go/week15/your-monitor/cmd/scheduler/main.go" region="health" lang="go" title="cmd/scheduler/main.go" />
+
+In the function you pass to `every`, give `round` a context with a deadline of two intervals, from `context.WithTimeout`, and call `health.Beat()` after it. A query that hangs then ends as a failed round, and the loop still beats.
+
+Do the same in the other two programs:
+
+- **alerter**: add the Go command-line flag `-metrics-addr`, start the same server, give each `Round` the same deadline, and beat after it, failed or not. `maxAge` is three times `-interval`: 30 seconds.
+- **worker**: add `mux.Handle("GET /healthz", health)` to the mux of its `-debug-addr` server, next to `/metrics`, and call `health.Beat()` at the top of the function you pass to `run`. pprof stays on its own loopback server, `-pprof-addr`. `maxAge` is `3 * (*timeout + *poll)`, 18 seconds: no beat for that long means every worker goroutine is stuck.
+
+The test sleeps past `maxAge` and expects `503`, then beats and expects `200`:
+
+<CodeFrom file="go/week15/your-monitor/internal/obs/health_test.go" region="health-test" lang="go" title="internal/obs/health_test.go" />
+
+The example code also builds each program, starts it with its ops address and a short interval, and expects `{"status":"ok"}` from `/healthz` for longer than one `maxAge`. A loop without `Beat` fails it. For web, nginx answers the probe itself. Add this location to `web/nginx.conf`, above `location /assets/`:
+
+<CodeFrom file="go/week15/your-monitor/web/nginx.conf" region="healthz" lang="nginx" title="web/nginx.conf" />
+
+### Step 3: Create the Cluster
+
+Create `deploy/k8s/kind-config.yaml`:
+
+<CodeFrom file="go/week15/your-monitor/deploy/k8s/kind-config.yaml" region="kind-config" lang="yaml" title="deploy/k8s/kind-config.yaml" />
+
+Add the kind targets to the Makefile, and `kind-up kind-load k8s-check kind-deploy kind-down` to its `.PHONY` line:
+
+<CodeFrom file="go/week15/your-monitor/Makefile" region="kind" lang="makefile" title="Makefile" />
+
+`KUBECTL` names the context on every call. A **context** is an entry in `~/.kube/config` that joins a cluster, a user and a default namespace. When Week 16 adds a second cluster, no target here reaches it by mistake. Stop Compose first with `make down`, because both want port `3000`. Then create the cluster:
+
+```sh
+make kind-up
+kubectl get nodes
+```
+
+kind sets your current context to `kind-your-monitor`, and `make kind-up` sets `your-monitor` as the namespace of that context. That is why a bare `kubectl get pods`, as in Step 10, lists the pods of the monitor. The node is ready when the output looks like this example:
+
+```txt
+NAME                         STATUS   ROLES           AGE   VERSION
+your-monitor-control-plane   Ready    control-plane   48s   v1.36.4
+```
+
+### Step 4: Build and Load the Images
+
+Run `make kind-load`. It builds the five images as `make up` does, named `your-monitor-api` to `your-monitor-web`, tags each one `dev`, and copies it into the node. The `dev` tag gives the image a fixed name that the kind overlay can point at. What keeps the node from pulling it from a registry is the overlay setting `imagePullPolicy: Never`, which Step 8 shows: Docker Hub has no `your-monitor-api`.
+
+After a code change, run `make kind-load` again, then `kubectl rollout restart deployment`. The tag stays `dev`, which leaves the manifests unchanged: without the restart, the running pods keep the old image.
+
+### Step 5: Describe the API
+
+Create `deploy/k8s/base/api.yaml`. It holds two objects, separated by `---`. The Deployment comes first:
+
+<CodeFrom file="go/week15/your-monitor/deploy/k8s/base/api.yaml" region="deployment" lang="yaml" title="deploy/k8s/base/api.yaml" />
+
+Read it from the top:
+
+- `selector` and `template.metadata.labels`: the same label, which ties the Deployment to its pods.
+- `image: your-monitor-api`: only the name. The kind overlay adds the tag `dev`, and Week 14's `deploy.yml` swaps in the GHCR image.
+- `ports`: each port gets a name. The probes and the Service refer to `http` instead of `8080`, and a changed port number stays in one place.
+- `envFrom` and `env`: the ConfigMap and the Secret become variables, and `DATABASE_URL` builds on them. Kubernetes fills in `$(NAME)` with a variable defined earlier in the container, and `envFrom` comes first. The host `postgres` is the Service of Step 7.
+- The probes: readiness every 5 seconds takes a broken pod out of the Service within 10 seconds. Liveness gives it 30 seconds before a restart.
+
+The Service follows in the same file:
+
+<CodeFrom file="go/week15/your-monitor/deploy/k8s/base/api.yaml" region="service" lang="yaml" title="deploy/k8s/base/api.yaml" />
+
+### Step 6: Describe the Other Programs
+
+Create `worker.yaml`, `scheduler.yaml`, `alerter.yaml` and `web.yaml` in `deploy/k8s/base/` on the pattern of `api.yaml`. Each one differs in a few lines:
+
+- **worker**: two replicas, which the `SKIP LOCKED` queue of Week 9 keeps from taking the same job. `args: ["-workers", "$(WORKERS)", "-debug-addr", ":6060"]`, a port named `debug`, and probes on it. No Service, because nothing calls the worker. The address `:6060` means every interface of the pod, because the kubelet probes the pod IP, not `127.0.0.1`. That server holds `/metrics` and `/healthz` only. pprof stays off, and Observe It turns it on, on the loopback address of the pod.
+- **scheduler** and **alerter**: one replica, `args: ["-metrics-addr", ":2112"]`, a port named `metrics`, and `strategy: type: Recreate`. With the default rolling update, the new pod starts before the old one stops, and for a few seconds two schedulers queue jobs and two alerters send notifications. `Recreate` stops the old pod first. The alerter gets no `ALERT_WEBHOOK_URL` and writes alerts to its log, as in Compose without one.
+- **web**: one replica, no environment, and a Service named `web` on port `8080`. nginx writes its PID file and buffers under `/tmp`, which the read-only root filesystem forbids. An `emptyDir` volume, an empty folder that lives as long as the pod, mounted at `/tmp`, fixes that.
+
+### Step 7: Run Postgres as a StatefulSet
+
+Create `deploy/k8s/base/postgres.yaml`. The headless Service comes first:
+
+<CodeFrom file="go/week15/your-monitor/deploy/k8s/base/postgres.yaml" region="service" lang="yaml" title="deploy/k8s/base/postgres.yaml" />
+
+Then the StatefulSet:
+
+<CodeFrom file="go/week15/your-monitor/deploy/k8s/base/postgres.yaml" region="statefulset" lang="yaml" title="deploy/k8s/base/postgres.yaml" />
+
+Three choices here come from how the `postgres:17` image works:
+
+- The image starts as root, fixes file owners, and switches to its user `postgres`, ID `999`. Started as `999`, it skips the root part and runs under the restricted standard.
+- `PGDATA` points one folder below the mount. kind creates the volume folder as root, and Postgres refuses a data directory that another user owns.
+- Postgres writes its socket to `/var/run/postgresql`. With a read-only image, that folder and `/tmp` become `emptyDir` volumes.
+
+The readiness probe runs `pg_isready` inside the container. On the first start, the image runs a temporary server that listens on its socket only, which keeps the pod unready until the real server listens on TCP. The liveness probe only opens a TCP connection: a slow, busy database stays alive.
+
+### Step 8: Tie It Together with Kustomize
+
+Create `deploy/k8s/base/kustomization.yaml`:
+
+<CodeFrom file="go/week15/your-monitor/deploy/k8s/base/kustomization.yaml" region="base" lang="yaml" title="deploy/k8s/base/kustomization.yaml" />
+
+`configMapGenerator` writes the ConfigMap for you, and the hash in its name turns every change of a value into a change of the pod templates that use it. Kubernetes then replaces those pods. A hand-written ConfigMap changes under running pods, and they keep the old values until something restarts them.
+
+The overlay names the namespace first, with the label that enforces the restricted standard. Create `deploy/k8s/overlays/kind/namespace.yaml`:
+
+<CodeFrom file="go/week15/your-monitor/deploy/k8s/overlays/kind/namespace.yaml" region="namespace" lang="yaml" title="deploy/k8s/overlays/kind/namespace.yaml" />
+
+The Namespace lives in the overlay, not the base: Week 16 deploys with a CI account that can act inside the namespace only, and creating a namespace needs rights over the whole cluster. Then create `deploy/k8s/overlays/kind/kustomization.yaml`:
+
+<CodeFrom file="go/week15/your-monitor/deploy/k8s/overlays/kind/kustomization.yaml" region="overlay" lang="yaml" title="deploy/k8s/overlays/kind/kustomization.yaml" />
+
+The same file ends with two patches. A patch is a list of edits in JSON Patch form, applied to the objects that `target` selects:
+
+<CodeFrom file="go/week15/your-monitor/deploy/k8s/overlays/kind/kustomization.yaml" region="patches" lang="yaml" title="deploy/k8s/overlays/kind/kustomization.yaml" />
+
+`secretGenerator` reads `postgres.env`, a file that `make` writes once with a random password. Add `deploy/k8s/overlays/kind/postgres.env` to `.gitignore` and `.dockerignore` before you run any target. Postgres reads the password only when its data directory is empty, on the first start. Change the file later, and the programs log in with a password Postgres does not know: Operate It shows that failure.
+
+### Step 9: Check the Manifests Before the Cluster Does
+
+`kubectl apply` refuses an object with an unknown field, such as a misspelled `readinesProbe`. It finds out only when a cluster answers, and it still applies every other object, which leaves the cluster half changed. Catch the error on your laptop and in CI, with no cluster. `make k8s-check` renders the overlay and validates every object against the schemas of Kubernetes 1.36. `-strict` rejects unknown fields:
+
+```txt
+$ make k8s-check
+umask 077; printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 16)" > deploy/k8s/overlays/kind/postgres.env
+kubectl kustomize deploy/k8s/overlays/kind | kubeconform -strict -kubernetes-version 1.36.0 -summary
+Summary: 12 resources found parsing stdin - Valid: 12, Invalid: 0, Errors: 0, Skipped: 0
+```
+
+The first line runs only while `postgres.env` is missing. With `readinessProbe` misspelled in `api.yaml`, the same check fails:
+
+```txt wrap
+stdin - Deployment api is invalid: problem validating schema. Check JSON formatting: jsonschema validation failed with 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.36.0-standalone-strict/deployment-apps-v1.json#' - at '/spec/template/spec/containers/0': additional properties 'readinesProbe' not allowed
+Summary: 12 resources found parsing stdin - Valid: 11, Invalid: 1, Errors: 0, Skipped: 0
+```
+
+`kubeconform` checks the shape of each object. It cannot know that a selector matches no pod, or that a container runs as root. Those rules belong to this repository, and a Go test enforces them. Create `deploy/k8s/manifests_test.go`. It renders the overlay the way `kubectl apply -k` does:
+
+<CodeFrom file="go/week15/your-monitor/deploy/k8s/manifests_test.go" region="render" lang="go" title="deploy/k8s/manifests_test.go" />
+
+The tests then walk every Deployment and StatefulSet. This one checks the probes and the resources:
+
+<CodeFrom file="go/week15/your-monitor/deploy/k8s/manifests_test.go" region="probes-test" lang="go" title="deploy/k8s/manifests_test.go" />
+
+The others check the restricted standard, that each Service selects the pods of exactly one workload on a port name those pods declare, that `PGDATA` sits inside the claim, and, on the rendered overlay, the namespace, the hashed Secret name, the `dev` images and the NodePort. The test decodes YAML with `go.yaml.in/yaml/v3`: run `go get go.yaml.in/yaml/v3@latest`. GitHub runners ship `kubectl`, and GitHub sets `CI=true`: the `test` job of your CI workflow runs these checks on every pull request. Remove one readiness probe and run `go test ./deploy/...` to watch it fail.
+
+### Step 10: Deploy and Use It
+
+```sh
+make kind-deploy
+kubectl get pods
+```
+
+`make kind-deploy` waits for Postgres, then for each Deployment. On the first deploy, Postgres pulls its image and creates its database, while the four Go programs start, fail to connect, exit and start again. When every rollout reports success, `kubectl get pods` shows something like this example:
+
+```txt
+NAME                        READY   STATUS    RESTARTS      AGE
+alerter-5d8f7c9b6d-q2w8r    1/1     Running   2 (61s ago)   2m10s
+api-7c9d8b6f4d-2xkqp        1/1     Running   2 (58s ago)   2m10s
+api-7c9d8b6f4d-h7m4t        1/1     Running   1 (75s ago)   2m10s
+postgres-0                  1/1     Running   0             2m10s
+scheduler-6b7f9d5c8-lx2vn   1/1     Running   2 (60s ago)   2m10s
+web-84c6d5f7b9-9tzrk        1/1     Running   0             2m10s
+worker-5f6d7b8c9-4kqzj      1/1     Running   1 (77s ago)   2m10s
+worker-5f6d7b8c9-wd7fb      1/1     Running   2 (59s ago)   2m10s
+```
+
+Each pod name is the Deployment name, a hash of the pod template, and five random characters. The database in the cluster is new and empty. Create your user inside a running api container: `kubectl exec -i` runs a command there, with the container environment and `DATABASE_URL` in it, and passes your stdin on:
+
+```sh
+read -rs PASSWORD
+printf '%s\n' "$PASSWORD" | kubectl exec -i deploy/api -- /api -create-user you@example.com
+```
+
+Then log in and add a monitor, as in <a href={weekHref(11)}>Week 11</a>, through port `3000`: each request crosses the kind port mapping, nginx and the api Service.
+
+```sh
+printf '{"email":"you@example.com","password":"%s"}' "$PASSWORD" | curl -sS -c cookies.txt -H 'Content-Type: application/json' -d @- http://127.0.0.1:3000/api/login
+curl -sS -b cookies.txt -H 'Content-Type: application/json' -d '{"url":"https://example.org","interval_seconds":60}' http://127.0.0.1:3000/api/monitors
+```
+
+Open `http://127.0.0.1:3000`. Within a minute, the status page shows `example.org` with its first check.
+
+### Step 11: Commit
+
+```sh
+git add Makefile .gitignore .dockerignore cmd internal web/nginx.conf deploy/k8s go.mod go.sum
+git status
+git commit -m "Run the monitor on a kind cluster, with probes, limits and Kustomize"
+```
+
+Read the `git status` list before the commit: it must not hold `postgres.env`.
 
 ## Observe It
 
 <ObserveIt>
-This section is not written yet.
+
+Four commands answer most questions about a cluster: `kubectl get` lists objects, `kubectl describe` explains one with its recent events, `kubectl logs` prints the output of a container, and `kubectl get events --sort-by=.lastTimestamp` shows what the cluster did, newest last.
+
+**The first start, in the events.** Run the events command after a fresh `make kind-deploy`. Between the `Scheduled` and `Started` lines of each Go pod, you find `BackOff` lines: the program starts before Postgres is ready, exits, and the kubelet waits 10, then 20, then 40 seconds before the next try. Compose waited for a healthy Postgres through `depends_on`. Kubernetes has no such ordering: programs retry until what they need answers. `kubectl logs --previous` shows the log of the run before the restart. The output is an example:
+
+```txt wrap
+$ kubectl logs --previous deploy/worker
+{"time":"2026-10-11T09:12:03.418Z","level":"ERROR","msg":"fatal","service":"worker","err":"connect to database: failed to connect to `user=monitor database=monitor`: hostname resolving error: lookup postgres on 10.96.0.10:53: no such host"}
+```
+
+The Service `postgres` is headless: until `postgres-0` is ready, its name has no address at all. `10.96.0.10` is CoreDNS.
+
+**Probes in the api log.** `kubectl logs deploy/api | grep healthz | tail -3` shows a `request` line for `/healthz` every 5 seconds from the readiness probe and every 10 seconds from the liveness probe. That noise is the price of a probe that crosses your whole handler chain. The worker, the scheduler and the alerter do not log their probes.
+
+**Which pods a Service sends to.** `kubectl get endpointslices -l kubernetes.io/service-name=api` lists the addresses of the ready api pods. The output is an example:
+
+```txt
+NAME        ADDRESSTYPE   PORTS   ENDPOINTS                 AGE
+api-8xk2p   IPv4          8080    10.244.0.12,10.244.0.13   6m
+```
+
+Compare the addresses with `kubectl get pods -o wide`. Operate It makes a pod unready and keeps it out of this list.
+
+**Metrics without Prometheus.** The cluster runs no Prometheus or collector this week, and tracing stays off because `OTEL_EXPORTER_OTLP_ENDPOINT` is unset. Each program still serves `/metrics`. `kubectl port-forward` opens a tunnel from your laptop to one pod:
+
+```sh
+kubectl port-forward deploy/scheduler 2112:2112
+curl -s 127.0.0.1:2112/metrics | grep '^monitor_jobs'
+```
+
+Run `curl` in a second terminal, and press Ctrl-C in the first when you are done. `monitor_jobs_queued` stays at or near `0` while two workers keep up.
+
+**pprof, on the loopback of one pod.** The worker serves no pprof by default, and no Service, probe or port of the manifests exposes it. To profile in the cluster, add the Go command-line flag `-pprof-addr 127.0.0.1:6061` to the worker, then open a tunnel. `kubectl port-forward` connects to the loopback address inside the pod, which nothing else in the cluster reaches:
+
+```sh
+kubectl patch deployment worker --type json -p '[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "-pprof-addr"}, {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "127.0.0.1:6061"}]'
+kubectl port-forward deploy/worker 6061:6061
+curl -s '127.0.0.1:6061/debug/pprof/goroutine?debug=1' | head -1
+```
+
+In the second terminal, `curl` prints `goroutine profile: total` and a count. `go tool pprof http://127.0.0.1:6061/debug/pprof/profile?seconds=10` takes a CPU profile, as in <a href={weekHref(12)}>Week 12</a>. Press Ctrl-C in the first terminal, and run `make kind-deploy` to remove `-pprof-addr` again.
+
+**What the node has promised.** `kubectl describe node your-monitor-control-plane` ends with **Allocated resources**: the sums of the requests and limits of every pod on the node, the system pods included. The monitor alone requests 475 millicores and 608 MiB. Compare that with the CPUs and memory you give Docker.
+
 </ObserveIt>
 
 ## Operate It
 
 <OperateIt>
-This section is not written yet.
+
+Break the cluster on purpose, one failure at a time, and restore it with `make kind-deploy`, which applies the manifests again.
+
+**A readiness probe that fails.** Point the api readiness probe at a path that answers `404`:
+
+```sh
+kubectl patch deployment api --type json -p '[{"op": "replace", "path": "/spec/template/spec/containers/0/readinessProbe/httpGet/path", "value": "/nope"}]'
+kubectl get pods -l app.kubernetes.io/name=api
+```
+
+The patch changes the pod template, which starts a rolling update. The new pod runs but stays `0/1` ready, and `kubectl describe` shows `Readiness probe failed: HTTP probe failed with statuscode: 404`. With two replicas, the rolling update takes no ready pod away before a new one is ready: the two old pods keep serving, and the status page keeps working. Readiness has just stopped a broken release.
+
+**A liveness probe that fails.** Run the same patch against `deployment web`, with `livenessProbe` in the path. The new pod turns ready, the old one goes, and the events show `Liveness probe failed: HTTP probe failed with statuscode: 404` for every failed probe, every 10 seconds. After three failures in a row, about every 30 seconds, `Container web failed liveness probe, will be restarted` follows. The `RESTARTS` column climbs. The restarts change nothing, because the probe is wrong, not nginx.
+
+**ErrImageNeverPull.** `kubectl set image deployment/worker worker=your-monitor-worker:v2` names an image the node does not have. The new pod shows `ErrImageNeverPull` at once, because the kind overlay sets `imagePullPolicy: Never`. Without that setting, the kubelet tries Docker Hub, fails, and shows `ErrImagePull`, then `ImagePullBackOff`.
+
+**Pending.** `kubectl set resources deployment/worker --requests=cpu=64 --limits=cpu=64` asks for 64 cores. The new pod stays `Pending`, and `kubectl describe` shows a `FailedScheduling` event that starts with `0/1 nodes are available: 1 Insufficient cpu.` No node can take it, and nothing starts.
+
+**Data that outlives its pod.** Run `kubectl delete pod postgres-0`. The StatefulSet creates a new `postgres-0` within seconds. For those seconds, the api answers reads with `500`, and the workers log `job failed`. Once it is ready, reload the status page: your monitors and their history are there, on the claim `data-postgres-0`, which `kubectl get pvc` lists as `Bound`. `kubectl delete -k deploy/k8s/overlays/kind` deletes the data: the overlay holds the Namespace, and deleting a namespace deletes every claim in it, and the StorageClass of kind, `standard`, sets the reclaim policy `Delete`: its local-path provisioner deletes the volume of a claim once the claim goes. To remove the monitor and keep the data, run `kubectl delete -k deploy/k8s/base`: the base names the namespace but holds neither the Namespace nor the claim. `make kind-down`, which deletes the node container, deletes the data too.
+
+| What you see | What it points to |
+| --- | --- |
+| `0/1` ready, `Running`, no restarts, `Readiness probe failed` events | The pod runs but fails its readiness check: a wrong path or port, or the program cannot serve yet |
+| `RESTARTS` climbing, `Liveness probe failed` events | The kubelet restarts a container that answers its liveness probe wrongly or too slowly |
+| `CrashLoopBackOff`, `logs --previous` shows `password authentication failed for user "monitor" (SQLSTATE 28P01)` | `postgres.env` changed after Postgres first started. Restore the old password, or set the new one with `ALTER ROLE` in `psql` |
+| `CrashLoopBackOff`, `logs --previous` shows `lookup postgres on 10.96.0.10:53: no such host` for minutes | `postgres-0` is not ready, the postgres Service is missing, or the program runs in another namespace |
+| `ErrImageNeverPull` | The image with that tag is not in the node: run `make kind-load` |
+| `Pending`, `Insufficient cpu` or `Insufficient memory` | The requests exceed what the node has unreserved |
+| `OOMKilled` in `Last State`, exit code `137` | The container used more memory than its limit, and the kernel stopped it |
+| `CreateContainerConfigError` | A ConfigMap or Secret the pod names does not exist, such as one you deleted by hand |
+| `kubectl apply` warns `would violate PodSecurity "restricted:v1.36"`, and the Deployment gets no pods | The pod template breaks the restricted standard. `kubectl describe replicaset` shows the `FailedCreate` event |
+
 </OperateIt>
 
 ## AI This Week
 
 <AiThisWeek>
-This section is not written yet.
+
+Stage 3, pair partner: use the assistant for scaffolding, configuration and review, and keep the decisions.
+
+**Do:** once your `api.yaml` passes `make k8s-check` and the manifest tests, give it to the assistant with the Go command-line flags and ports of the worker, the scheduler, the alerter and web, and ask for their four files on the same pattern. Run `make k8s-check` and `go test ./deploy/...` on the result, then compare each file with `api.yaml` line by line. Generated manifests drift in exactly the places that still validate: a selector label with a different key, a probe on a port number instead of a port name, `128M` instead of `128Mi`.
+
+**Do not:** paste a `CrashLoopBackOff` into the chat and apply the fix it suggests. The common suggestions remove the liveness probe, raise the limits, or add `initialDelaySeconds: 300`, and each one hides the failure. Read `kubectl describe` and `kubectl logs --previous` yourself, name the cause from the table above, and only then ask the assistant to review your fix.
+
 </AiThisWeek>
 
 ## Side Lab
 
-<SideLab title="Optional lab: not written yet">
-This section is not written yet.
+<SideLab title="Follow a Service into the iptables rules and DNS of the node">
+
+A Service is not a program, and no process listens on its ClusterIP. Find out what does the work. The outputs are examples.
+
+**1. The address.** `kubectl get service api` prints its `CLUSTER-IP`, such as `10.96.112.45`, from the service range `10.96.0.0/16` that kind uses. Pod addresses come from `10.244.0.0/16`.
+
+**2. The rules.** kind runs `kube-proxy` in iptables mode. iptables is the packet filter of the Linux kernel. `kube-proxy` writes rules that rewrite the destination of each packet sent to a ClusterIP. Read them inside the node container:
+
+```sh
+docker exec your-monitor-control-plane iptables-save -t nat | grep 'your-monitor/api'
+```
+
+```txt wrap
+-A KUBE-SERVICES -d 10.96.112.45/32 -p tcp -m comment --comment "your-monitor/api:http cluster IP" -m tcp --dport 8080 -j KUBE-SVC-NWV5X2332I4OT4T3
+-A KUBE-SVC-NWV5X2332I4OT4T3 -m comment --comment "your-monitor/api:http -> 10.244.0.12:8080" -m statistic --mode random --probability 0.50000000000 -j KUBE-SEP-WNBA2IHDGP2BOBGZ
+-A KUBE-SVC-NWV5X2332I4OT4T3 -m comment --comment "your-monitor/api:http -> 10.244.0.13:8080" -j KUBE-SEP-X3P2623AGDH6CDF3
+-A KUBE-SEP-WNBA2IHDGP2BOBGZ -p tcp -m comment --comment "your-monitor/api:http" -m tcp -j DNAT --to-destination 10.244.0.12:8080
+-A KUBE-SEP-X3P2623AGDH6CDF3 -p tcp -m comment --comment "your-monitor/api:http" -m tcp -j DNAT --to-destination 10.244.0.13:8080
+```
+
+Read them from the top. A packet for `10.96.112.45:8080` jumps to the chain of the Service. That chain picks the first pod with probability one half, and otherwise the second. The pod chain rewrites the destination to the pod address: DNAT, destination network address translation. Your chain names and the extra rules for marking packets differ. Scale the api to three replicas with `kubectl scale deployment api --replicas 3` and read the rules again: the probabilities become one third, then one half. Scale back to two.
+
+**3. The names.** Start a throwaway pod with DNS tools. It runs in the `default` namespace, because the restricted label on `your-monitor` refuses a pod without a security context:
+
+```sh
+kubectl run dns --rm -it --restart=Never -n default --image=busybox:1.36 -- sh
+```
+
+At its prompt, run `nslookup api.your-monitor.svc.cluster.local`: one address, the ClusterIP. Then `nslookup postgres.your-monitor.svc.cluster.local`: the address of `postgres-0`, because the Service is headless. Then `cat /etc/resolv.conf`: the `search` line starts with `default.svc.cluster.local`, which is why a short name finds Services in the same namespace only. Type `exit`, and `--rm` deletes the pod.
+
+The <a href={trackHref('networking')}>Networking track</a> covers NAT, and the <a href={trackHref('kubernetes')}>Kubernetes track</a> compares the iptables mode with the nftables and IPVS modes.
+
 </SideLab>
 
 ## Done When

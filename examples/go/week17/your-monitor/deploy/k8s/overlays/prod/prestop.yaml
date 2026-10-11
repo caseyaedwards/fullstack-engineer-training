@@ -1,0 +1,11 @@
+# region: prestop
+# Applied to web and api, the two Deployments that requests reach. Each
+# pod keeps serving for 5 seconds after it is told to stop, while Traefik
+# (for web) and kube-proxy (for api) learn that it is going away.
+- op: add
+  path: /spec/template/spec/containers/0/lifecycle
+  value:
+    preStop:
+      sleep:
+        seconds: 5
+# endregion: prestop

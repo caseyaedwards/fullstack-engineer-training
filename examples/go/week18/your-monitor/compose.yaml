@@ -1,11 +1,15 @@
 # region: compose
-# The uptime monitor on your laptop: docker compose up starts every service.
+# The uptime monitor on your laptop: docker compose up starts all six,
+# and the four observability services of Week 13.
+# The scheduler fills a job queue in Postgres; the worker empties it.
 # Compose reads variables such as ${POSTGRES_PASSWORD} from .env.
 name: your-monitor
 
 services:
   postgres:
     image: postgres:17
+    # Log every statement that runs for 200 ms or longer: the slow-query log.
+    command: ["postgres", "-c", "log_min_duration_statement=200ms"]
     environment:
       POSTGRES_USER: monitor
       POSTGRES_DB: monitor
@@ -82,7 +86,7 @@ services:
     restart: on-failure
   # endregion: new-services
 
-  # contract stub: week 10
+  # region: web
   web:
     build:
       context: .
@@ -93,6 +97,7 @@ services:
       api:
         condition: service_healthy
     restart: on-failure
+  # endregion: web
 
   # region: observability
   # Spans: the Go programs send them to the collector, which passes them
@@ -128,13 +133,16 @@ services:
 
   # region: alertmanager
   # Alerts: Prometheus sends firing alerts to Alertmanager, which routes
-  # them to Telegram. The secrets folder holds the bot token, the chat ID
-  # and the heartbeat URL, one per file. .gitignore keeps it out of Git.
+  # them to Telegram. observability/secrets holds the bot token, the chat
+  # ID and two heartbeat URLs, one per file, and .gitignore keeps it out of
+  # Git. The laptop pings its own heartbeat check, never the one of the VPS.
   alertmanager:
     image: prom/alertmanager:v0.34.1
     volumes:
       - ./observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-      - ./observability/secrets:/etc/alertmanager/secrets:ro
+      - ./observability/secrets/telegram-bot-token:/etc/alertmanager/secrets/telegram-bot-token:ro
+      - ./observability/secrets/telegram-chat-id:/etc/alertmanager/secrets/telegram-chat-id:ro
+      - ./observability/secrets/heartbeat-url-laptop:/etc/alertmanager/secrets/heartbeat-url:ro
     ports:
       - "127.0.0.1:9093:9093"
     restart: on-failure
@@ -153,13 +161,13 @@ services:
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?set GRAFANA_PASSWORD in .env}
     volumes:
-      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./observability/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ./observability/grafana/dashboards:/etc/grafana/dashboards:ro
     ports:
       - "127.0.0.1:3001:3000"
     depends_on:
       - prometheus
-      - jaeger
     restart: on-failure
   # endregion: observability
 

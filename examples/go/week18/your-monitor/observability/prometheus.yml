@@ -35,7 +35,8 @@ scrape_configs:
     static_configs:
       - targets: ["otel-collector:8888"]
 
-  # The probe of Week 18: see observability/k8s/prometheus.yml.
+  # The probe of Week 18: see observability/k8s/prometheus.yml. On your
+  # laptop, it probes the web container only.
   - job_name: status-page-probe
     metrics_path: /probe
     params:

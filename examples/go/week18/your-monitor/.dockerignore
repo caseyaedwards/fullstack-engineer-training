@@ -1,8 +1,12 @@
 # Never sent to docker build: keeps the context small and secrets out.
 .git
 .env
+# The bot token, chat ID and heartbeat URLs of Week 18.
+observability/secrets
 bin
-# contract stub: week 10
 web/node_modules
 web/dist
 web/test-results
+# The Postgres password of the kind cluster.
+deploy/k8s/overlays/kind/postgres.env
+backups

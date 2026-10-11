@@ -1,46 +1,68 @@
-# contract stub: week 15.
+# The worker: two pods take jobs from the queue in Postgres. SKIP LOCKED
+# keeps them from taking the same job. Nothing calls the worker, so it
+# has no Service.
+# region: worker
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: worker
+  labels:
+    app.kubernetes.io/name: worker
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
-      app: worker
+      app.kubernetes.io/name: worker
   template:
     metadata:
       labels:
-        app: worker
+        app.kubernetes.io/name: worker
     spec:
       securityContext:
         runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: worker
           image: your-monitor-worker
-          args: ["-debug-addr", ":6060"]
-          env:
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: postgres
-                  key: password
-            - name: DATABASE_URL
-              value: postgres://monitor:$(POSTGRES_PASSWORD)@postgres:5432/monitor?sslmode=disable
+          # $(WORKERS) comes from the ConfigMap. -debug-addr listens on every
+          # interface of the pod: the kubelet probes the pod IP, not 127.0.0.1.
+          args: ["-workers", "$(WORKERS)", "-debug-addr", ":6060"]
           ports:
-            - containerPort: 6060
+            - name: debug
+              containerPort: 6060
+          envFrom:
+            - configMapRef:
+                name: monitor-config
+            - secretRef:
+                name: postgres
+          env:
+            - name: DATABASE_URL
+              value: postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)?sslmode=disable
+          # /healthz answers 503 once no worker goroutine has started a job
+          # or looked at the queue for 18 seconds.
           readinessProbe:
             httpGet:
               path: /healthz
-              port: 6060
+              port: debug
+            periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /healthz
-              port: 6060
+              port: debug
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
           resources:
             requests:
-              cpu: 50m
+              cpu: 100m
               memory: 64Mi
             limits:
-              cpu: 500m
+              cpu: "1"
               memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+# endregion: worker

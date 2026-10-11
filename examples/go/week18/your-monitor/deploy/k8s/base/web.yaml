@@ -1,44 +1,74 @@
-# contract stub: week 15. nginx serves the page and passes /api/ to api.
+# web: nginx serves the status page and passes /api/ on to the api Service.
+# region: web
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: web
+  labels:
+    app.kubernetes.io/name: web
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: web
+      app.kubernetes.io/name: web
   template:
     metadata:
       labels:
-        app: web
+        app.kubernetes.io/name: web
     spec:
       securityContext:
         runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: web
           image: your-monitor-web
           ports:
-            - containerPort: 8080
+            - name: http
+              containerPort: 8080
           readinessProbe:
             httpGet:
               path: /healthz
-              port: 8080
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
           resources:
             requests:
-              cpu: 10m
+              cpu: 25m
               memory: 32Mi
             limits:
-              cpu: 200m
-              memory: 64Mi
+              cpu: 250m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # nginx writes its PID file and request buffers under /tmp. With a
+          # read-only root filesystem, /tmp is an empty directory of its own.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+# endregion: web
 ---
-# contract stub: week 15.
 apiVersion: v1
 kind: Service
 metadata:
   name: web
+  labels:
+    app.kubernetes.io/name: web
 spec:
   selector:
-    app: web
+    app.kubernetes.io/name: web
   ports:
-    - port: 8080
+    - name: http
+      port: 8080
+      targetPort: http

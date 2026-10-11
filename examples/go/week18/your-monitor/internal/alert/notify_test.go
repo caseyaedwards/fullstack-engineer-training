@@ -67,7 +67,7 @@ func TestLogWritesOneLine(t *testing.T) {
 	}
 	l := Log{Logger: slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{ReplaceAttr: noTime}))}
 	l.Notify(context.Background(), Event{Kind: Resolved, IncidentID: 2, MonitorID: 1, URL: "https://example.com", Cause: "status 500"})
-	want := `{"level":"WARN","msg":"alert","kind":"resolved","incident":2,"monitor":1,"url":"https://example.com","cause":"status 500"}` + "\n"
+	want := `{"level":"WARN","msg":"alert","kind":"resolved","incident_id":2,"monitor_id":1,"url":"https://example.com","cause":"status 500"}` + "\n"
 	if buf.String() != want {
 		t.Errorf("log line %q, want %q", buf.String(), want)
 	}
