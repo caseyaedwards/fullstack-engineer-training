@@ -31,6 +31,7 @@ internet: internet {
   sites: "monitored sites"
 }
 ci: "GitHub runner"
+laptop: "your laptop"
 vps: VPS {
   traefik: Traefik
   api: api
@@ -48,6 +49,7 @@ vps.worker -> internet.sites: "user URLs"
 vps.worker -> cloud.meta: "must never reach" {style.stroke-dash: 4}
 vps.worker -> vps.kube: "must never reach" {style.stroke-dash: 4}
 ci -> vps.kube: "SSH tunnel, RBAC"
+laptop -> vps: "SSH key"
 `}
 />
 
@@ -80,7 +82,7 @@ An uptime monitor is SSRF as a feature: a user types a URL, and the worker fetch
 
 - `http://169.254.169.254/` is the **metadata service** of AWS, Google Cloud, DigitalOcean, Hetzner Cloud and others: an HTTP server, reachable only from the machine itself, that answers questions about the machine. On AWS, with version 1 of the Instance Metadata Service (IMDS) enabled, a plain `GET` returns temporary credentials for the role of the machine.
 - `https://10.43.0.1/` is the Kubernetes API inside a K3s cluster, and `http://postgres:5432/` is the database.
-- `http://127.0.0.1:6061/debug/pprof/profile` is the Go profiler of the worker itself, when you start it with `-pprof-addr`. It listens only on loopback because its owner trusts the machine. Each request keeps a CPU busy for 30 seconds.
+- `http://127.0.0.1:6061/debug/pprof/profile` is the Go profiler of the worker itself, when you start it with `-pprof-addr`. It listens only on loopback because its owner trusts the machine. `/debug/pprof/cmdline` hands out the command line of the worker, and each request to `/debug/pprof/profile` starts a 30-second CPU profile of it.
 
 The monitor shows only the status code and the timings, not the body. That still leaks: an attacker maps which internal addresses and ports answer, and an internal service that changes state on a `GET` changes it every 30 seconds.
 
@@ -136,7 +138,7 @@ priv: "private\\n10/8, 172.16/12, 192.168/16\\nfc00::/7"
 ll: "link-local\\n169.254/16, fe80::/10"
 cgn: "shared address space\\n100.64.0.0/10"
 misc: "unspecified, this network,\\nmulticast"
-pub: "public unicast"
+pub: "every other address"
 check -> loop: refuse
 check -> priv: refuse
 check -> ll: refuse
@@ -145,6 +147,8 @@ check -> misc: refuse
 check -> pub: allow
 `}
 />
+
+A block list never names every special range. This one passes `64:ff9b::/96`, the prefix of NAT64, which translates IPv6 addresses to IPv4 on an IPv6-only network: there, `64:ff9b::a9fe:a9fe` reaches `169.254.169.254`. It also passes the reserved `240.0.0.0/4`. For that reason, the OWASP SSRF Prevention Cheat Sheet prefers an allow list wherever the set of targets is known. An uptime monitor accepts any public site, which leaves a block list as the practical choice.
 
 ## Example
 
@@ -158,7 +162,7 @@ check -> pub: allow
 
 <CodeFrom file="go/tracks/security/security.go" region="dialer" lang="go" title="security.go" />
 
-`NewClient` wires the dialer into a transport and sets `Proxy` to `nil`. `http.DefaultTransport` reads `HTTPS_PROXY` and `HTTP_PROXY` from the environment. Through a proxy, the dialer connects to the proxy, `Control` checks the proxy address, and the proxy fetches the internal URL for you:
+`NewClient` clones `http.DefaultTransport`, which keeps HTTP/2 and its timeouts, wires in the dialer and sets `Proxy` to `nil`. `http.DefaultTransport` reads `HTTPS_PROXY` and `HTTP_PROXY` from the environment. Through a proxy, the dialer connects to the proxy, `Control` checks the proxy address, and the proxy fetches the internal URL for you:
 
 <CodeFrom file="go/tracks/security/security.go" region="client" lang="go" title="security.go" />
 
@@ -166,17 +170,17 @@ The address table holds one row per class and the edges of each range, such as `
 
 <CodeFrom file="go/tracks/security/security_test.go" region="table" lang="go" title="security_test.go" />
 
-The dial test starts an `httptest` server on `127.0.0.1`. A plain client reaches it first, which proves the setup works. Then the safe client tries the same server by address and by the name `localhost`, and both fail with `ErrBlockedAddress`. The server counts its requests: one, from the control:
+The dial test starts an `httptest` server on `127.0.0.1`. A plain client reaches it first, which proves the setup works. Then the safe client tries the same server and fails with `ErrBlockedAddress`. The server counts its requests: one, from the control:
 
 <CodeFrom file="go/tracks/security/security_test.go" region="dial" lang="go" title="security_test.go" />
 
 The error the safe client returns reads:
 
 ```txt
-Get "http://localhost:34021": dial tcp 127.0.0.1:34021: blocked address: 127.0.0.1
+Get "http://127.0.0.1:34021": dial tcp 127.0.0.1:34021: blocked address: 127.0.0.1
 ```
 
-Replace the body of `Control` with `return nil`, and the test fails with `server saw 3 requests, want 1`.
+Replace the body of `Control` with `return nil`, and the test fails with `server saw 2 requests, want 1`.
 
 ## In the Uptime Monitor
 
@@ -187,7 +191,7 @@ The SSRF risk sits in the worker. `probe.Check` sends a `GET` through `http.Defa
 Three details of your own setup need care:
 
 - **The self-check on your laptop.** Week 18 adds a monitor of `http://web:8080/healthz` on the Compose network, a private address. The safe client refuses it. Allow that one host by name in configuration, or run the self-check through the public URL, as the VPS does.
-- **Your own public address.** `CheckAddr` allows `203.0.113.10`, the public address of the VPS, like any public address. ufw passes pod traffic, as Week 16 sets it up, and a monitor of `https://203.0.113.10:6443/` from the worker pod reaches the API server. Add the public addresses of your own machines to the refused list.
+- **Your own public address.** `CheckAddr` allows `203.0.113.10`, the public address of the VPS, like any public address. ufw, the uncomplicated firewall of Week 16, passes pod traffic, and a monitor of `https://203.0.113.10:6443/` from the worker pod reaches the API server. Add the public addresses of your own machines to the refused list.
 - **The cluster network.** Pods in K3s use `10.42.0.0/16` and Services `10.43.0.0/16`, both private, both refused.
 
 ## Common Mistakes

@@ -24,8 +24,9 @@ var (
 	sharedSpace = netip.MustParsePrefix("100.64.0.0/10")
 )
 
-// CheckAddr returns an error that wraps ErrBlockedAddress when a is not a
-// public unicast address.
+// CheckAddr returns an error that wraps ErrBlockedAddress when a falls in a
+// blocked range. The list is not complete: special ranges such as NAT64
+// 64:ff9b::/96 or the reserved 240.0.0.0/4 pass it.
 func CheckAddr(a netip.Addr) error {
 	if !a.IsValid() {
 		return fmt.Errorf("%w: no address", ErrBlockedAddress)
@@ -69,17 +70,16 @@ func SafeDialer() *net.Dialer {
 
 // region: client
 
-// NewClient returns an HTTP client for user-supplied URLs. Proxy stays nil:
+// NewClient returns an HTTP client for user-supplied URLs. It clones
+// http.DefaultTransport, which keeps HTTP/2 and its timeouts, then turns
+// off the proxy that the default reads from HTTPS_PROXY and HTTP_PROXY:
 // through a proxy, the dialer sees only the proxy address, and the check
 // guards nothing.
 func NewClient() *http.Client {
-	return &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			Proxy:       nil,
-			DialContext: SafeDialer().DialContext,
-		},
-	}
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.Proxy = nil
+	t.DialContext = SafeDialer().DialContext
+	return &http.Client{Timeout: 10 * time.Second, Transport: t}
 }
 
 // endregion: client

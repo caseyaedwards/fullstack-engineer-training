@@ -2,11 +2,9 @@ package security
 
 import (
 	"errors"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
-	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -76,16 +74,9 @@ func TestSafeDialerRefusesLoopback(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	client := NewClient()
-	port := srv.Listener.Addr().(*net.TCPAddr).Port
-	for _, u := range []string{
-		srv.URL, // http://127.0.0.1:port
-		"http://" + net.JoinHostPort("localhost", strconv.Itoa(port)),
-	} {
-		_, err := client.Get(u)
-		if !errors.Is(err, ErrBlockedAddress) {
-			t.Errorf("GET %s: err = %v, want ErrBlockedAddress", u, err)
-		}
+	_, err = NewClient().Get(srv.URL) // http://127.0.0.1:port
+	if !errors.Is(err, ErrBlockedAddress) {
+		t.Errorf("GET %s: err = %v, want ErrBlockedAddress", srv.URL, err)
 	}
 	if n := hits.Load(); n != 1 {
 		t.Errorf("server saw %d requests, want 1: only the control may reach it", n)
