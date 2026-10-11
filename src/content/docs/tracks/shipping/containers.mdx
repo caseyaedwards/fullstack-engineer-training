@@ -1,36 +1,200 @@
 ---
 title: "Containers"
+description: What an image and a container are underneath, from read-only layers to namespaces and cgroups, and how to write a small, non-root, multi-stage Dockerfile for a Go program.
 track: containers
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+A container packages a program with every file it needs and runs it as an ordinary Linux process with a restricted view of the machine. The same image runs on your laptop, in CI and on a Kubernetes node, which ends the class of bugs that only happen on one machine. As a full-stack engineer, you write the Dockerfile for every program you ship, and you debug the container when it does not start.
+
 ## What It Is
 
-This section is not written yet.
+### Images and Layers
+
+An **image** is a stack of read-only **layers** plus a small JSON **configuration**: the user to run as, the environment variables, the working directory and the program to start. Each layer is a compressed archive of the files that one build instruction adds, changes or deletes. A **manifest** lists the layers and the configuration by their SHA-256 digests, which makes an image content-addressed: change one byte in one layer, and its digest, the manifest digest and the image ID all change.
+
+The Open Container Initiative (OCI) defines both formats: the **image specification** for what an image is, and the **runtime specification** for how to start a container from one. Docker, Podman, containerd and every Kubernetes node read the same images.
+
+Layers are shared. Two images built on the same base store that base once on disk and pull it once over the network. That is why the order of a Dockerfile matters: Docker caches each layer, and on the next build it reuses every layer up to the first instruction whose input changed. Put the instructions whose input changes least, such as downloading dependencies, before the ones that change on every commit, such as copying the source.
+
+### The Container Filesystem
+
+When a container starts, the runtime stacks the image layers with **overlayfs**, a Linux filesystem that merges several folders into one view, and adds one empty, writable layer on top. The process sees one ordinary root filesystem. Reads fall through the stack to the topmost layer that holds the file. The first write to a file from an image layer copies it up into the writable layer, and the image itself never changes.
+
+The writable layer belongs to one container. Remove the container, and everything it wrote goes with it. Data that must outlive the container goes into a **volume**: storage that the runtime mounts into the container at a path, apart from the layers.
+
+<Diagram
+  id="layers"
+  title="A container sees its image layers and one writable layer as one filesystem"
+  code={`direction: down
+proc: "the process\\nsees one root filesystem"
+rw: "writable layer\\nper container, gone on removal"
+image: "image: read-only, shared" {
+  app: "COPY /hello\\n1.44 MB"
+  certs: "CA certificates,\\ntzdata, passwd"
+  base: "base-files"
+}
+vol: "volume\\noutlives the container"
+
+proc -> rw: overlayfs view
+rw -> image.app
+image.app -> image.certs
+image.certs -> image.base
+proc -> vol: "mounted at a path"
+`}
+/>
+
+### Namespaces and Cgroups
+
+A container is not a virtual machine. It shares the kernel of its host, and no second operating system boots. Two kernel features turn a process into a container:
+
+- **Namespaces** give a process its own view of one type of resource. In its process ID (PID) namespace, the container program is PID 1 and sees no other processes. The **mount** namespace gives it the overlayfs root. The **network** namespace gives it its own interfaces, addresses and ports. The **UTS** namespace, named after the UNIX Time-Sharing System, gives it its own host name, and the inter-process communication (IPC) namespace its own shared memory.
+- **Cgroups**, short for control groups, limit and count what a group of processes uses: CPU time, memory, the number of processes. Above its memory limit, the kernel stops the process with `SIGKILL`, and the container exits with code 137.
+
+From the host, the container program is one more process in `ps`, with a host PID of its own. The <WeekLink n={6} anchor="side-lab">Week 6 side lab</WeekLink> finds one and reads its memory limit from `/sys/fs/cgroup`. On macOS, Docker Desktop runs a small Linux virtual machine, and the containers run inside it.
+
+### Multi-Stage Builds and Static Binaries
+
+A **multi-stage build** has more than one `FROM`. The first stage holds the full Go toolchain, a 335 MB download for `golang:1.24` on amd64, and compiles the program. The last stage starts from a small base and copies in the compiled binary alone. The toolchain and the source never reach the image you run.
+
+Go makes the last stage tiny because it builds a **static binary**: one file that holds every library it uses. With `CGO_ENABLED=0`, Go leaves out C code, and the binary needs nothing from the operating system, not even the C library or the dynamic loader. That binary runs on `scratch`, the empty image, or on a **distroless** image: a base that holds only what a static program needs at run time, such as the certificate authority (CA) certificates that a program needs to check an HTTPS server, time zone data and an `/etc/passwd` with a `nonroot` user, and no shell and no package manager. An attacker who gets code execution in such a container finds no `sh`, no `curl` and no `apt` to build on.
+
+### Tags and Digests
+
+A **registry**, such as Docker Hub or the GitHub Container Registry, stores images by name. A **tag**, such as `golang:1.24`, is a pointer that its owner moves: `golang:1.24` points at a new image with each Go 1.24 patch release. `latest` is the tag Docker uses when you name none, and it says nothing about the version inside. A **digest**, such as `golang:1.24@sha256:…`, names one exact image forever, because it is the hash of the content. Name a version tag at least, and a digest where a build must not change under you. Most official images are a multi-platform **index**: one name that points at a separate image for amd64, arm64 and other platforms, and Docker pulls the one that matches the machine.
+
+### Compose Beyond Week 6
+
+<WeekLink n={6} anchor="docker-compose">Docker Compose in Week 6</WeekLink> covers services, networks, published ports, volumes, health checks and start order. The rest of the format you meet:
+
+- **`env_file`**: reads environment variables for a service from a file, such as `.env`, which keeps secrets out of `compose.yaml`.
+- **Override files**: Compose merges `compose.override.yaml` over `compose.yaml` when both exist. Pass `-f` once per file to merge others, such as a file with production settings.
+- **Profiles**: a service with `profiles: [debug]` starts only with `docker compose --profile debug up`, which keeps optional tools out of the default stack.
+- **`restart`**: `no`, `always`, `on-failure` or `unless-stopped` decides what Docker does when the container exits.
+- **`docker compose config`**: prints the merged file with every variable filled in, which is the first thing to run when Compose does something you did not expect.
+- **`docker compose down -v`**: also removes the named volumes, and with them the database. Leave out `-v` to keep your data.
 
 ## Diagrams
 
-This section is not written yet.
+What happens between `docker run` and your program running as PID 1:
+
+<Diagram
+  id="docker-run"
+  title="From docker run to a process in its own namespaces and cgroup"
+  code={`direction: down
+cli: "docker CLI"
+dockerd: "dockerd"
+reg: "registry"
+ctd: "containerd"
+runc: "runc"
+kernel: "Linux kernel"
+proc: "/hello\\nPID 1 in its namespace"
+
+cli -> dockerd: "docker run hello"
+dockerd -> reg: "pull missing layers"
+dockerd -> ctd: "create and start"
+ctd -> runc: "OCI bundle"
+runc -> kernel: "namespaces, cgroup, mounts"
+kernel -> proc: exec
+`}
+  steps={[
+    { hl: ['cli', 'dockerd', 'cli->dockerd'], caption: 'The docker command-line interface, the CLI, is a client. It sends the request over a Unix socket to dockerd, the Docker daemon, which runs as root.' },
+    { hl: ['dockerd', 'reg', 'dockerd->reg'], caption: 'dockerd resolves the tag to a manifest, picks the image for the CPU of the machine, and downloads only the layers it does not already hold, each checked against its digest.' },
+    { hl: ['dockerd', 'ctd', 'dockerd->ctd'], caption: 'dockerd hands the container to containerd, which unpacks the layers, stacks them with overlayfs and adds the writable layer.' },
+    { hl: ['ctd', 'runc', 'ctd->runc'], caption: 'containerd writes an OCI bundle, the root filesystem plus a config.json built from the image configuration and your docker run options, and starts runc through a small shim process that stays behind as the parent of the container.' },
+    { hl: ['runc', 'kernel', 'runc->kernel'], caption: 'runc asks the kernel for new PID, mount, network, UTS and IPC namespaces, puts the process in a cgroup with its CPU and memory limits, switches to the root filesystem, and drops to user 65532.' },
+    { hl: ['kernel', 'proc', 'kernel->proc'], caption: 'runc replaces itself with /hello, the ENTRYPOINT. Inside its PID namespace, /hello is PID 1. When it exits, the container stops, and its exit code becomes the container exit code.' },
+  ]}
+/>
 
 ## Example
 
-This section is not written yet.
+The example lives in `examples/go/tracks/containers/`: a program in `hello/`, with its own `go.mod`, and a `Dockerfile` next to the folder. The program prints one line:
+
+<CodeFrom file="go/tracks/containers/hello/main.go" region="main" lang="go" title="hello/main.go" />
+
+The build stage compiles it with the full toolchain:
+
+<CodeFrom file="go/tracks/containers/Dockerfile" region="build" lang="dockerfile" title="Dockerfile" />
+
+- `FROM golang:1.24 AS build`: names a version, never `latest`, and names the stage `build` for the next stage to copy from.
+- `COPY hello/go.mod ./` before `COPY hello/ ./`: the module download gets a layer of its own, which Docker reuses until `go.mod` changes. `hello` has no dependencies, and `go mod download` has nothing to fetch. Your own programs have a `go.sum` to copy with it.
+- `CGO_ENABLED=0`: builds a static binary. `-trimpath` removes the folder paths of the build machine from the binary, and `-ldflags="-s -w"` drops the symbol table and the debug data.
+
+The runtime stage copies the binary alone:
+
+<CodeFrom file="go/tracks/containers/Dockerfile" region="runtime" lang="dockerfile" title="Dockerfile" />
+
+- `gcr.io/distroless/static-debian12:nonroot`: the distroless base for static programs, built from Debian 12 packages. Its `nonroot` tag sets the user to `65532` and the working directory to `/home/nonroot`.
+- `USER 65532:65532`: states the user ID and group ID again, as numbers. The tag already sets the user, and the line keeps the image non-root if someone changes the base. A Kubernetes pod with `runAsNonRoot: true` refuses to start a container whose image names its user only as a name, because the kubelet cannot check a name against `0`.
+- `ENTRYPOINT ["/hello"]`: the JSON form starts the binary directly as PID 1. The shell form, `ENTRYPOINT /hello`, runs `/bin/sh -c /hello`, which fails in an image with no shell.
+
+Built from that folder with `docker build -t hello .` on amd64, the image holds the distroless layers and one layer for the binary. `docker history` lists them, newest first, trimmed here:
+
+```txt
+0B       ENTRYPOINT ["/hello"]
+0B       USER 65532:65532
+1.44MB   COPY /out/hello /hello # buildkit
+319kB    bazel build //common:cacerts_debian12_amd64_…
+12.3kB   bazel build //common:passwd
+4.24MB   bazel build @bookworm//tzdata/amd64:data_sta…
+582kB    bazel build @bookworm//base-files/amd64:data…
+```
+
+`ENTRYPOINT` and `USER` change the configuration, not the files, and add empty layers. The whole image is a 1.4 MB download, against 335 MB for the build stage it came from.
+
+Docker does not run in the site tests, and Docker Hub limits anonymous pulls. `dockerfile_test.go` reads the Dockerfile as text and checks its rules:
+
+<CodeFrom file="go/tracks/containers/dockerfile_test.go" region="checks" lang="go" title="dockerfile_test.go" />
+
+- `parse`: splits the file into stages, one per `FROM`, and keeps the instructions of each.
+- `problems`: wants exactly two stages, a `go build` with `CGO_ENABLED=0`, and a runtime stage that runs as a user other than root, through a `USER` line or the `nonroot` tag.
+- `tagProblems`: refuses an image with no tag, which means `latest`, and an image tagged `latest`. A digest passes.
+
+The second test builds `hello` the way the build stage does, runs it, and on Linux opens the binary with `debug/elf`:
+
+<CodeFrom file="go/tracks/containers/dockerfile_test.go" region="hello-test" lang="go" title="dockerfile_test.go" />
+
+A dynamically linked binary carries a `PT_INTERP` entry that names its loader, such as `/lib64/ld-linux-x86-64.so.2`. The distroless static image has no such file, and that binary fails to start there with `no such file or directory`, a message that points at the binary, not at the loader it misses. The test catches it before any image exists. `TestDockerBuild` builds and runs the real image when you set `TRACKS_DOCKER=1` and a Docker daemon answers.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={6} anchor="images-containers-and-multi-stage-builds">Images, Containers and Multi-Stage Builds in Week 6</WeekLink> introduces the Dockerfile of the monitor. <WeekLink n={6} anchor="step-4-write-the-dockerfile">Step 4 of Week 6</WeekLink> writes one build stage and one final target per program, on `scratch` with the CA certificates copied in and `USER 65532:65532`, and <WeekLink n={6} anchor="step-5-write-the-compose-file">Step 5</WeekLink> runs them with Postgres under Compose.
+
+<WeekLink n={14} anchor="step-8-push-the-images">Step 8 of Week 14</WeekLink> builds one image per target in CI, tags each with the commit SHA, and pushes it to the GitHub Container Registry, with the layer cache kept between runs.
+
+<WeekLink n={15} anchor="step-4-build-and-load-the-images">Step 4 of Week 15</WeekLink> loads the images into the containerd store of the kind node, which never sees the images that Docker on your laptop holds. <WeekLink n={15} anchor="requests-limits-and-the-container-user">Requests, Limits and the Container User in Week 15</WeekLink> turns the cgroup limits and the non-root user of this page into the `resources` and `securityContext` of each pod. The <TrackLink slug="kubernetes">Kubernetes track</TrackLink> covers what runs the containers there.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **`COPY . .` before the dependency download.** Every change to any source file invalidates the cache from that line on, and each build downloads every module again. Copy `go.mod` and `go.sum`, download, then copy the rest.
+- **A `latest` tag, or no tag.** The build that passes today pulls a different base tomorrow. Name a version, and a digest for builds that must not change.
+- **Running as root.** A process that breaks out of its container through a kernel bug arrives on the host as root. Set a numeric `USER`, and drop the Linux capabilities, the separate pieces of root privilege, in the runtime settings.
+- **A binary built with cgo, the Go bridge to C code, on a distroless static base.** It starts with `exec /hello: no such file or directory`, because its loader is missing. Build with `CGO_ENABLED=0`, or use the `base` distroless image, which holds the C library.
+- **The shell form of `ENTRYPOINT`.** `/bin/sh` becomes PID 1 and does not pass `SIGTERM` on to your program. `docker stop` waits 10 seconds, then sends `SIGKILL`, and your shutdown code never runs. Use the JSON form.
+- **Secrets in the image.** A file copied in a layer stays in that layer even when a later `RUN rm` deletes it, and anyone who pulls the image extracts it. Keep secrets out with `.dockerignore`, and pass build-time secrets with `RUN --mount=type=secret`.
+- **Data in the writable layer.** A database that writes inside the container loses everything on `docker rm`. Mount a volume at its data folder.
 
 ## Going Deeper
 
-This section is not written yet.
+- **BuildKit cache mounts:** `RUN --mount=type=cache,target=/root/.cache/go-build` keeps the Go build cache between builds, which turns a full rebuild into seconds.
+- **Multi-platform builds:** `docker buildx build --platform linux/amd64,linux/arm64` builds one index for both, which an Apple silicon laptop and an amd64 server pull from the same name.
+- **Rootless containers and user namespaces:** the runtime maps root inside the container to an unprivileged user on the host, which shrinks the damage of a breakout.
+- **Seccomp and capabilities:** the filters that decide which system calls and root privileges a container keeps, and the place to look when a program fails with `operation not permitted`.
+- **Image signing and SBOMs:** cosign signatures and software bills of materials prove who built an image and list what is inside it.
+- **Image scanning:** Trivy or Grype compare the packages in each layer against known vulnerabilities, and a distroless image gives them little to find.
 
 ## Further Reading
 
-This section is not written yet.
+- [Multi-stage builds in the Docker documentation](https://docs.docker.com/build/building/multi-stage/): naming stages, copying between them and building one target.
+- [Compose file reference](https://docs.docker.com/reference/compose-file/): every key of `compose.yaml`, from `services` to `profiles` and merge rules.
+- [Distroless container images](https://github.com/GoogleContainerTools/distroless): which base to pick for which language, the `nonroot` and `debug` tags, and how the images are built.
+- [OCI image specification](https://github.com/opencontainers/image-spec): the manifest, the index, the configuration and the layer formats that every registry and runtime shares.
+- [namespaces manual page](https://man7.org/linux/man-pages/man7/namespaces.7.html): each Linux namespace type, the system calls that create them and the files under `/proc` that show them.
