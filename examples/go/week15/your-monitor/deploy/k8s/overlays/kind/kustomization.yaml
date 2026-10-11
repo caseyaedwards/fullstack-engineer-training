@@ -1,0 +1,58 @@
+# region: overlay
+# The kind cluster on your laptop: the base, plus the namespace, the images
+# that make kind-load builds, and a password that never enters Git.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: your-monitor
+
+resources:
+  - namespace.yaml
+  - ../../base
+
+# The image names in the base, with the tag that make kind-load gives them.
+images:
+  - name: your-monitor-api
+    newTag: dev
+  - name: your-monitor-worker
+    newTag: dev
+  - name: your-monitor-scheduler
+    newTag: dev
+  - name: your-monitor-alerter
+    newTag: dev
+  - name: your-monitor-web
+    newTag: dev
+
+# The Secret postgres-<hash>, from the file that make creates once with a
+# random password. .gitignore keeps postgres.env out of Git.
+secretGenerator:
+  - name: postgres
+    envs:
+      - postgres.env
+# endregion: overlay
+
+# region: patches
+patches:
+  # The monitor images exist only inside the kind node. Never makes a
+  # missing image fail at once with ErrImageNeverPull, instead of a pull
+  # from Docker Hub that fails after a few seconds.
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never
+  # The status page on 127.0.0.1:3000 of your laptop: kind-config.yaml
+  # maps that port to port 30080 of the node, and this NodePort sends
+  # port 30080 of the node to the web Service.
+  - target:
+      kind: Service
+      name: web
+    patch: |-
+      - op: add
+        path: /spec/type
+        value: NodePort
+      - op: add
+        path: /spec/ports/0/nodePort
+        value: 30080
+# endregion: patches

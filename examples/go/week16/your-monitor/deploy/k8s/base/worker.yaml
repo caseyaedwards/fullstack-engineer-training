@@ -1,4 +1,3 @@
-# contract stub: week 15 (copied from content/week-15 at a328ab5, in review)
 # The worker: two pods take jobs from the queue in Postgres. SKIP LOCKED
 # keeps them from taking the same job. Nothing calls the worker, so it
 # has no Service.

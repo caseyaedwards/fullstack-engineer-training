@@ -1,0 +1,8 @@
+# Grafana loads every dashboard JSON file in this folder at start.
+apiVersion: 1
+
+providers:
+  - name: your-monitor
+    type: file
+    options:
+      path: /etc/grafana/dashboards

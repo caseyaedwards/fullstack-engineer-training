@@ -1,11 +1,12 @@
 // Command alerter opens an incident when a monitor fails -threshold checks
 // in a row, resolves it on the next success, and sends a notification for
 // each. It runs a round every -interval until SIGINT or SIGTERM arrives.
-// It reads DATABASE_URL, and ALERT_WEBHOOK_URL for the webhook; without
-// ALERT_WEBHOOK_URL, it writes alerts to its own log. Run it from the
-// examples/go directory:
+// It reads ALERT_WEBHOOK_URL for the webhook; without ALERT_WEBHOOK_URL,
+// it writes alerts to its own log. With -metrics-addr, it serves /metrics
+// and /healthz on that address. Run it from the examples/go directory:
 //
-//	DATABASE_URL=postgres://... go run ./week16/your-monitor/cmd/alerter
+//	DATABASE_URL=postgres://monitor:changeme@127.0.0.1:5432/monitor?sslmode=disable \
+//	    go run ./week16/your-monitor/cmd/alerter
 
 // region: main
 package main
@@ -20,17 +21,21 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"fsp/examples/week16/your-monitor/internal/alert"
 	"fsp/examples/week16/your-monitor/internal/db"
 	"fsp/examples/week16/your-monitor/internal/obs"
 )
 
 func main() {
+	databaseURL := flag.String("database-url", os.Getenv("DATABASE_URL"), "Postgres connection string; defaults to $DATABASE_URL")
 	interval := flag.Duration("interval", 10*time.Second, "how often to apply the alert rule to every monitor")
 	threshold := flag.Int("threshold", 3, "failed checks in a row that open an incident")
+	metricsAddr := flag.String("metrics-addr", "", "address for /metrics and /healthz, for example 127.0.0.1:2114; empty turns it off")
 	flag.Parse()
+	if *databaseURL == "" {
+		fmt.Fprintln(os.Stderr, "missing -database-url or DATABASE_URL")
+		os.Exit(2)
+	}
 	if *interval <= 0 || *threshold < 1 {
 		fmt.Fprintln(os.Stderr, "-interval must be more than 0, and -threshold at least 1")
 		os.Exit(2)
@@ -39,8 +44,16 @@ func main() {
 	slog.SetDefault(obs.NewLogger(os.Stdout, "alerter"))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// region: health
+	health := obs.NewHealth(3 * *interval)
+	if *metricsAddr != "" {
+		go func() {
+			slog.Error("metrics server stopped", "err", obs.NewServer(*metricsAddr, obs.OpsMux(health)).ListenAndServe())
+		}()
+	}
+	// endregion: health
 
-	pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+	pool, err := db.Connect(ctx, *databaseURL)
 	if err != nil {
 		obs.Fatal(err)
 	}
@@ -57,9 +70,14 @@ func main() {
 	}
 	slog.Info("started", "pid", os.Getpid(), "interval", interval.String(), "threshold", *threshold)
 	every(ctx, *interval, func(ctx context.Context) {
-		if err := a.Round(ctx); err != nil && ctx.Err() == nil {
+		// A query that hangs ends with the round, after two intervals, and
+		// the round still beats.
+		rctx, cancel := context.WithTimeout(ctx, *interval*2)
+		defer cancel()
+		if err := a.Round(rctx); err != nil && ctx.Err() == nil {
 			slog.Error("round failed", "err", err)
 		}
+		health.Beat()
 	})
 	slog.Info("stopped")
 }

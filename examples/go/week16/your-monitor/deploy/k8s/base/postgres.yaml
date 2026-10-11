@@ -1,4 +1,3 @@
-# contract stub: week 15 (copied from content/week-15 at a328ab5, in review)
 # Postgres: one pod, postgres-0, with a disk of its own that outlives it.
 # region: service
 # A headless Service: no virtual address. The name postgres resolves
@@ -39,8 +38,10 @@ spec:
         app.kubernetes.io/name: postgres
     spec:
       # The image starts as root only to switch to its postgres user, 999.
-      # Start it as 999: it skips the switch. fsGroup gives the group 999
-      # write access to the volumes.
+      # Start it as 999: it skips the switch. fsGroup hands the volumes that
+      # support it, such as emptyDir, to the group 999. kind's volumes are
+      # folders on the node that fsGroup leaves alone: the local-path
+      # provisioner creates each one with mode 0777.
       securityContext:
         runAsNonRoot: true
         runAsUser: 999

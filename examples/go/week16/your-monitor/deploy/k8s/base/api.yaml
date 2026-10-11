@@ -1,4 +1,3 @@
-# contract stub: week 15 (copied from content/week-15 at a328ab5, in review)
 # The api: two pods behind one Service. web reaches it as http://api:8080.
 # region: deployment
 apiVersion: apps/v1

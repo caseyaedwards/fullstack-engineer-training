@@ -1,4 +1,3 @@
-# contract stub: week 15 (copied from content/week-15 at a328ab5, in review)
 # region: base
 # The manifests that every cluster shares. An overlay adds what differs
 # from one cluster to the next: the namespace object, the image tags and

@@ -1,4 +1,3 @@
-# contract stub: week 15 (copied from content/week-15 at a328ab5, in review)
 # web: nginx serves the status page and passes /api/ on to the api Service.
 # region: web
 apiVersion: apps/v1

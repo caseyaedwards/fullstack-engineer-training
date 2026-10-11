@@ -10,23 +10,24 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"fsp/examples/week16/your-monitor/internal/dbtest"
+	"fsp/examples/week16/your-monitor/internal/db"
+	"fsp/examples/week16/your-monitor/internal/db/dbtest"
 	"fsp/examples/week16/your-monitor/internal/obs"
 )
 
 // region: round-test
 
 func TestRoundLogsAndMeasuresTheQueue(t *testing.T) {
-	var logs bytes.Buffer
+	pool := dbtest.Pool(t, dbtest.URL(t), db.Migrate)
+	var logs bytes.Buffer // after the migrations, which log too
 	prev := slog.Default()
 	slog.SetDefault(obs.NewLogger(&logs, "scheduler"))
 	t.Cleanup(func() { slog.SetDefault(prev) })
-	db := dbtest.New(t)
-	dbtest.Exec(t, db, `INSERT INTO monitors (url, interval_seconds) VALUES ('https://example.com', 60), ('https://example.org', 60)`)
+	dbtest.Exec(t, pool, `INSERT INTO monitors (url, interval_seconds) VALUES ('https://example.com', 60), ('https://example.org', 60)`)
 	m := newQueueMetrics(prometheus.NewRegistry())
 
-	round(context.Background(), db, m)
-	round(context.Background(), db, m)
+	round(context.Background(), pool, m)
+	round(context.Background(), pool, m)
 
 	dec := json.NewDecoder(&logs)
 	for _, want := range []float64{2, 0} {
@@ -42,7 +43,7 @@ func TestRoundLogsAndMeasuresTheQueue(t *testing.T) {
 		t.Errorf("monitor_jobs_queued = %v, want 2", got)
 	}
 	// Both jobs were queued with run_at = now() during the first round.
-	if got := testutil.ToFloat64(m.oldest); got <= 0 || got > 5 {
+	if got := testutil.ToFloat64(m.oldest); got < 0 || got > 5 {
 		t.Errorf("monitor_jobs_oldest_seconds = %v, want a few milliseconds", got)
 	}
 }

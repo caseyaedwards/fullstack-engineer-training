@@ -1,4 +1,3 @@
-# contract stub: week 15 (copied from content/week-15 at a328ab5, in review)
 # The alerter: one pod applies the alert rule. Recreate keeps the copies at
 # one during a rollout, which means one notification per incident. With no
 # ALERT_WEBHOOK_URL, it writes alerts to its log, as in Compose without one.

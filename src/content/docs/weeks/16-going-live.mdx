@@ -314,7 +314,7 @@ kubectl get clusterissuers
 
 ### Step 9: Create the Two Secrets by Hand
 
-Two Secrets stay out of Git, and CI cannot read them through the API. The first holds the database password, in the Secret `postgres` that your Week 15 base reads, where the kind overlay generated it. Use letters and digits only, because the password goes into `DATABASE_URL`:
+Two Secrets stay out of Git, and CI cannot read them through the API. The first is the Secret `postgres` that your Week 15 base reads, with the key `POSTGRES_PASSWORD`; on kind, the overlay generated it from `postgres.env`. The user and database names come from the ConfigMap `monitor-config` in the base. Use letters and digits only, because the password goes into `DATABASE_URL`:
 
 ```sh
 kubectl -n your-monitor create secret generic postgres \
@@ -392,7 +392,7 @@ ssh-keygen -F 203.0.113.10 > known_hosts
 ssh -i deploy_key tunnel@203.0.113.10
 ```
 
-The last command prints `PTY allocation request failed on channel 0` and `This account is currently not available.`, then exits: the key works, and the user gets no shell. Now the token. `kubectl create token` asks the API server for a signed token for the ServiceAccount, valid for 90 days here. Four `kubectl config` commands then write a kubeconfig around it, with the cluster certificate authority from your own kubeconfig and the namespace in its context, because `deploy.yml` runs `kubectl` without `-n`:
+The last command prints `PTY allocation request failed on channel 0` and `This account is currently not available.`, then exits: the key works, and the user gets no shell. Now the token. `kubectl create token` asks the API server for a signed token for the ServiceAccount, valid for 90 days here. Four `kubectl config` commands then write a kubeconfig around it, with the cluster certificate authority from your own kubeconfig and the namespace in its context: `kubectl auth can-i` in `deploy.yml` names no namespace and checks this one:
 
 ```sh
 read -r EXPIRY TOKEN < <(kubectl -n your-monitor create token deployer --duration=2160h \

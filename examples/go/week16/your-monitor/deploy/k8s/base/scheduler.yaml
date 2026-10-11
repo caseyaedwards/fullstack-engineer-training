@@ -1,4 +1,3 @@
-# contract stub: week 15 (copied from content/week-15 at a328ab5, in review)
 # The scheduler: one pod adds a check job for every monitor that is due.
 # Recreate stops the old pod before the new one starts, which keeps the
 # copies at one during a rollout.

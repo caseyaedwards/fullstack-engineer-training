@@ -1,9 +1,9 @@
 // Command scheduler adds a check job to the queue in Postgres for every
 // monitor that is due, every -interval, until SIGINT or SIGTERM arrives.
-// It reads the Postgres connection string from DATABASE_URL. Run it from
-// the examples/go directory:
+// Run it from the examples/go directory:
 //
-//	DATABASE_URL=postgres://... go run ./week16/your-monitor/cmd/scheduler
+//	DATABASE_URL=postgres://monitor:changeme@127.0.0.1:5432/monitor?sslmode=disable \
+//	    go run ./week16/your-monitor/cmd/scheduler
 
 // region: main
 package main
@@ -13,7 +13,6 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -21,7 +20,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"fsp/examples/week16/your-monitor/internal/db"
 	"fsp/examples/week16/your-monitor/internal/obs"
@@ -29,9 +27,14 @@ import (
 )
 
 func main() {
+	databaseURL := flag.String("database-url", os.Getenv("DATABASE_URL"), "Postgres connection string; defaults to $DATABASE_URL")
 	interval := flag.Duration("interval", 5*time.Second, "how often to look for monitors that are due")
-	metricsAddr := flag.String("metrics-addr", "", "address for the Prometheus /metrics endpoint, for example 127.0.0.1:2113; empty turns it off")
+	metricsAddr := flag.String("metrics-addr", "", "address for /metrics and /healthz, for example 127.0.0.1:2113; empty turns it off")
 	flag.Parse()
+	if *databaseURL == "" {
+		fmt.Fprintln(os.Stderr, "missing -database-url or DATABASE_URL")
+		os.Exit(2)
+	}
 	if *interval <= 0 {
 		fmt.Fprintln(os.Stderr, "-interval must be more than 0")
 		os.Exit(2)
@@ -40,15 +43,19 @@ func main() {
 	slog.SetDefault(obs.NewLogger(os.Stdout, "scheduler"))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// region: health
+	// The kubelet probes /healthz on -metrics-addr. A round that fails, or
+	// runs out of time, still beats: a restart does not fix a database that
+	// is down.
+	health := obs.NewHealth(3 * *interval)
 	if *metricsAddr != "" {
 		go func() {
-			mux := http.NewServeMux()
-			mux.Handle("GET /metrics", promhttp.Handler())
-			slog.Error("metrics server stopped", "err", obs.NewServer(*metricsAddr, mux).ListenAndServe())
+			slog.Error("metrics server stopped", "err", obs.NewServer(*metricsAddr, obs.OpsMux(health)).ListenAndServe())
 		}()
 	}
+	// endregion: health
 
-	pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+	pool, err := db.Connect(ctx, *databaseURL)
 	if err != nil {
 		obs.Fatal(err)
 	}
@@ -59,7 +66,14 @@ func main() {
 
 	m := newQueueMetrics(prometheus.DefaultRegisterer)
 	slog.Info("started", "pid", os.Getpid(), "interval", interval.String())
-	every(ctx, *interval, func(ctx context.Context) { round(ctx, pool, m) })
+	every(ctx, *interval, func(ctx context.Context) {
+		// A query that hangs ends with the round, after two intervals, and
+		// the round still beats.
+		rctx, cancel := context.WithTimeout(ctx, *interval*2)
+		defer cancel()
+		round(rctx, pool, m)
+		health.Beat()
+	})
 	slog.Info("stopped")
 }
 

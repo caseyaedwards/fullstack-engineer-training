@@ -15,14 +15,14 @@ import (
 
 	"fsp/examples/week16/your-monitor/internal/auth"
 	"fsp/examples/week16/your-monitor/internal/db"
-	"fsp/examples/week16/your-monitor/internal/dbtest"
+	"fsp/examples/week16/your-monitor/internal/db/dbtest"
 )
 
 // newService returns a Service over a fresh schema, with one user and a
 // clock that the test moves by hand.
 func newService(t *testing.T) (*auth.Service, *time.Time) {
 	t.Helper()
-	pool := dbtest.New(t)
+	pool := dbtest.Pool(t, dbtest.URL(t), db.Migrate)
 	svc := auth.NewService(db.NewAuthStore(pool))
 	svc.Cost = bcrypt.MinCost // cost 12 takes about 0.25 s per hash, far longer under -race
 	now := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
@@ -81,6 +81,49 @@ func TestBadCredentialsLookTheSame(t *testing.T) {
 	}
 }
 
+// TestUnknownEmailCostsAFullCheck watches the password check. A login
+// for an email with no account still runs one, against a hash at the
+// production cost, or its speed gives the missing account away.
+func TestUnknownEmailCostsAFullCheck(t *testing.T) {
+	svc, _ := newService(t)
+	var hashes []string
+	svc.Check = func(hash, password string) bool {
+		hashes = append(hashes, hash)
+		return auth.CheckPassword(hash, password)
+	}
+	svc.Login(context.Background(), "nobody@example.com", "correct horse battery")
+	if len(hashes) != 1 {
+		t.Fatalf("%d password checks for an unknown email, want 1", len(hashes))
+	}
+	if cost, err := bcrypt.Cost([]byte(hashes[0])); err != nil || cost != auth.Cost {
+		t.Errorf("checked against a hash of cost %d (err %v), want %d", cost, err, auth.Cost)
+	}
+}
+
+// TestGoodLoginResetsTheLimit makes sure a user who mistypes now and then
+// never builds up to a lockout: a good login clears the count.
+func TestGoodLoginResetsTheLimit(t *testing.T) {
+	svc, _ := newService(t)
+	ctx := context.Background()
+	login := func(password string) error {
+		_, err := svc.Login(ctx, "you@example.com", password)
+		return err
+	}
+	for i := range auth.MaxAttempts - 1 {
+		if err := login("wrong horse battery"); !errors.Is(err, auth.ErrBadCredentials) {
+			t.Fatalf("wrong password %d: err = %v", i+1, err)
+		}
+	}
+	if err := login("correct horse battery"); err != nil {
+		t.Fatalf("good login: %v", err)
+	}
+	for i := range auth.MaxAttempts {
+		if err := login("wrong horse battery"); !errors.Is(err, auth.ErrBadCredentials) {
+			t.Fatalf("wrong password %d after the good login: err = %v, want ErrBadCredentials", i+1, err)
+		}
+	}
+}
+
 func TestSessionExpires(t *testing.T) {
 	svc, now := newService(t)
 	sess, err := svc.Login(context.Background(), "you@example.com", "correct horse battery")
@@ -126,6 +169,9 @@ func TestCreateUserErrors(t *testing.T) {
 	if _, err := svc.CreateUser(ctx, "not an email", "another long password"); err == nil {
 		t.Error("an address without @ is accepted")
 	}
+	if _, err := svc.CreateUser(ctx, strings.Repeat("a", 243)+"@example.com", "another long password"); err == nil {
+		t.Error("an address of 255 bytes is accepted")
+	}
 	if _, err := svc.CreateUser(ctx, "new@example.com", "short"); !errors.Is(err, auth.ErrPasswordTooShort) {
 		t.Errorf("short password: err = %v", err)
 	}
@@ -155,11 +201,13 @@ func TestLoginLogNamesTheReasonNeverThePassword(t *testing.T) {
 	svc.Login(ctx, "nobody@example.com", "correct horse battery")
 	svc.Login(ctx, "you@example.com", "correct horse battery")
 	svc.Login(ctx, "evil\nlogin ok", "x")
+	svc.Login(ctx, strings.Repeat("a", 300)+"@example.com", "x")
 
 	want := `{"level":"WARN","msg":"login failed","email":"you@example.com","reason":"wrong password"}
 {"level":"WARN","msg":"login failed","email":"nobody@example.com","reason":"no such user"}
 {"level":"INFO","msg":"login ok","user_id":1,"email":"you@example.com"}
 {"level":"WARN","msg":"login failed","email":"evil\nlogin ok","reason":"no such user"}
+{"level":"WARN","msg":"login failed","email_bytes":312,"reason":"email too long"}
 `
 	if logs.String() != want {
 		t.Errorf("log:\n%s\nwant:\n%s", logs.String(), want)

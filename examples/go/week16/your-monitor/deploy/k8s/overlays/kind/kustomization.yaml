@@ -1,4 +1,3 @@
-# contract stub: week 15 (copied from content/week-15 at a328ab5, in review)
 # region: overlay
 # The kind cluster on your laptop: the base, plus the namespace, the images
 # that make kind-load builds, and a password that never enters Git.
