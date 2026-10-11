@@ -16,14 +16,14 @@ import (
 
 	"fsp/examples/week11/your-monitor/internal/auth"
 	"fsp/examples/week11/your-monitor/internal/db"
-	"fsp/examples/week11/your-monitor/internal/dbtest"
+	"fsp/examples/week11/your-monitor/internal/db/dbtest"
 )
 
 // newService returns a Service over a fresh schema, with one user and a
 // clock that the test moves by hand.
 func newService(t *testing.T) (*auth.Service, *time.Time) {
 	t.Helper()
-	pool := dbtest.New(t)
+	pool := dbtest.Pool(t, dbtest.URL(t), db.Migrate)
 	svc := auth.NewService(db.NewAuthStore(pool))
 	svc.Cost = bcrypt.MinCost // cost 12 takes about 0.25 s per hash, far longer under -race
 	now := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)

@@ -4,8 +4,8 @@
 openapi: 3.1.0
 info:
   title: your-monitor API
-  version: 0.1.0
-  description: Add, list and delete the URLs that your-monitor checks.
+  version: 0.4.0
+  description: Add, list and delete the URLs that your-monitor checks, read their check results, list incidents, and log in.
 servers:
   - url: http://127.0.0.1:8080
 # Reads need no login: the status page is public. The routes that change
@@ -139,7 +139,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
-  # contract stub: week 08
+
+  # region: results
   /api/monitors/{id}/results:
     parameters:
       - name: id
@@ -149,11 +150,13 @@ paths:
           type: integer
           format: int64
     get:
-      summary: List the newest check results of one monitor
+      summary: List the newest check results of one monitor, newest first
       operationId: listResults
       parameters:
         - name: limit
           in: query
+          required: false
+          description: How many results to return.
           schema:
             type: integer
             minimum: 1
@@ -161,17 +164,20 @@ paths:
             default: 50
       responses:
         "200":
-          description: The results, newest first.
+          description: Up to limit results. A monitor with no results gives [].
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  type: object
+                  $ref: "#/components/schemas/Result"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+  # endregion: results
 
   # region: incidents
   /api/incidents:
@@ -349,10 +355,27 @@ components:
           type: string
           format: date-time
           examples: ["2026-10-11T09:30:00.123456Z"]
+    # region: result-schema
+    Result:
+      type: object
+      description: One check. null means the value does not exist, such as tls_ms for a plain http URL.
+      required: [monitor_id, checked_at, up, status_code, dns_ms, connect_ms, tls_ms, first_byte_ms, total_ms, error]
+      properties:
+        monitor_id: { type: integer, format: int64 }
+        checked_at: { type: string, format: date-time }
+        up: { type: boolean }
+        status_code: { type: [integer, "null"] }
+        dns_ms: { type: [integer, "null"] }
+        connect_ms: { type: [integer, "null"] }
+        tls_ms: { type: [integer, "null"] }
+        first_byte_ms: { type: [integer, "null"] }
+        total_ms: { type: [integer, "null"] }
+        error: { type: [string, "null"] }
+    # endregion: result-schema
     # region: incident-schema
     Incident:
       type: object
-      required: [id, monitor_id, url, started_at, resolved_at, cause]
+      required: [id, monitor_id, started_at, resolved_at, cause]
       properties:
         id:
           type: integer
@@ -360,9 +383,6 @@ components:
         monitor_id:
           type: integer
           format: int64
-        url:
-          type: string
-          format: uri
         started_at:
           type: string
           format: date-time
@@ -370,7 +390,7 @@ components:
         resolved_at:
           type: [string, "null"]
           format: date-time
-          description: When the first successful check ran; null while the incident is open.
+          description: When the first successful check after the failures ran, looking back at most -threshold checks; null while the incident is open.
         cause:
           type: string
           description: The error or status code of the newest failed check.

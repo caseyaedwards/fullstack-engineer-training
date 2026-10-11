@@ -56,8 +56,8 @@ func (h *handler) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
 		return
 	}
-	var req loginRequest
-	if status, err := decodeJSON(w, r, &req); err != nil {
+	req, status, err := decodeJSON[loginRequest](w, r)
+	if err != nil {
 		writeError(w, status, err.Error())
 		return
 	}

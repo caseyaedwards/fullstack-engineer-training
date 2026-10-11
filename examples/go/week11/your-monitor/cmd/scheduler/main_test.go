@@ -8,18 +8,19 @@ import (
 	"regexp"
 	"testing"
 
-	"fsp/examples/week11/your-monitor/internal/dbtest"
+	"fsp/examples/week11/your-monitor/internal/db"
+	"fsp/examples/week11/your-monitor/internal/db/dbtest"
 )
 
 func TestRoundLogsTheQueue(t *testing.T) {
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	db := dbtest.New(t)
-	dbtest.Exec(t, db, `INSERT INTO monitors (url, interval_seconds) VALUES ('https://example.com', 60), ('https://example.org', 60)`)
+	pool := dbtest.Pool(t, dbtest.URL(t), db.Migrate)
+	dbtest.Exec(t, pool, `INSERT INTO monitors (url, interval_seconds) VALUES ('https://example.com', 60), ('https://example.org', 60)`)
 
-	round(context.Background(), db)
-	round(context.Background(), db)
+	round(context.Background(), pool)
+	round(context.Background(), pool)
 
 	want := regexp.MustCompile(`(?m)round enqueued=2 queued=2 oldest_ms=\d+\n.*round enqueued=0 queued=2 oldest_ms=\d+\n`)
 	if !want.MatchString(logs.String()) {

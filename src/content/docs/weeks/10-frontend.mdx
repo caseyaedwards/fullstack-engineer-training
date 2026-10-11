@@ -1,17 +1,24 @@
 ---
 title: "Week 10: Frontend"
+description: Turn web/ into the status page of the uptime monitor, with a typed client for the api, a latency chart drawn in SVG, tests at three levels with Vitest, Testing Library and Playwright, and an nginx image that serves it in Compose.
 week: 10
 phase: build
-hours: [5, 8]
+hours: [5, 7]
 aiStage: 2
 tracks: [testing, system-design]
 done:
-  - id: item-1
-    text: "Placeholder item 1: this week is not written yet"
-  - id: item-2
-    text: "Placeholder item 2: this week is not written yet"
-  - id: item-3
-    text: "Placeholder item 3: this week is not written yet"
+  - id: status-page-runs
+    text: With the stack from Week 9 running, the page at http://localhost:5173 lists every monitor with its status and a latency chart, shows the open incidents, and shows a site that goes down within 30 seconds of its failed check.
+  - id: typed-client-tested
+    text: web/src/api.ts holds typed calls for monitors, results and incidents, and its tests cover each route, an error body from the api and a 502 from a proxy.
+  - id: component-tests-pass
+    text: make test passes, including Testing Library tests for the loading, empty, error and stale-data states of the page.
+  - id: e2e-flow-passes
+    text: make e2e runs a Playwright test that answers every api request with page.route, moves the page clock 30 seconds, and sees the site go down.
+  - id: web-in-compose
+    text: make up starts the web service, and http://127.0.0.1:3000 shows the status page with live data that nginx fetches from the api.
+  - id: explain-effects
+    text: Without notes, you can explain why each request shows up twice in the api log in development, and what the cleanup function of usePolling prevents.
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -21,43 +28,502 @@ import AiThisWeek from '../../../components/AiThisWeek.astro';
 import SideLab from '../../../components/SideLab.astro';
 import ReadWith from '../../../components/ReadWith.astro';
 import DoneWhen from '../../../components/DoneWhen.astro';
+import Diagram from '../../../components/Diagram.astro';
+import CodeFrom from '../../../components/CodeFrom.astro';
+import { weekHref, trackHref } from '../../../lib/links';
 
 <WeekHeader />
 
+At the end of <a href={weekHref(9)}>Week 9</a>, the monitor runs on its own: the scheduler queues checks, workers run them and store each result in Postgres, and the alerter opens an incident after three failures in a row. The only way to see any of it is `curl` or `psql`. This week, `web/` becomes the status page: one row per monitor with its current status and a chart of its recent checks, plus the open incidents, refreshed every 30 seconds. You know React and testing already. The new parts are how a page talks to your own api, how to test that at three levels, and how the page runs next to the api in production.
+
 ## Goals
 
-This section is not written yet.
+- Explain how a React component loads data from an api: state, effects, renders and cancellation.
+- Write a typed client for the api, with one error type for every failure.
+- Build the status page and draw a latency chart in SVG, without a chart library.
+- Test it at three levels: pure functions and components with Vitest and Testing Library, and one end-to-end flow with Playwright and a mocked api.
+- Serve the built page from nginx in its own image, on the same origin as the api.
 
 ## Concepts
 
-This section is not written yet.
+### What the Page Asks the API
+
+The page needs three routes from Weeks 7 to 9: `GET /api/monitors`, `GET /api/monitors/{id}/results?limit=50` for the newest 50 checks of one monitor, and `GET /api/incidents?open=true`. Each component asks for the data it shows. The walkthrough follows the data from the api to the screen.
+
+<Diagram
+  id="page-data"
+  title="Which component asks the api for what"
+  code={`direction: down
+app: "App\\nmakes one Client"
+page: "StatusPage"
+inc: "IncidentList"
+row: "MonitorRow\\none per monitor"
+chart: "LatencyChart\\nSVG"
+api: "api\\nport 8080"
+
+app -> page: client
+page -> api: "GET /api/monitors\\nGET /api/incidents?open=true"
+page -> inc: incidents
+page -> row: monitor
+row -> api: "GET /api/monitors/{id}/results?limit=50"
+row -> chart: results
+`}
+  steps={[
+    { hl: ['app', 'page', 'app->page'], caption: 'App creates one Client, the object that knows the api routes, and passes it down as a prop. A test passes a fake Client instead, and no component calls fetch itself.' },
+    { hl: ['page', 'api', 'page->api'], caption: 'StatusPage asks for the monitors and the open incidents when it first appears, then again every 30 seconds.' },
+    { hl: ['page', 'row', 'api', 'page->row', 'row->api'], caption: 'StatusPage renders one MonitorRow per monitor, and each row asks for the 50 newest results of its monitor. With 20 monitors, the page sends 22 requests every 30 seconds.' },
+    { hl: ['row', 'chart', 'row->chart'], caption: 'MonitorRow reads the current status from the newest result and hands all 50 to LatencyChart, which draws them. Drawing needs no request.' },
+    { hl: ['page', 'inc', 'page->inc'], caption: 'IncidentList shows each open incident next to the URL of its monitor, which StatusPage already holds.' },
+  ]}
+/>
+
+One request per monitor is the **N+1 pattern**: one request for the list, then one for each of its N items. It is simple, and each row loads and fails on its own. It also grows with every monitor you add. The fix is a route that returns the status of every monitor in one answer, shaped for this page. That trade-off, a general api against one shaped for each screen, comes up again in the <a href={trackHref('system-design')}>System and Software Design track</a>. For a status page with tens of monitors, the simple design is enough, and [Observe It](#observe-it) shows how to count the requests.
+
+### State, Effects and Cancellation
+
+A React component is a function from props and state to markup. React calls it to **render**, and calls it again each time its state changes. `useState` holds a value across renders. `useEffect` runs code after a render, for work that is not markup, such as a request. Its second argument, the **dependency array**, lists the values the effect reads: React runs the effect again when one of them changes. The function the effect returns is its **cleanup**: React runs it before the next run of the effect, and when the component leaves the page, which React calls **unmounting**.
+
+A request outlives the component that sent it. When the answer arrives after the component unmounted, nothing needs it. Worse, an old answer can overwrite a newer one. `AbortController` cancels a `fetch`: you pass its `signal` to `fetch`, and `controller.abort()` makes that `fetch` reject with an `AbortError`. The cleanup calls it.
+
+<Diagram
+  id="polling"
+  title="One component, from its first render to its cleanup"
+  code={`shape: sequence_diagram
+react: React
+hook: "usePolling\\neffect"
+api: api
+
+react -> hook: "first render done: run the effect"
+hook -> api: "GET /api/monitors, with a signal"
+api -> hook: "200 and a JSON array"
+hook -> react: "setState: React renders again"
+hook -> api: "30 seconds later: GET again"
+react -> hook: "unmount: run the cleanup"
+hook -> api: "cancel the request in flight"
+`}
+  steps={[
+    { hl: ['react', 'hook', 'react->hook'], caption: 'React renders the page once with no data: it shows Loading monitors. Then it runs the effect.' },
+    { hl: ['hook', 'api', 'hook->api', 'api->hook'], caption: 'The effect creates an AbortController and starts the request with its signal. React does not wait: the request runs while the user sees the loading text.' },
+    { hl: ['hook', 'react', 'hook->react'], caption: 'The answer arrives. setState stores it, and React calls the component again, which now renders the monitors.' },
+    { hl: ['hook', 'api', 'hook->api#1'], caption: 'After each answer, the effect sets a 30-second timer for the next request. A slow api never gets a second request on top of the first.' },
+    { hl: ['react', 'hook', 'api', 'react->hook#1', 'hook->api#2'], caption: 'The component leaves the page. React runs the cleanup, which cancels the request in flight and clears the timer. No late answer reaches setState.' },
+  ]}
+/>
+
+In development, `main.tsx` wraps the app in `<StrictMode>`. StrictMode mounts every component, unmounts it, and mounts it again, which runs each effect, then its cleanup, then the effect again. A missing cleanup shows up at once as two timers and two loops of requests. In a production build, StrictMode does nothing.
+
+### Types at the Boundary
+
+TypeScript checks your code, not the data that arrives. `res.json()` returns whatever the api sends, and the type `Monitor[]` is a promise you make about it. When a Go field is renamed, the compiler stays quiet and the page shows `undefined`. Two habits keep the two sides in step: write each type to match the Go struct and its JSON tags field for field, and check both against the OpenAPI file from <a href={weekHref(7)}>Week 7</a> when either side changes. A Go pointer such as `*int` arrives as a number or `null`, and the type states it: `total_ms: number | null`. Go writes a `time.Time` as RFC 3339 text, such as `"2026-10-11T14:02:07Z"`, and `Date.parse` reads it.
+
+### Drawing with SVG
+
+SVG, Scalable Vector Graphics, describes a picture as elements in the page: `<line>`, `<circle>`, `<path>`. React renders them like any other element, which means a chart is a component and your tests can query it. The `viewBox` attribute sets the coordinate system, and the browser scales it to the size CSS gives the element. Your chart uses a box 300 wide and 60 high. The y axis points down: `y = 0` is the top edge.
+
+Drawing a chart comes down to two **scale** functions, which turn data into coordinates. x maps a check time, from the oldest to the newest check, onto 0 to 300. y maps a duration, from 0 to the slowest check, onto 60 to 0, upside down, which puts the slowest check at the top. A `<path>` draws a line from a string of commands: `M0,30` moves the pen to x 0 and y 30, and `L100,0` draws a line to x 100 and y 0. A new `M` lifts the pen, which is how the chart leaves a gap at each failed check. A charting library does the same work with more options, and adds its code to every page load. Yours is 30 lines that you can test.
+
+### Three Levels of Tests
+
+The page has logic, components and a browser to test, and each level fakes a different part. **jsdom** is a browser document written in JavaScript: it runs in Node, holds a DOM that React renders into, and draws nothing. **Testing Library** queries that DOM the way a person, or a screen reader, finds things on the page: by role, by accessible name and by text, never by CSS class. **Playwright** drives a real browser, Chromium here, and `page.route` answers the requests of the page from your test instead of the network.
+
+<Diagram
+  id="test-levels"
+  title="What each level of test runs, and what it fakes"
+  code={`direction: down
+fn: "plot, currentStatus\\nplain functions"
+page: "StatusPage\\nrendered in jsdom"
+fake: "fake Client"
+chrome: "Chromium"
+app: "the whole app\\nfrom the Vite dev server"
+route: "page.route\\nanswers /api/"
+api: "the real api"
+
+page -> fake: calls
+chrome -> app: loads
+app -> route: "fetch /api/..."
+fake -> api: "stands in for"
+route -> api: "stands in for"
+`}
+  steps={[
+    { hl: ['fn'], caption: 'Unit tests call the plain functions with data and compare the result: the status, the chart coordinates. No DOM, no React. They run in milliseconds and pin down the math.' },
+    { hl: ['page', 'fake', 'page->fake'], caption: 'Component tests render StatusPage into jsdom with a fake Client that answers from plain data. They check what the user sees in each state: loading, empty, error and stale.' },
+    { hl: ['chrome', 'app', 'route', 'chrome->app', 'app->route'], caption: 'The end-to-end test loads the real app in Chromium, with real fetch, timers, CSS and SVG. page.route answers every /api/ request, which makes the test independent of Postgres and the worker.' },
+    { hl: ['api', 'fake', 'route', 'fake->api', 'route->api'], caption: 'Both fakes stand in for the real api, and no level runs it. The OpenAPI file and the Go tests cover that side, and Step 8 runs the page against it by hand.' },
+  ]}
+/>
+
+Most tests belong at the first two levels: they are fast, and a failure points at the broken line. Keep the end-to-end level to the flows that matter to a user: here, one site going down.
+
+### Serving the Page in Production
+
+`vite build` turns `web/` into static files in `web/dist`: an `index.html` and, under `assets/`, one JavaScript and one CSS file whose names hold a hash of their content, such as `index-CHghxbEO.js`. Any web server can hand them out. Your `web` image runs **nginx**, a web server that also works as a proxy, which does two jobs on one origin: it serves `dist/`, and it passes every `/api/` request on to the api container, as the Vite dev server does in development. The browser sees one origin, and the page needs no CORS, as <a href={weekHref(6)}>Week 6</a> explains.
+
+<Diagram
+  id="production"
+  title="The page and the api behind one origin in Compose"
+  code={`direction: down
+browser: browser
+web: "web\\nnginx, port 8080"
+dist: "dist/\\nindex.html, assets/"
+api: "api\\nport 8080"
+pg: postgres
+
+browser -> web: "127.0.0.1:3000"
+web -> dist: "/ and /assets/"
+web -> api: "/api/ to api:8080"
+api -> pg: SQL
+`}
+/>
 
 ## Build
 
-This section is not written yet.
+You change `web/` and three files at the root of `your-monitor`. The code comes from the site examples in `examples/web/src/week10/web`, which mirror your `web/` folder, and `examples/go/week10/your-monitor`, which mirrors the rest. You finish with this layout in `web/`:
+
+```txt
+web/
+├── vite.config.ts        test settings added
+├── playwright.config.ts  new
+├── nginx.conf            new
+├── e2e/status.spec.ts    new: the end-to-end test
+└── src/
+    ├── api.ts            the typed client, with api.test.ts
+    ├── status.ts         status and chart math, with status.test.ts
+    ├── LatencyChart.tsx  the chart
+    ├── usePolling.ts     the hook that loads and refreshes
+    ├── StatusPage.tsx    the page, with StatusPage.test.tsx
+    ├── testdata.ts       builders for test data
+    ├── test-setup.ts     Vitest setup
+    └── App.tsx, index.css, main.tsx
+```
+
+### Step 1: Install the Test Packages
+
+Start a branch, then add Testing Library, its DOM matchers and jsdom to `web/`:
+
+```sh
+git switch main && git pull && git switch -c week-10
+npm --prefix web install --save-dev @testing-library/react @testing-library/dom @testing-library/jest-dom jsdom@29
+```
+
+jsdom 29 needs Node 22.13 or newer: check with `node --version`. jsdom 30 needs 22.22.2 or newer, which is why the command names version 29. Add `test` settings to `web/vite.config.ts`. Vitest reads them from the Vite config, and the `reference` line on top gives TypeScript their types:
+
+<CodeFrom file="web/src/week10/web/vite.config.ts" region="config" lang="ts" title="web/vite.config.ts" />
+
+The `include` line keeps Vitest out of `e2e/`. Without it, Vitest also runs every `*.spec.ts` file, and the Playwright test fails with `Playwright Test did not expect test() to be called here`. Create `web/src/test-setup.ts`:
+
+<CodeFrom file="web/src/week10/web/src/test-setup.ts" region="setup" lang="ts" title="web/src/test-setup.ts" />
+
+`cleanup` empties the document after each test. Testing Library does this on its own only when Vitest runs with `globals: true`.
+
+### Step 2: Write the Typed Client
+
+Replace `web/src/api.ts`. The types mirror the Go structs:
+
+<CodeFrom file="web/src/week10/web/src/api.ts" region="types" lang="ts" title="web/src/api.ts" />
+
+Every failure becomes an `ApiError` with the status code, plus the message the api wrote when there is one:
+
+<CodeFrom file="web/src/week10/web/src/api.ts" region="error" lang="ts" title="web/src/api.ts" />
+
+The `catch` around `res.json()` covers the api being down. The Vite proxy and nginx then answer `502` themselves, and neither body is JSON. The functions that the page calls:
+
+<CodeFrom file="web/src/week10/web/src/api.ts" region="client" lang="ts" title="web/src/api.ts" />
+
+`Client` is a type with three functions, and `newClient` returns one built on `fetch`. A component that receives a `Client` works the same with the real one and with a fake. Replace `web/src/api.test.ts`. The fake `fetch` from Week 6 now also records the signal:
+
+<CodeFrom file="web/src/week10/web/src/api.test.ts" region="fake" lang="ts" title="web/src/api.test.ts" />
+
+<CodeFrom file="web/src/week10/web/src/api.test.ts" region="tests" lang="ts" title="web/src/api.test.ts" />
+
+### Step 3: Work Out the Status and the Chart Points
+
+Create `web/src/status.ts`. The status comes from the newest result:
+
+<CodeFrom file="web/src/week10/web/src/status.ts" region="status" lang="ts" title="web/src/status.ts" />
+
+`plot` turns results into coordinates. The scale functions from [Drawing with SVG](#drawing-with-svg) are `x` and `y`:
+
+<CodeFrom file="web/src/week10/web/src/status.ts" region="plot" lang="ts" title="web/src/status.ts" />
+
+Test it with four checks a minute apart, which you can work out on paper. The x positions are 0, 100, 200 and 300. The slowest check, 200 ms, sits at y 0, and 100 ms sits halfway down, at y 30:
+
+<CodeFrom file="web/src/week10/web/src/status.test.ts" region="plot-test" lang="ts" title="web/src/status.test.ts" />
+
+The tests build results with `result()` and `down()`. Each builder returns a valid value and takes the fields a test changes, such as `result({ total_ms: 50 })`. Create `web/src/testdata.ts`:
+
+<CodeFrom file="web/src/week10/web/src/testdata.ts" region="builders" lang="ts" title="web/src/testdata.ts" />
+
+Add the tests of `currentStatus` above the `plot` tests, and import `describe`, `expect` and `test` from `vitest`, `currentStatus` and `plot` from `./status`, and `down` and `result` from `./testdata`:
+
+<CodeFrom file="web/src/week10/web/src/status.test.ts" region="status-test" lang="ts" title="web/src/status.test.ts" />
+
+### Step 4: Draw the Chart
+
+Create `web/src/LatencyChart.tsx`:
+
+<CodeFrom file="web/src/week10/web/src/LatencyChart.tsx" region="chart" lang="tsx" title="web/src/LatencyChart.tsx" />
+
+`role="img"` and `aria-label` give the chart an accessible name: a screen reader reads the summary, and your tests find the chart by that name. The `viewBox` starts at `-4` to leave room for half a dot on each edge.
+
+### Step 5: Load and Refresh with a Hook
+
+A **hook** is a function whose name starts with `use` and that calls other hooks. Create `web/src/usePolling.ts`:
+
+<CodeFrom file="web/src/week10/web/src/usePolling.ts" region="hook" lang="ts" title="web/src/usePolling.ts" />
+
+- The effect lists `load` in its dependencies. A caller that passes a new arrow function on every render restarts the effect on every render: a request, a render, a new function, another request, without end. `useCallback` in Step 6 keeps each `load` the same between renders.
+- The two `if (controller.signal.aborted) return` lines stop a canceled run before it stores an answer or sets the next timer.
+- A failed refresh keeps `data` and adds `error`. The page shows the old data with a warning, rather than an empty page.
+
+### Step 6: Build the Page
+
+Create `web/src/StatusPage.tsx`. The page itself:
+
+<CodeFrom file="web/src/week10/web/src/StatusPage.tsx" region="page" lang="tsx" title="web/src/StatusPage.tsx" />
+
+`role="alert"` marks the error text: a screen reader announces it when it appears. One row per monitor:
+
+<CodeFrom file="web/src/week10/web/src/StatusPage.tsx" region="row" lang="tsx" title="web/src/StatusPage.tsx" />
+
+`aria-labelledby` names each list item after its heading, the URL. Tests find a row by that name. The incidents and the `Time` helper:
+
+<CodeFrom file="web/src/week10/web/src/StatusPage.tsx" region="incidents" lang="tsx" title="web/src/StatusPage.tsx" />
+
+The browser shows each time in its own time zone, and an incident shows its date too, because it can be days old. The `dateTime` attribute holds the exact moment in UTC, which a test can compare. Replace `web/src/App.tsx`:
+
+<CodeFrom file="web/src/week10/web/src/App.tsx" region="app" lang="tsx" title="web/src/App.tsx" />
+
+Replace `web/src/index.css` with the styles for the badges and the chart, and change the `<title>` in `web/index.html` to `Status`:
+
+<CodeFrom file="web/src/week10/web/src/index.css" region="css" lang="css" title="web/src/index.css" />
+
+### Step 7: Test the Page with Testing Library
+
+Create `web/src/StatusPage.test.tsx`. The fake `Client` answers from an object that a test can change between refreshes:
+
+<CodeFrom file="web/src/week10/web/src/StatusPage.test.tsx" region="fake-client" lang="tsx" title="web/src/StatusPage.test.tsx" />
+
+The tests for what the page shows:
+
+<CodeFrom file="web/src/week10/web/src/StatusPage.test.tsx" region="render-tests" lang="tsx" title="web/src/StatusPage.test.tsx" />
+
+- `getBy...` returns the element or throws at once. `queryBy...` returns `null` instead, to check that something is absent. `findBy...` retries until the element appears, for up to one second, which covers data that arrives after the first render.
+- `within(row)` limits a query to one row, which keeps `Up` from matching the row of another monitor.
+- `toBeVisible`, `toHaveTextContent` and `toHaveAccessibleName` come from `@testing-library/jest-dom`, which `test-setup.ts` loads.
+
+The tests for failures:
+
+<CodeFrom file="web/src/week10/web/src/StatusPage.test.tsx" region="failure-tests" lang="tsx" title="web/src/StatusPage.test.tsx" />
+
+`vi.useFakeTimers` replaces `setTimeout` with a clock the test moves. `shouldAdvanceTime: true` keeps that clock moving with real time too, which the `findBy` retries need. `vi.advanceTimersByTimeAsync(30_000)` runs the 30-second timer at once. `act` tells React that the test caused the updates, which makes React finish rendering before the next line checks the page. The last two tests prove the cleanup works. Remove `clearTimeout(timer)` from `usePolling`, and the timer fires after the unmount and sends a second request. Remove the first `aborted` check, and a late answer sets a new timer, with the same result. Either way, a test fails.
+
+Run `make test`. The Go tests run, then Vitest reports `23 passed` for the three test files.
+
+### Step 8: Run It Against the Real API
+
+Start the stack from Week 9, then the dev server, which passes `/api` to `127.0.0.1:8080`:
+
+```sh
+make up
+make web
+```
+
+In a second terminal, add a site that answers and an address that refuses. From inside the worker container, `127.0.0.1` is the container itself, and port `1` refuses every connection:
+
+```sh
+for url in https://example.com http://127.0.0.1:1/; do
+  curl -sS -H 'Content-Type: application/json' -d "{\"url\":\"$url\",\"interval_seconds\":30}" http://127.0.0.1:8080/api/monitors
+done
+```
+
+Open `http://localhost:5173`. Both rows show **No checks yet** until the worker stores their first results. Within 30 seconds of those, `https://example.com` shows **Up** with its total time, and `http://127.0.0.1:1/` shows **Down** with a `connection refused` error. After the third failure in a row, the alerter opens an incident with the error of the check as its cause, and **Open incidents** lists it at the next refresh. Each new check adds a dot on the right of the chart.
+
+### Step 9: Add an End-to-End Test with Playwright
+
+Install Playwright and the Chromium build it drives, then add a script for it. On Linux, run `npx playwright install --with-deps chromium` instead, which also installs the system libraries Chromium needs:
+
+```sh
+npm --prefix web install --save-dev @playwright/test
+(cd web && npx playwright install chromium)
+npm --prefix web pkg set scripts.test:e2e="playwright test"
+```
+
+Playwright writes traces and screenshots of failed tests to `web/test-results/`: add `test-results` to `web/.gitignore`. Create `web/playwright.config.ts`:
+
+<CodeFrom file="web/src/week10/web/playwright.config.ts" region="config" lang="ts" title="web/playwright.config.ts" />
+
+Create `web/e2e/status.spec.ts`. First, the mocked api. Playwright tries the routes of a page from the newest to the oldest, which makes the catch-all on top the last resort: a request that no other route answers gets `599` and fails the test loudly.
+
+<CodeFrom file="web/src/week10/web/e2e/status.spec.ts" region="mock" lang="ts" title="web/e2e/status.spec.ts" />
+
+The flow: a site is up, it fails three times, and the next refresh shows it. `page.clock.install` replaces the clock of the page, timers included. The installed clock runs on in real time, and `pauseAt` stops it, which pins the **Updated** time to `14:03:00.000`. `page.clock.runFor(30_000)` then moves it 30 seconds in one step, and fires the refresh timer on the way:
+
+<CodeFrom file="web/src/week10/web/e2e/status.spec.ts" region="flow" lang="ts" title="web/e2e/status.spec.ts" />
+
+The example file adds a second test, in which every `/api/` request answers `502`, and the page shows the error. Add a target to the `Makefile`, above the `web/node_modules` rule, and add `e2e` to its `.PHONY` line:
+
+<CodeFrom file="go/week10/your-monitor/Makefile" region="e2e" lang="makefile" title="Makefile" />
+
+Run `make e2e`: Playwright starts the dev server, runs both tests in Chromium, and prints `2 passed`. When `make web` already runs, Playwright uses that server instead.
+
+### Step 10: Serve the Page from Its Own Image
+
+Create `web/nginx.conf`:
+
+<CodeFrom file="web/src/week10/web/nginx.conf" region="nginx" lang="nginx" title="web/nginx.conf" />
+
+`proxy_pass http://api:8080;` names no path, which makes nginx pass the full path on: `/api/monitors` reaches the api as `/api/monitors`. Add two stages to the end of the `Dockerfile`:
+
+<CodeFrom file="go/week10/your-monitor/Dockerfile" region="web" lang="dockerfile" title="Dockerfile" />
+
+`node:22-alpine` builds the page, and only `dist/` reaches the final image. The build stage from Week 6 still runs `COPY . .`, which now copies `web/` too: a change to the page reruns `go build` when you next build the api and worker images. To avoid that, replace `COPY . .` in that stage with one `COPY` per folder the Go build needs: `cmd`, `internal` and `migrations`. `npm run build` runs `tsc -b`, which type-checks your tests too, then `vite build`. The final image comes from `nginxinc/nginx-unprivileged`, the variant of the official nginx image that runs as user `101` and listens on port `8080`, the way your Go images run as `65532`. The plain `nginx` image starts as `root`.
+
+The build context must now hold `web/`, which Week 6 kept out. In `.dockerignore`, replace the line `web` with the folders that `npm` and Playwright create. The `backups` line comes from Week 8:
+
+```txt title=".dockerignore"
+# Never sent to docker build: keeps the context small and secrets out.
+.git
+.env
+bin
+web/node_modules
+web/dist
+web/test-results
+backups
+```
+
+Add the service to `compose.yaml`, after `alerter` and before `volumes:`, and add `WEB_PORT=3000` to `.env.example` and `.env`:
+
+<CodeFrom file="go/week10/your-monitor/compose.yaml" region="web" lang="yaml" title="compose.yaml" />
+
+`depends_on` with `service_healthy` starts nginx after the api passes its healthcheck: nginx looks up the name `api` when it starts, and a name that does not resolve yet stops it with `host not found in upstream`. Run `make up`, then open `http://127.0.0.1:3000`. Check the two cache headers. The outputs are examples:
+
+```txt
+$ curl -sI http://127.0.0.1:3000/ | grep -i cache-control
+Cache-Control: no-cache
+$ curl -sI http://127.0.0.1:3000/assets/index-CHghxbEO.js | grep -i cache-control
+Cache-Control: public, max-age=31536000, immutable
+```
+
+Take the file name from `curl -s http://127.0.0.1:3000/ | grep assets`: the hash in yours differs.
+
+### Step 11: Commit
+
+Read the `git status` list before the commit: it must not hold `web/node_modules/`, `web/dist/` or `web/test-results/`.
+
+```sh
+git add .dockerignore .env.example Dockerfile Makefile compose.yaml web
+git status
+git commit -m "Add the status page, its tests and the web image"
+git push -u origin week-10
+```
+
+Open a pull request from `week-10` into `main`, read the diff once more, and merge it.
 
 ## Observe It
 
 <ObserveIt>
-This section is not written yet.
+
+Three places show what the page does: the browser, the logs and the page itself. The outputs are examples.
+
+**The Network panel.** Open the browser developer tools, select **Network**, and type `/api/` into the filter box. With two monitors, each refresh adds four requests: monitors, incidents and two results. The **Waterfall** column shows the order: the results requests start only after the monitors answer, because each `MonitorRow` exists only then. On the first load in development, each request shows twice, the first one with the status `(canceled)`: StrictMode runs each effect, its cleanup, then the effect again. The api still receives the canceled request, because the browser sent it before the cleanup ran. Filter the api log for one route, and it shows that route twice at page load:
+
+```txt
+$ docker compose logs --no-log-prefix api | grep 'path=/api/monitors '
+2026/10/11 08:42:34 request method=GET path=/api/monitors status=200 bytes=312 duration_ms=3.4
+2026/10/11 08:42:34 request method=GET path=/api/monitors status=200 bytes=312 duration_ms=1.2
+```
+
+The incidents route and each results route show up twice in the same way. In the `web` container, nginx writes one access line per request: `docker compose logs web` shows the path, the status and the size of each answer, assets and api calls alike.
+
+**Freshness.** The page ends with **Updated** and the time of the last good answer. When that time stops moving while the page stays open, the refresh fails, and the alert at the top says why.
+
+**Size.** `npm --prefix web run build` prints the size of each file:
+
+```txt
+dist/index.html                   0.46 kB │ gzip:  0.30 kB
+dist/assets/index-n4_MXBh-.css    0.85 kB │ gzip:  0.44 kB
+dist/assets/index-CHghxbEO.js   223.82 kB │ gzip: 70.30 kB
+```
+
+A page that renders only `<div>hi</div>` builds to 219 KB of JavaScript: React and React DOM. Your status page adds 4 KB. Run the build after each change that adds a package and compare the numbers.
+
 </ObserveIt>
 
 ## Operate It
 
 <OperateIt>
-This section is not written yet.
+
+**The api stops.** Stop it with `docker compose stop api`. In development, the Vite proxy answers `502`, and the dev server logs `http proxy error: /api/monitors` with `connect ECONNREFUSED 127.0.0.1:8080`. Through nginx, the answer is `502` with an HTML page, and `docker compose logs web` shows `connect() failed (111: Connection refused) while connecting to upstream`. Either way, the page keeps its last data, and the alert reads `The last refresh failed: GET /api/monitors: status 502`. Start the api again: the next refresh clears the alert.
+
+**nginx keeps an old address.** nginx looks up `api` once, when it starts. When Compose recreates the api container, for example after `make up` with a changed api image, and the new container gets a different address, every `/api/` request through nginx fails with `502`, while `curl 127.0.0.1:8080/healthz` answers `{"status":"ok"}`. `docker compose restart web` makes nginx look the name up again. In Kubernetes, from <a href={weekHref(15)}>Week 15</a>, the api sits behind a Service, whose address stays the same.
+
+**A new build and an old page.** Without `no-cache` on `index.html`, a browser keeps the old `index.html` after you deploy, and it keeps loading the old JavaScript file that it names. The page looks the same as before your fix. With the headers from Step 10, the browser asks nginx about `index.html` every time, and a hashed asset never needs that question: a changed file has a new name.
+
+| What you see | What it points to |
+| --- | --- |
+| `TypeError: Failed to fetch` in the console, and a CORS error | The page calls `http://localhost:8080` directly instead of a path such as `/api/monitors` |
+| Every row reads **No checks yet** for minutes | The scheduler or the worker is not running: check `docker compose ps`, then the worker log |
+| A row reads `Cannot load results: ... status 404` | The api is older than Week 8, or someone deleted the monitor between two refreshes |
+| The Checked line reads `undefined ms` | A field name differs between the Go struct and `api.ts` |
+| The Playwright test passes, and the real page breaks | The mocked JSON differs from what the api sends: compare it with `curl` output and `api/openapi.yaml` |
+| `Playwright Test did not expect test() to be called here` from Vitest | The `include` line in `vite.config.ts` is missing, and Vitest runs `e2e/` |
+
 </OperateIt>
 
 ## AI This Week
 
 <AiThisWeek>
-This section is not written yet.
+
+Stage 2, review everything: generate code with the assistant, then read every line, write or extend the tests, and explain it back. Do not merge code you cannot explain or that has no test.
+
+**Do:** describe `LatencyChart` to the assistant and let it write the component: a 300 by 60 SVG, time on x, total time on y, a gap and a red bar at each failed check, and an `aria-label` that sums it up. Then check its scale functions on paper with the four checks from Step 3, and write `status.test.ts` yourself before you read its tests. Where your expected numbers and its code disagree, find out which one is wrong.
+
+**Do not:** accept a generated fix that adds a package to solve one problem: a chart library for one chart, a data-fetching library for three routes, a date library for one `toLocaleTimeString`. Each one adds to the bundle size from Observe It and to the code you have to explain. Also reject generated tests that mock the component under test, or that compare a whole rendered page to a stored copy: they pass whatever the page shows.
+
 </AiThisWeek>
 
 ## Side Lab
 
-<SideLab title="Optional lab: not written yet">
-This section is not written yet.
+<SideLab title="Watch HTTP caching with curl: ETag, 304 Not Modified and Cache-Control">
+
+Browsers avoid downloading a file twice with two mechanisms. With a **validator**, the browser asks whether its copy is still current. With a **lifetime**, it skips the question. `curl` shows both against the `web` container from Step 10. The outputs are examples from nginx, trimmed.
+
+**1. Get a validator.** nginx sends an `ETag`, a short tag for one version of a file. For a static file, nginx builds it from the modification time and the size, both in hexadecimal: `1d3` is 467 bytes.
+
+```txt
+$ curl -sI http://127.0.0.1:3000/
+HTTP/1.1 200 OK
+Content-Type: text/html
+Content-Length: 467
+Last-Modified: Sun, 11 Oct 2026 07:03:16 GMT
+ETag: "6acb34b4-1d3"
+Cache-Control: no-cache
+```
+
+**2. Ask with it.** Send the tag back in `If-None-Match`, as a browser does for a `no-cache` file. When the file has not changed, nginx answers `304 Not Modified` with no body: one round trip, no download.
+
+```txt
+$ curl -sI -H 'If-None-Match: "6acb34b4-1d3"' http://127.0.0.1:3000/
+HTTP/1.1 304 Not Modified
+ETag: "6acb34b4-1d3"
+Cache-Control: no-cache
+```
+
+Change any text on the page, run `make up`, and ask again with the old tag: the answer is `200`, with the new file and a new tag.
+
+**3. Skip the question.** The assets carry `max-age=31536000`, one year in seconds, and `immutable`. A browser that holds one never asks again. In the developer tools, reload the page with **Network** open: `index.html` shows `304`, and the JavaScript file shows `(memory cache)` or `(disk cache)` in the **Size** column. Tick **Disable cache** and reload: every file comes back with `200`.
+
+**4. Compare the compressed size.** `curl` sends no `Accept-Encoding` header unless you ask, and nginx then sends the file as it is:
+
+```txt
+$ curl -s -o /dev/null -w '%{size_download}\n' http://127.0.0.1:3000/assets/index-CHghxbEO.js
+223823
+$ curl -s -o /dev/null -H 'Accept-Encoding: gzip' -w '%{size_download}\n' http://127.0.0.1:3000/assets/index-CHghxbEO.js
+81921
+```
+
+nginx compresses at level 1 unless `gzip_comp_level` says otherwise: fast, and 82 KB here. `gzip -6 -c` on the same file gives 70 KB, close to what Vite reports. Set `gzip_comp_level 6;` in `nginx.conf`, rebuild, and measure again: each answer gets smaller and costs nginx more CPU.
+
 </SideLab>
 
 ## Done When

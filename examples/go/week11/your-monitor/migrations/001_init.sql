@@ -1,16 +1,23 @@
--- contract stub: week 08
-CREATE TABLE monitors (
-    id               bigserial PRIMARY KEY,
-    url              text NOT NULL UNIQUE,
-    interval_seconds int NOT NULL CHECK (interval_seconds BETWEEN 30 AND 3600),
-    created_at       timestamptz NOT NULL DEFAULT now()
+-- region: init
+-- 001_init.sql: the first schema of the uptime monitor. Migrate runs
+-- this file once, inside a transaction, and records version 1 in
+-- schema_migrations. Never edit it after it has run anywhere: add
+-- 002_<name>.sql instead.
+
+-- One row per URL to check.
+create table monitors (
+    id               bigserial primary key,
+    url              text not null unique,
+    interval_seconds int not null check (interval_seconds between 30 and 3600),
+    created_at       timestamptz not null default now()
 );
 
-CREATE TABLE check_results (
-    id            bigserial PRIMARY KEY,
-    monitor_id    bigint NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
-    checked_at    timestamptz NOT NULL,
-    up            boolean NOT NULL,
+-- One row per check. A NULL timing means that step did not happen.
+create table check_results (
+    id            bigserial primary key,
+    monitor_id    bigint not null references monitors (id) on delete cascade,
+    checked_at    timestamptz not null,
+    up            boolean not null,
     status_code   int,
     dns_ms        int,
     connect_ms    int,
@@ -20,4 +27,6 @@ CREATE TABLE check_results (
     error         text
 );
 
-CREATE INDEX check_results_monitor_time ON check_results (monitor_id, checked_at DESC);
+-- The history of one monitor, newest first: the query the API runs.
+create index check_results_monitor_time on check_results (monitor_id, checked_at desc);
+-- endregion: init

@@ -42,7 +42,9 @@ func (f fakeAuth) User(ctx context.Context, token string) (auth.User, error) {
 }
 
 func (f fakeAuth) Logout(ctx context.Context, token string) error {
-	*f.loggedOut = token
+	if f.loggedOut != nil {
+		*f.loggedOut = token
+	}
 	return nil
 }
 

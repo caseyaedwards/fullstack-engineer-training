@@ -1,0 +1,304 @@
+# region: info
+# The contract of the your-monitor api. internal/api serves exactly these
+# routes: internal/api/openapi_test.go fails when the two disagree.
+openapi: 3.1.0
+info:
+  title: your-monitor API
+  version: 0.3.0
+  description: Add, list and delete the URLs that your-monitor checks, read their check results, and list incidents.
+servers:
+  - url: http://127.0.0.1:8080
+# No route asks who you are yet. Week 11 adds login, and a session cookie
+# for the routes that change data.
+security: []
+# endregion: info
+
+# region: paths
+paths:
+  /healthz:
+    get:
+      summary: Report that the api can serve requests
+      operationId: getHealth
+      responses:
+        "200":
+          description: The api is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+
+  /api/monitors:
+    get:
+      summary: List every monitor, oldest first
+      operationId: listMonitors
+      responses:
+        "200":
+          description: Every monitor. An empty list is [].
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Monitor"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      summary: Add a monitor
+      operationId: createMonitor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewMonitor"
+      responses:
+        "201":
+          description: The monitor, with its ID and creation time.
+          headers:
+            Location:
+              description: The path of the new monitor, such as /api/monitors/7.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Monitor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: A monitor for this URL exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: The body is larger than 1 MiB.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: The Content-Type header is not application/json.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/monitors/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      summary: Get one monitor
+      operationId: getMonitor
+      responses:
+        "200":
+          description: The monitor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Monitor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      summary: Delete one monitor
+      operationId: deleteMonitor
+      responses:
+        "204":
+          description: The monitor is gone. The response has no body.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # region: results
+  /api/monitors/{id}/results:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      summary: List the newest check results of one monitor, newest first
+      operationId: listResults
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: How many results to return.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 50
+      responses:
+        "200":
+          description: Up to limit results. A monitor with no results gives [].
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Result"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  # endregion: results
+
+  # region: incidents
+  /api/incidents:
+    get:
+      summary: List incidents, newest first, at most 100
+      operationId: listIncidents
+      parameters:
+        - name: open
+          in: query
+          description: true lists only the incidents that are still open.
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: The incidents. An empty list is [].
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Incident"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  # endregion: incidents
+# endregion: paths
+
+# region: components
+components:
+  schemas:
+    NewMonitor:
+      type: object
+      additionalProperties: false
+      required: [url, interval_seconds]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: An absolute http:// or https:// URL with a host.
+          examples: ["https://example.com"]
+        interval_seconds:
+          type: integer
+          minimum: 30
+          maximum: 3600
+          description: How often to check the URL, in seconds.
+          examples: [60]
+    Monitor:
+      type: object
+      required: [id, url, interval_seconds, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          examples: [1]
+        url:
+          type: string
+          format: uri
+          examples: ["https://example.com"]
+        interval_seconds:
+          type: integer
+          minimum: 30
+          maximum: 3600
+          examples: [60]
+        created_at:
+          type: string
+          format: date-time
+          examples: ["2026-10-11T09:30:00.123456Z"]
+    # region: result-schema
+    Result:
+      type: object
+      description: One check. null means the value does not exist, such as tls_ms for a plain http URL.
+      required: [monitor_id, checked_at, up, status_code, dns_ms, connect_ms, tls_ms, first_byte_ms, total_ms, error]
+      properties:
+        monitor_id: { type: integer, format: int64 }
+        checked_at: { type: string, format: date-time }
+        up: { type: boolean }
+        status_code: { type: [integer, "null"] }
+        dns_ms: { type: [integer, "null"] }
+        connect_ms: { type: [integer, "null"] }
+        tls_ms: { type: [integer, "null"] }
+        first_byte_ms: { type: [integer, "null"] }
+        total_ms: { type: [integer, "null"] }
+        error: { type: [string, "null"] }
+    # endregion: result-schema
+    # region: incident-schema
+    Incident:
+      type: object
+      required: [id, monitor_id, started_at, resolved_at, cause]
+      properties:
+        id:
+          type: integer
+          format: int64
+        monitor_id:
+          type: integer
+          format: int64
+        started_at:
+          type: string
+          format: date-time
+          description: When the first of the failed checks ran.
+        resolved_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the first successful check after the failures ran, looking back at most -threshold checks; null while the incident is open.
+        cause:
+          type: string
+          description: The error or status code of the newest failed check.
+    # endregion: incident-schema
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: What is wrong with the request, written for a person.
+          examples: ["interval_seconds must be between 30 and 3600, got 10"]
+  responses:
+    BadRequest:
+      description: The request breaks a rule. The error names the rule.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: No monitor has this ID.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: The api failed. Its log holds the cause.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+# endregion: components

@@ -200,7 +200,7 @@ your-monitor/
 │   ├── db/auth.go            new: AuthStore, the SQL for users and sessions
 │   └── api/                  new auth.go: login, logout, me, requireUser
 ├── cmd/api/                  -create-user, and the auth service for the handler
-└── web/src/auth.ts           new: login, currentUser, logout
+└── web/src/auth.ts           new: login, currentUser, logout, and its test
 ```
 
 ### Step 1: Add the Crypto Module
@@ -215,7 +215,7 @@ go get golang.org/x/crypto@latest
 
 ### Step 2: Add the Tables
 
-Create `migrations/003_auth.sql`. `db.Migrate` from <a href={weekHref(8)}>Week 8</a> applies it at the next start:
+Create `migrations/003_auth.sql`. `db.Migrate` from <a href={weekHref(8)}>Week 8</a> applies it at the next start, and `TestMigrateRunsEachFileOnce` in `internal/db` now expects versions 1, 2 and 3:
 
 <CodeFrom file="go/week11/your-monitor/migrations/003_auth.sql" region="users" lang="sql" title="migrations/003_auth.sql" />
 
@@ -261,7 +261,7 @@ When the email has no account, `Login` still runs bcrypt, against `dummyHash`. W
 
 <CodeFrom file="go/week11/your-monitor/internal/auth/service.go" region="session" lang="go" title="internal/auth/service.go" />
 
-The service tests run against Postgres, with the `dbtest` schema helper from Week 8 and a clock that the test moves by hand: past the 24 hours of a session, and past the 15 minutes of the limiter.
+The service tests run against Postgres, each in an empty schema from `dbtest.Pool(t, dbtest.URL(t), db.Migrate)`, the helpers of Weeks 8 and 9, and with a clock that the test moves by hand: past the 24 hours of a session, and past the 15 minutes of the limiter.
 
 ### Step 7: Guard the Routes
 
@@ -269,7 +269,7 @@ Create `internal/api/auth.go`. The cookie comes first, with a comment on each at
 
 <CodeFrom file="go/week11/your-monitor/internal/api/auth.go" region="cookie" lang="go" title="internal/api/auth.go" />
 
-The login handler reads the body with `isJSON` and `decodeJSON` from Week 7. It answers `400` for an email over 254 bytes, `401` for `ErrBadCredentials`, and `429` with a `Retry-After` header for `TooManyAttemptsError`. On success, it sets the cookie and answers with the user. The guard wraps a handler:
+The login handler reads the body with `isJSON` and `decodeJSON[loginRequest]` from Week 7. It answers `400` for an email over 254 bytes, `401` for `ErrBadCredentials`, and `429` with a `Retry-After` header for `TooManyAttemptsError`. On success, it sets the cookie and answers with the user. The guard wraps a handler:
 
 <CodeFrom file="go/week11/your-monitor/internal/api/auth.go" region="require" lang="go" title="internal/api/auth.go" />
 
@@ -283,7 +283,7 @@ In `internal/api/api.go`, add `auth Auth` to `handler`, make it the fourth param
 
 Pages from the Vite dev server and from nginx share the origin of the api they proxy, which means they pass. Go 1.25 added the same check to the standard library: `http.NewCrossOriginProtection()` returns a `*http.CrossOriginProtection`, and its `Handler` method wraps a handler. Your `go.mod` names Go 1.25 or newer after Step 1, and you can use it in place of `sameOrigin`. The site examples write their own, because they build with Go 1.24. Either way, `TestCrossOriginWritesAreRefused` in `csrf_test.go` sends each write with the headers a browser adds, and expects `403` from every other origin.
 
-Your Week 7 tests now get `401` on every write. Give their `serve` and `mustDo` helpers the line `req.AddCookie(&http.Cookie{Name: "session", Value: goodToken})`, and pass `NewHandler` a fake `Auth` that accepts `goodToken`. Then add the test that matters most this week. It sends each request with no cookie and with a forged one:
+Your Week 7 tests now get `401` on every write. Give their `serve` and `mustDo` helpers the line `req.AddCookie(&http.Cookie{Name: "session", Value: goodToken})`, and pass `NewHandler` a fake `Auth` that accepts `goodToken`. `TestAPIOnPostgres` in `cmd/api` needs a real session: create a user with the service, call `Login`, and add the token as the `session` cookie of its `POST` and `DELETE`. Then add the test that matters most this week. It sends each request with no cookie and with a forged one:
 
 <CodeFrom file="go/week11/your-monitor/internal/api/auth_test.go" region="require-test" lang="go" title="internal/api/auth_test.go" />
 
@@ -295,7 +295,7 @@ The api has no sign-up page: a public sign-up form admits anyone. You create use
 
 <CodeFrom file="go/week11/your-monitor/cmd/api/createuser.go" region="create-user" lang="go" title="cmd/api/createuser.go" />
 
-In `cmd/api/main.go`, add the Go command-line flag `-create-user`, build the service after `db.Migrate`, and pass it to `newHandler`, which hands it to `api.NewHandler` as the fourth argument:
+In `cmd/api/main.go`, add the Go command-line flag `-create-user`, build the service after `openDB`, and pass it to `newHandler`, which hands it to `api.NewHandler` as the fourth argument:
 
 <CodeFrom file="go/week11/your-monitor/cmd/api/main.go" region="create-user-flag" lang="go" title="cmd/api/main.go" />
 
@@ -402,7 +402,7 @@ Never log a password, a token or a `Cookie` header. The request log writes the p
 
 <OperateIt>
 
-**Login works, then every request answers 401.** You opened the page from your phone at `http://192.168.1.20:5173`. The login answers `200` with the cookie, and the browser drops it: `Secure` allows plain HTTP only for `localhost`, and in Chromium for `127.0.0.1`. In Chromium, `window.isSecureContext` is `false` on that address, and **Application** shows no cookie. Use HTTPS, which <a href={weekHref(16)}>Week 16</a> sets up, or test on the machine that runs the stack.
+**Login works, then every request answers 401.** You started the dev server with `npm --prefix web run dev -- --host` and opened the page from your phone at `http://192.168.1.20:5173`. The login answers `200` with the cookie, and the browser drops it: `Secure` allows plain HTTP only for `localhost`, and in Chromium for `127.0.0.1`. In Chromium, `window.isSecureContext` is `false` on that address, and **Application** shows no cookie. Use HTTPS, which <a href={weekHref(16)}>Week 16</a> sets up, or test on the machine that runs the stack.
 
 **You locked yourself out.** Five wrong passwords give `429` with `Retry-After: 900` or less. Wait that many seconds, or restart the api with `docker compose restart api`: the limiter lives in memory. Two api replicas, from <a href={weekHref(15)}>Week 15</a>, keep two separate counts.
 
@@ -439,7 +439,9 @@ Put the same value in `.env`, then run `make up`, which recreates the containers
 
 Stage 2, review everything: the assistant writes code, and you read every line, test it and explain it back.
 
-**Do:** ask it for a React `LoginForm` component that calls `login` from `web/src/auth.ts` and shows the error message. Then write its Testing Library test yourself: the password input has `type="password"` and `autoComplete="current-password"`, a `401` shows `wrong email or password`, and a `429` shows the wait from `retryAfter`. Each check you write proves that you understand one more line of the generated code.
+The status page stays public and has no control that changes data, which leaves no place for a login form on it yet. Build one on the side, for the controls that come later.
+
+**Do:** ask it for a React `LoginForm` component that calls `login` from `web/src/auth.ts` and shows the error message. Then write its Testing Library test yourself, next to `StatusPage.test.tsx` from Week 10: the password input has `type="password"` and `autoComplete="current-password"`, a `401` shows `wrong email or password`, and a `429` shows the wait from `retryAfter`. Each check you write proves that you understand one more line of the generated code.
 
 **Do not:** merge a generated change to the cookie, `requireUser` or the limiter until you can name what each line blocks and a test fails when you delete it. Never paste your `.env`, a session token or a password hash into the chat.
 
