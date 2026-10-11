@@ -27,7 +27,7 @@ func newTestHandler(t *testing.T) http.Handler {
 	if _, err := store.Create(context.Background(), monitor.Monitor{URL: "https://example.com", IntervalSeconds: 60}); err != nil {
 		t.Fatal(err)
 	}
-	return NewHandler(store, nil, nil)
+	return NewHandler(store, &spyResults{}, nil)
 }
 
 // serve sends one request to h and returns the recorded response. A
@@ -58,7 +58,7 @@ func TestHealthz(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			NewHandler(monitor.NewMemStore(), nil, nil).ServeHTTP(rec, httptest.NewRequest(tt.method, tt.path, nil))
+			NewHandler(monitor.NewMemStore(), &spyResults{}, nil).ServeHTTP(rec, httptest.NewRequest(tt.method, tt.path, nil))
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d", rec.Code, tt.wantStatus)
 			}
@@ -167,7 +167,7 @@ func TestMethodNotAllowedListsAllowedMethods(t *testing.T) {
 // TestMonitorLifecycle runs the API on a real port and walks one monitor
 // through create, get, list and delete, as a client does.
 func TestMonitorLifecycle(t *testing.T) {
-	srv := httptest.NewServer(NewHandler(monitor.NewMemStore(), nil, nil))
+	srv := httptest.NewServer(NewHandler(monitor.NewMemStore(), &spyResults{}, nil))
 	t.Cleanup(srv.Close)
 
 	// The list starts empty, and empty means [], not null.
@@ -266,7 +266,7 @@ func (s brokenStore) Create(context.Context, monitor.Monitor) (monitor.Monitor, 
 func (s brokenStore) Delete(context.Context, int64) error { return s.err }
 
 func TestNilListIsAnEmptyArray(t *testing.T) {
-	rec := serve(NewHandler(brokenStore{}, nil, nil), "GET", "/api/monitors", "", "")
+	rec := serve(NewHandler(brokenStore{}, &spyResults{}, nil), "GET", "/api/monitors", "", "")
 	if rec.Code != http.StatusOK || rec.Body.String() != "[]\n" {
 		t.Errorf("got %d %q, want 200 %q", rec.Code, rec.Body, "[]\n")
 	}
@@ -279,7 +279,7 @@ func TestStoreFailureIsA500(t *testing.T) {
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
-	h := NewHandler(brokenStore{err: errors.New("connection refused to db:5432")}, nil, nil)
+	h := NewHandler(brokenStore{err: errors.New("connection refused to db:5432")}, &spyResults{}, nil)
 	requests := []struct{ method, path, body string }{
 		{"GET", "/api/monitors", ""},
 		{"GET", "/api/monitors/1", ""},

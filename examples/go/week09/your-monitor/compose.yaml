@@ -1,11 +1,14 @@
 # region: compose
 # The uptime monitor on your laptop: docker compose up starts all five.
+# The scheduler fills a job queue in Postgres; the worker empties it.
 # Compose reads variables such as ${POSTGRES_PASSWORD} from .env.
 name: your-monitor
 
 services:
   postgres:
     image: postgres:17
+    # Log every statement that runs for 200 ms or longer: the slow-query log.
+    command: ["postgres", "-c", "log_min_duration_statement=200ms"]
     environment:
       POSTGRES_USER: monitor
       POSTGRES_DB: monitor

@@ -122,11 +122,12 @@ func Work(ctx context.Context, db *pgxpool.Pool, check CheckFunc) (bool, error) 
 
 // region: store
 
-// insertResultSQL is the Week 8 insert of one check_results row.
+// insertResultSQL is the insert of db.ResultStore from Week 8. pgx sends
+// a nil pointer as NULL.
 const insertResultSQL = `
 INSERT INTO check_results
     (monitor_id, checked_at, up, status_code, dns_ms, connect_ms, tls_ms, first_byte_ms, total_ms, error)
-VALUES ($1, $2, $3, NULLIF($4, 0), $5, $6, $7, $8, $9, NULLIF($10, ''))`
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
 
 // runAndStore runs the check, then inserts its result and deletes the job
 // inside tx. A panic in check becomes an error, which keeps one bad job

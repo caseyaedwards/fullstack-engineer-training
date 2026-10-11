@@ -11,29 +11,36 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"fsp/examples/week09/your-monitor/internal/dbtest"
+	"fsp/examples/week09/your-monitor/internal/db"
+	"fsp/examples/week09/your-monitor/internal/db/dbtest"
 	"fsp/examples/week09/your-monitor/internal/monitor"
 )
 
+// newDB returns a pool on an empty schema with every migration applied.
+func newDB(t *testing.T) *pgxpool.Pool {
+	return dbtest.Pool(t, dbtest.URL(t), db.Migrate)
+}
+
 // addMonitors inserts n monitors with a 60-second interval.
-func addMonitors(t *testing.T, db *pgxpool.Pool, n int) {
+func addMonitors(t *testing.T, pool *pgxpool.Pool, n int) {
 	t.Helper()
-	dbtest.Exec(t, db, `
+	dbtest.Exec(t, pool, `
 		INSERT INTO monitors (url, interval_seconds)
 		SELECT 'https://site' || i || '.example', 60 FROM generate_series(1, $1) AS i`, n)
 }
 
 // up returns a CheckFunc result for a site that answered 200.
 func up(job Job) monitor.Result {
-	return monitor.Result{MonitorID: job.MonitorID, CheckedAt: time.Now(), Up: true, StatusCode: 200}
+	code := 200
+	return monitor.Result{MonitorID: job.MonitorID, CheckedAt: time.Now(), Up: true, StatusCode: &code}
 }
 
 // region: enqueue-test
 
 func TestEnqueueAddsOneJobPerDueMonitor(t *testing.T) {
-	db := dbtest.New(t)
+	pool := newDB(t)
 	ctx := context.Background()
-	addMonitors(t, db, 3)
+	addMonitors(t, pool, 3)
 
 	steps := []struct {
 		name  string
@@ -49,9 +56,9 @@ func TestEnqueueAddsOneJobPerDueMonitor(t *testing.T) {
 	}
 	for _, s := range steps {
 		if s.setup != "" {
-			dbtest.Exec(t, db, s.setup)
+			dbtest.Exec(t, pool, s.setup)
 		}
-		got, err := Enqueue(ctx, db)
+		got, err := Enqueue(ctx, pool)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -62,8 +69,8 @@ func TestEnqueueAddsOneJobPerDueMonitor(t *testing.T) {
 }
 
 func TestTwoSchedulersDoNotQueueAMonitorTwice(t *testing.T) {
-	db := dbtest.New(t)
-	addMonitors(t, db, 50)
+	pool := newDB(t)
+	addMonitors(t, pool, 50)
 
 	var wg sync.WaitGroup
 	var total atomic.Int64
@@ -71,7 +78,7 @@ func TestTwoSchedulersDoNotQueueAMonitorTwice(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			n, err := Enqueue(context.Background(), db)
+			n, err := Enqueue(context.Background(), pool)
 			if err != nil {
 				t.Error(err)
 			}
@@ -82,7 +89,7 @@ func TestTwoSchedulersDoNotQueueAMonitorTwice(t *testing.T) {
 	if got := total.Load(); got != 50 {
 		t.Errorf("four schedulers added %d jobs in total, want 50", got)
 	}
-	if n := dbtest.Count(t, db, `SELECT count(DISTINCT monitor_id) FROM check_jobs`); n != 50 {
+	if n := dbtest.Count(t, pool, `SELECT count(DISTINCT monitor_id) FROM check_jobs`); n != 50 {
 		t.Errorf("%d monitors have a job, want 50", n)
 	}
 }
@@ -94,10 +101,10 @@ func TestTwoSchedulersDoNotQueueAMonitorTwice(t *testing.T) {
 // TestEachJobRunsOnce starts four workers on 200 jobs. Every job must run
 // exactly once, and the workers must overlap, or the test proves nothing.
 func TestEachJobRunsOnce(t *testing.T) {
-	db := dbtest.New(t)
+	pool := newDB(t)
 	ctx := context.Background()
-	addMonitors(t, db, 200)
-	if _, err := Enqueue(ctx, db); err != nil {
+	addMonitors(t, pool, 200)
+	if _, err := Enqueue(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
 
@@ -124,7 +131,7 @@ func TestEachJobRunsOnce(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for {
-				worked, err := Work(ctx, db, check)
+				worked, err := Work(ctx, pool, check)
 				if err != nil {
 					t.Error(err)
 					return
@@ -148,10 +155,10 @@ func TestEachJobRunsOnce(t *testing.T) {
 	if got := maxPar.Load(); got < 2 {
 		t.Errorf("at most %d check ran at a time, want the workers to overlap", got)
 	}
-	if n := dbtest.Count(t, db, `SELECT count(*) FROM check_results`); n != 200 {
+	if n := dbtest.Count(t, pool, `SELECT count(*) FROM check_results`); n != 200 {
 		t.Errorf("check_results has %d rows, want 200", n)
 	}
-	if n := dbtest.Count(t, db, `SELECT count(*) FROM check_jobs`); n != 0 {
+	if n := dbtest.Count(t, pool, `SELECT count(*) FROM check_jobs`); n != 0 {
 		t.Errorf("check_jobs has %d rows left, want 0", n)
 	}
 }
@@ -164,17 +171,17 @@ func TestEachJobRunsOnce(t *testing.T) {
 // worker looks for work. The second worker must find none, at once,
 // instead of waiting for the lock.
 func TestLockedJobIsSkipped(t *testing.T) {
-	db := dbtest.New(t)
+	pool := newDB(t)
 	ctx := context.Background()
-	addMonitors(t, db, 1)
-	if _, err := Enqueue(ctx, db); err != nil {
+	addMonitors(t, pool, 1)
+	if _, err := Enqueue(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
 
 	claimed, release := make(chan struct{}), make(chan struct{})
 	done := make(chan error)
 	go func() {
-		_, err := Work(ctx, db, func(ctx context.Context, job Job) monitor.Result {
+		_, err := Work(ctx, pool, func(ctx context.Context, job Job) monitor.Result {
 			close(claimed)
 			<-release
 			return up(job)
@@ -187,7 +194,7 @@ func TestLockedJobIsSkipped(t *testing.T) {
 	// first commits, which never happens here: the deadline ends the wait.
 	waitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	worked, err := Work(waitCtx, db, func(context.Context, Job) monitor.Result {
+	worked, err := Work(waitCtx, pool, func(context.Context, Job) monitor.Result {
 		t.Error("the second worker ran the job the first one holds")
 		return monitor.Result{}
 	})
@@ -208,28 +215,29 @@ func TestLockedJobIsSkipped(t *testing.T) {
 // as SIGTERM does. The transaction rolls back and the job waits for the
 // next worker, unchanged.
 func TestCancelledWorkLeavesTheJob(t *testing.T) {
-	db := dbtest.New(t)
-	addMonitors(t, db, 1)
-	if _, err := Enqueue(context.Background(), db); err != nil {
+	pool := newDB(t)
+	addMonitors(t, pool, 1)
+	if _, err := Enqueue(context.Background(), pool); err != nil {
 		t.Fatal(err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	_, err := Work(ctx, db, func(ctx context.Context, job Job) monitor.Result {
+	_, err := Work(ctx, pool, func(ctx context.Context, job Job) monitor.Result {
 		cancel()
-		return monitor.Result{MonitorID: job.MonitorID, CheckedAt: time.Now(), Error: ctx.Err().Error()}
+		msg := ctx.Err().Error()
+		return monitor.Result{MonitorID: job.MonitorID, CheckedAt: time.Now(), Error: &msg}
 	})
 	if err == nil {
 		t.Fatal("Work returned no error after its context was cancelled")
 	}
-	if n := dbtest.Count(t, db, `SELECT count(*) FROM check_jobs WHERE attempts = 0`); n != 1 {
+	if n := dbtest.Count(t, pool, `SELECT count(*) FROM check_jobs WHERE attempts = 0`); n != 1 {
 		t.Errorf("%d untouched jobs in the queue, want 1", n)
 	}
-	if n := dbtest.Count(t, db, `SELECT count(*) FROM check_results`); n != 0 {
+	if n := dbtest.Count(t, pool, `SELECT count(*) FROM check_results`); n != 0 {
 		t.Errorf("check_results has %d rows, want 0: a cancelled check is not a result", n)
 	}
 
-	worked, err := Work(context.Background(), db, func(_ context.Context, job Job) monitor.Result { return up(job) })
+	worked, err := Work(context.Background(), pool, func(_ context.Context, job Job) monitor.Result { return up(job) })
 	if !worked || err != nil {
 		t.Errorf("next Work = %v, %v; want true, nil", worked, err)
 	}
@@ -242,16 +250,16 @@ func TestCancelledWorkLeavesTheJob(t *testing.T) {
 // TestFailingJobIsRetriedThenDropped panics in every check. Each failure
 // adds an attempt and moves run_at out; the third failure drops the job.
 func TestFailingJobIsRetriedThenDropped(t *testing.T) {
-	db := dbtest.New(t)
+	pool := newDB(t)
 	ctx := context.Background()
-	addMonitors(t, db, 1)
-	if _, err := Enqueue(ctx, db); err != nil {
+	addMonitors(t, pool, 1)
+	if _, err := Enqueue(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
 	boom := func(context.Context, Job) monitor.Result { panic("boom") }
 
 	for attempt := 1; attempt <= MaxAttempts; attempt++ {
-		worked, err := Work(ctx, db, boom)
+		worked, err := Work(ctx, pool, boom)
 		if !worked || err == nil || !strings.Contains(err.Error(), "check panicked: boom") {
 			t.Fatalf("attempt %d: Work = %v, %v; want true and the panic as an error", attempt, worked, err)
 		}
@@ -262,12 +270,12 @@ func TestFailingJobIsRetriedThenDropped(t *testing.T) {
 			break
 		}
 		// The job waits 30 s per attempt before a worker sees it again.
-		if worked, _ := Work(ctx, db, boom); worked {
+		if worked, _ := Work(ctx, pool, boom); worked {
 			t.Fatalf("attempt %d: a worker took the job before its new run_at", attempt)
 		}
-		dbtest.Exec(t, db, `UPDATE check_jobs SET run_at = now()`)
+		dbtest.Exec(t, pool, `UPDATE check_jobs SET run_at = now()`)
 	}
-	if n := dbtest.Count(t, db, `SELECT count(*) FROM check_jobs`); n != 0 {
+	if n := dbtest.Count(t, pool, `SELECT count(*) FROM check_jobs`); n != 0 {
 		t.Errorf("check_jobs has %d rows, want 0 after %d failures", n, MaxAttempts)
 	}
 }
@@ -275,14 +283,14 @@ func TestFailingJobIsRetriedThenDropped(t *testing.T) {
 // endregion: retry-test
 
 func TestDepthReportsTheOldestJob(t *testing.T) {
-	db := dbtest.New(t)
+	pool := newDB(t)
 	ctx := context.Background()
-	addMonitors(t, db, 2)
-	if _, err := Enqueue(ctx, db); err != nil {
+	addMonitors(t, pool, 2)
+	if _, err := Enqueue(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	dbtest.Exec(t, db, `UPDATE check_jobs SET run_at = now() - interval '90 seconds' WHERE id = (SELECT min(id) FROM check_jobs)`)
-	queued, oldest, err := Depth(ctx, db)
+	dbtest.Exec(t, pool, `UPDATE check_jobs SET run_at = now() - interval '90 seconds' WHERE id = (SELECT min(id) FROM check_jobs)`)
+	queued, oldest, err := Depth(ctx, pool)
 	if err != nil {
 		t.Fatal(err)
 	}

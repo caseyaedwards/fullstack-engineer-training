@@ -17,11 +17,11 @@ import (
 	"fsp/examples/week09/your-monitor/internal/monitor"
 )
 
-// handler holds what the route handlers share: the stores.
+// handler holds what the route handlers share: the three stores.
 type handler struct {
 	store     monitor.Store
-	results   Results   // contract stub: week 08
-	incidents Incidents // Week 9
+	results   monitor.ResultStore
+	incidents Incidents
 }
 
 // routes maps each route pattern to the method that serves it. Since Go
@@ -33,7 +33,7 @@ func (h *handler) routes() map[string]http.HandlerFunc {
 		"POST /api/monitors":        h.create,
 		"GET /api/monitors/{id}":    h.get,
 		"DELETE /api/monitors/{id}": h.delete,
-		// contract stub: week 08
+
 		"GET /api/monitors/{id}/results": h.listResults,
 		// region: route
 		"GET /api/incidents": h.listIncidents,
@@ -42,9 +42,9 @@ func (h *handler) routes() map[string]http.HandlerFunc {
 }
 
 // NewHandler returns the API: every route, with JSON error bodies, served
-// from the stores. The results parameter is a Week 8 contract stub; Week 9
-// adds incidents.
-func NewHandler(store monitor.Store, results Results, incidents Incidents) http.Handler {
+// from the monitors in store, the check results in results and the
+// incidents in incidents.
+func NewHandler(store monitor.Store, results monitor.ResultStore, incidents Incidents) http.Handler {
 	h := &handler{store: store, results: results, incidents: incidents}
 	mux := http.NewServeMux()
 	for pattern, fn := range h.routes() {

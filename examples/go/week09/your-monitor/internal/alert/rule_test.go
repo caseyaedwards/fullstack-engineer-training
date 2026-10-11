@@ -38,10 +38,11 @@ func TestDecide(t *testing.T) {
 // endregion: rule-test
 
 func TestCause(t *testing.T) {
-	if got := Cause(monitor.Result{StatusCode: 503}); got != "status 503" {
+	code, msg := 503, "no such host"
+	if got := Cause(monitor.Result{StatusCode: &code}); got != "status 503" {
 		t.Errorf("Cause = %q, want status 503", got)
 	}
-	if got := Cause(monitor.Result{Error: "no such host"}); got != "no such host" {
+	if got := Cause(monitor.Result{Error: &msg}); got != "no such host" {
 		t.Errorf("Cause = %q, want the error", got)
 	}
 }

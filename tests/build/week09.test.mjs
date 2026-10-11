@@ -66,7 +66,7 @@ test('week 9 drill output uses the log formats of the worker and the log notifie
   const checkKeys = keys(checkFormat[1]);
   const alertKeys = keys(alertFormat[1]);
 
-  const checkLines = [...txt.matchAll(/^\S+ \S+ (check job=.*)$/gm)].map((m) => m[1]);
+  const checkLines = [...txt.matchAll(/^\S+ \S+ (check url=.*)$/gm)].map((m) => m[1]);
   const alertLines = [...txt.matchAll(/^\S+ \S+ alert (opened|resolved) (.*)$/gm)].map((m) => m[2]);
   assert.ok(checkLines.length >= 4, `expected >= 4 check lines, got ${checkLines.length}`);
   assert.ok(alertLines.length >= 2, `expected an opened and a resolved alert line, got ${alertLines.length}`);

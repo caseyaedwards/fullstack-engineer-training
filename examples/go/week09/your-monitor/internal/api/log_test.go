@@ -14,7 +14,7 @@ import (
 func TestLogRequests(t *testing.T) {
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0) // no date and time: the test compares the line
-	h := LogRequests(logger, NewHandler(monitor.NewMemStore(), nil, nil))
+	h := LogRequests(logger, NewHandler(monitor.NewMemStore(), &spyResults{}, nil))
 
 	serve(h, "POST", "/api/monitors", "application/json", `{"url":"https://example.com","interval_seconds":60}`)
 	serve(h, "GET", "/api/monitors/7", "", "")

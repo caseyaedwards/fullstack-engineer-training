@@ -45,10 +45,14 @@ func Decide(recent []monitor.Result, open bool, threshold int) Action {
 
 // Cause describes why a result counts as a failure, for the incident.
 func Cause(r monitor.Result) string {
-	if r.Error != "" {
-		return r.Error
+	switch {
+	case r.Error != nil:
+		return *r.Error
+	case r.StatusCode != nil:
+		return fmt.Sprintf("status %d", *r.StatusCode)
+	default:
+		return "down"
 	}
-	return fmt.Sprintf("status %d", r.StatusCode)
 }
 
 // endregion: rule

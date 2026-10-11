@@ -165,7 +165,7 @@ A **webhook** is a URL that accepts an HTTP `POST` and does something with it, s
 
 ## Build
 
-By the end of this section, `your-monitor` has two new programs, `cmd/scheduler` and `cmd/alerter`, a rewritten `cmd/worker`, and three new packages. The code comes from the site examples in `examples/go/week09/your-monitor`, which mirror your repository. Their import paths start with `fsp/examples/week09/your-monitor`, and yours start with `github.com/<user>/your-monitor`:
+By the end of this section, `your-monitor` has two new programs, `cmd/scheduler` and `cmd/alerter`, a rewritten `cmd/worker`, and two new packages. The code comes from the site examples in `examples/go/week09/your-monitor`, which mirror your repository. Their import paths start with `fsp/examples/week09/your-monitor`, and yours start with `github.com/<user>/your-monitor`:
 
 ```txt
 your-monitor/
@@ -173,7 +173,7 @@ your-monitor/
 ├── internal/
 │   ├── queue/        new: Enqueue, Work, Depth
 │   ├── alert/        new: Decide, Notifier, Webhook, Log, Alerter, Store
-│   ├── dbtest/       new: one fresh schema per test
+│   ├── db/dbtest/    adds pool.go: a migrated pool per test
 │   └── api/          adds GET /api/incidents
 └── cmd/
     ├── scheduler/    new
@@ -231,18 +231,18 @@ A job that fails, for example because of a panic or a lost database connection, 
 
 ### Step 5: Test the Queue Against Postgres
 
-These tests talk to a real Postgres, the one Compose runs. `internal/dbtest` creates a new **schema**, a namespace for tables inside one database, for every test, applies the migrations in it, and drops it at the end. Go runs the tests of different packages at the same time, and a schema of their own keeps the jobs of one test out of the queue of another. The helper reads `DATABASE_URL`:
+These tests talk to a real Postgres, the one Compose runs, through the Week 8 helper `dbtest.URL`. It gives every test an empty **schema**, a namespace for tables inside one database, and fails the test in CI when `DATABASE_URL` is missing. Go runs the tests of different packages at the same time, and a schema of their own keeps the jobs of one test out of the queue of another. The queue tests need more than an empty schema: the tables of both migrations, and room for one connection per worker. Add `internal/db/dbtest/pool.go`:
 
-<CodeFrom file="go/week09/your-monitor/internal/dbtest/dbtest.go" region="ci" lang="go" title="internal/dbtest/dbtest.go" />
+<CodeFrom file="go/week09/your-monitor/internal/db/dbtest/pool.go" region="pool" lang="go" title="internal/db/dbtest/pool.go" />
 
-On your laptop, a missing `DATABASE_URL` skips these tests. In CI, where GitHub Actions sets `CI` to `true`, it fails them: a suite that skips its database tests in CI passes without testing anything. Point the tests at your Compose database, with the password from your `.env`:
+Each test starts with `pool := dbtest.Pool(t, dbtest.URL(t), db.Migrate)`. The same file holds `Exec` and `Count`, two one-line helpers that fail the test on a SQL error. Run `make test`, which starts Postgres and passes the `DATABASE_URL` of your `.env`, or one package by hand:
 
 ```sh
-export DATABASE_URL="postgres://monitor:changeme@127.0.0.1:5432/monitor?sslmode=disable"
+make db
 go test -race ./internal/queue
 ```
 
-The test that matters most starts four workers on 200 jobs:
+`go test` outside `make` reads `DATABASE_URL` from your shell: export it first, as in Week 8. The test that matters most starts four workers on 200 jobs:
 
 <CodeFrom file="go/week09/your-monitor/internal/queue/queue_test.go" region="once-test" lang="go" title="internal/queue/queue_test.go" />
 
@@ -251,49 +251,49 @@ A concurrency test that never runs two things at once proves nothing. `maxPar` r
 Break the claim on purpose, the way you broke the lock in Week 4, and watch the tests catch it. Delete the last line of `claimSQL`, `FOR UPDATE OF j SKIP LOCKED`, and run the tests:
 
 ```txt
---- FAIL: TestEachJobRunsOnce (0.90s)
-    queue_test.go:145: job 135 ran 4 times, want 1
-    queue_test.go:145: job 108 ran 4 times, want 1
+--- FAIL: TestEachJobRunsOnce (0.96s)
+    queue_test.go:152: job 94 ran 4 times, want 1
+    queue_test.go:152: job 111 ran 4 times, want 1
 ```
 
 Without a lock, all four workers read the same oldest job and run it. Put back `FOR UPDATE OF j` without `SKIP LOCKED`:
 
 ```txt
---- FAIL: TestEachJobRunsOnce (0.83s)
-    queue_test.go:149: at most 1 check ran at a time, want the workers to overlap
---- FAIL: TestLockedJobIsSkipped (2.08s)
-    queue_test.go:195: second Work = false, claim: timeout: context deadline exceeded; want false, nil: it must skip the locked job
+--- FAIL: TestEachJobRunsOnce (0.87s)
+    queue_test.go:156: at most 1 check ran at a time, want the workers to overlap
+--- FAIL: TestLockedJobIsSkipped (2.06s)
+    queue_test.go:202: second Work = false, claim: timeout: context deadline exceeded; want false, nil: it must skip the locked job
 ```
 
 Every job ran once, but the workers took turns, and the second worker in `TestLockedJobIsSkipped` waited for the lock until its 2-second deadline. Restore the line. `TestCancelledWorkLeavesTheJob` cancels a check halfway and finds the job untouched, and `TestFailingJobIsRetriedThenDropped` panics in every check and watches the job get dropped after three attempts.
 
 ### Step 6: Rewrite the Worker
 
-The worker no longer decides what to check. Replace `cmd/worker/main.go`. It keeps `-timeout`, `-workers` and `-debug-addr` from Week 5, drops `-interval`, and adds `-poll`:
+The worker no longer decides what to check. In `cmd/worker/main.go`, it keeps `-database-url`, `-timeout`, `-workers` and `-debug-addr` from Week 8, drops `-interval`, and adds `-poll`:
 
 <CodeFrom file="go/week09/your-monitor/cmd/worker/main.go" region="main" lang="go" title="cmd/worker/main.go" />
 
-Each goroutine holds one connection for the whole of its check, which makes the pool size matter:
+Each goroutine holds one connection for the whole of its check, which makes the pool size matter. `db.Connect` takes the defaults, and the worker sets its own size:
 
 <CodeFrom file="go/week09/your-monitor/cmd/worker/main.go" region="connect" lang="go" title="cmd/worker/main.go" />
 
-Without `MaxConns`, `pgxpool` opens at most 4 connections, or one per CPU on a machine with more than four, and with `-workers 10` the other goroutines wait for a connection instead of checking. The check itself is the Week 5 `checkOne`, with a job in place of a URL:
+Without `MaxConns`, `pgxpool` opens at most 4 connections, or one per CPU on a machine with more than four, and with `-workers 10` the other goroutines wait for a connection instead of checking. The check itself is the Week 8 `checkOne`, with a job in place of a URL:
 
 <CodeFrom file="go/week09/your-monitor/cmd/worker/main.go" region="check" lang="go" title="cmd/worker/main.go" />
 
-`toResult` is the conversion from Week 8 that turns the output of `probe.Check` into a `monitor.Result`. Keep yours. The loop replaces `pool.Run`:
+`toResult` and `logCheck` stay as Week 8 wrote them. The loop replaces `run`, `save` and `pool.Run`:
 
 <CodeFrom file="go/week09/your-monitor/cmd/worker/main.go" region="run" lang="go" title="cmd/worker/main.go" />
 
 After a job, a goroutine asks again at once, because more jobs can be waiting. When the queue is empty, it waits `-poll` before the next look. `TestRunDrainsThenPolls` in `cmd/worker/main_test.go` counts the calls to prove both, and `TestWorkerChecksQueuedJobs` runs the real check against two `httptest` sites through the real queue.
 
-Delete `internal/pool`: the queue replaces the fixed pool. Then run `grep -rn 'internal/check"' --include='*.go' .`, and when it prints nothing, delete `internal/check` too. Delete `urls.txt` and `run_test.go`, which tests the old loop, and in the `Makefile`, set `ARGS ?= -workers 10`.
+Delete `save`, `summary`, `summarize` and `internal/pool`: the queue replaces the rounds and the fixed pool. Replace `run_test.go`, which tests the old loop, with `main_test.go`, and keep `TestToResult` from it. In the `Makefile`, set `ARGS ?= -workers 10`.
 
-Keep the idea of the Week 3 signal test, with a queue in place of `urls.txt`. `TestSignalReturnsJobsToTheQueue` in `cmd/worker/signal_test.go` builds the worker, queues three jobs for a site that never answers, and sends SIGTERM, then SIGINT, while all three checks wait. The worker must log `stopped` and exit with code `0` within 5 seconds, and all three jobs must still wait in `check_jobs` with `attempts` at `0`. `dbtest.NewWithURL` hands the program a `DATABASE_URL` for the schema of the test.
+Keep the idea of the Week 8 signal test, with queued jobs in place of rounds. `TestSignalReturnsJobsToTheQueue` in `cmd/worker/signal_test.go` builds the worker, queues three jobs for a site that never answers, and sends SIGTERM, SIGINT or SIGKILL while all three checks wait. On SIGTERM and SIGINT, the worker must log `stopped` and exit with code `0` within 5 seconds. After all three signals, the three jobs must still wait in `check_jobs` with `attempts` at `0`: when a connection closes, Postgres rolls back its transaction.
 
 ### Step 7: Add the Scheduler
 
-Create `cmd/scheduler/main.go`. Its `main` follows the pattern of the worker: the Go command-line flags, the signal context, the pool, `db.Migrate`. `-interval` sets the time between two looks for due monitors: 5 seconds by default. Each round logs one line:
+Create `cmd/scheduler/main.go`. Its `main` follows the pattern of the worker: `-database-url`, the signal context, `db.Connect` and `db.Migrate`. `-interval` sets the time between two looks for due monitors: 5 seconds by default. Each round logs one line:
 
 <CodeFrom file="go/week09/your-monitor/cmd/scheduler/main.go" region="round" lang="go" title="cmd/scheduler/main.go" />
 
@@ -355,7 +355,7 @@ Create `internal/api/incidents.go`. `alert.Store` in `internal/alert/incidents.g
 
 <CodeFrom file="go/week09/your-monitor/internal/api/incidents.go" region="incidents" lang="go" title="internal/api/incidents.go" />
 
-Add an `incidents Incidents` field to `handler` and a parameter to `NewHandler` that sets it, and add the route to the map in `routes()`:
+Add an `incidents Incidents` field to `handler`, next to the `results monitor.ResultStore` of Week 8, and a third parameter that sets it: `NewHandler(store monitor.Store, results monitor.ResultStore, incidents Incidents)`. Add the route to the map in `routes()`:
 
 <CodeFrom file="go/week09/your-monitor/internal/api/api.go" region="route" lang="go" title="internal/api/api.go" />
 
@@ -373,43 +373,37 @@ Then add the schema under `components.schemas`:
 
 ### Step 12: Run an Incident Drill
 
-Run the four programs on your laptop, against the Postgres in Compose, and take a site down. Stop the stack with `make down`, then start Postgres alone:
-
-```sh
-docker compose up --detach postgres
-```
-
-Open four terminals in the repository. In each, export `DATABASE_URL` as in Step 5, then start one program per terminal: `make run-api`, `make run-scheduler`, `make run`, `make run-alerter`. In a fifth terminal, add a monitor for the api itself:
+Run the four programs on your laptop, against the Postgres in Compose, and take a site down. Stop the stack with `make down`, which keeps the data. Open four terminals in the repository, and start one program per terminal: `make run-api`, `make run-scheduler`, `make run`, `make run-alerter`. Each target starts Postgres alone through `db` and passes the `DATABASE_URL` of your `.env`. In a fifth terminal, add a monitor for the api itself:
 
 ```txt
 $ curl -s -X POST http://127.0.0.1:8080/api/monitors -H 'Content-Type: application/json' -d '{"url": "http://127.0.0.1:8080/healthz", "interval_seconds": 30}'
-{"id":1,"url":"http://127.0.0.1:8080/healthz","interval_seconds":30,"created_at":"2026-10-11T07:02:20.670935Z"}
+{"id":1,"url":"http://127.0.0.1:8080/healthz","interval_seconds":30,"created_at":"2026-10-11T07:42:15.867157Z"}
 ```
 
 Within 5 seconds, the scheduler queues the first job and the worker checks it. Stop the api with **Ctrl+C**, and watch the worker and the alerter terminals. These lines come from one run:
 
 ```txt wrap
-2026/10/11 07:03:28 check job=3 monitor=1 url=http://127.0.0.1:8080/healthz up=false status=0 first_byte_ms=0 error="Get \"http://127.0.0.1:8080/healthz\": dial tcp 127.0.0.1:8080: connect: connection refused"
-2026/10/11 07:04:03 check job=4 monitor=1 url=http://127.0.0.1:8080/healthz up=false status=0 first_byte_ms=0 error="Get \"http://127.0.0.1:8080/healthz\": dial tcp 127.0.0.1:8080: connect: connection refused"
-2026/10/11 07:04:39 check job=5 monitor=1 url=http://127.0.0.1:8080/healthz up=false status=0 first_byte_ms=0 error="Get \"http://127.0.0.1:8080/healthz\": dial tcp 127.0.0.1:8080: connect: connection refused"
-2026/10/11 07:04:48 alert opened incident=1 monitor=1 url=http://127.0.0.1:8080/healthz cause="Get \"http://127.0.0.1:8080/healthz\": dial tcp 127.0.0.1:8080: connect: connection refused"
+2026/10/11 07:42:54 check url=http://127.0.0.1:8080/healthz status=0 dns_ms=0.0 connect_ms=0.1 tls_ms=0.0 first_byte_ms=0.0 error="Get \"http://127.0.0.1:8080/healthz\": dial tcp 127.0.0.1:8080: connect: connection refused"
+2026/10/11 07:43:25 check url=http://127.0.0.1:8080/healthz status=0 dns_ms=0.0 connect_ms=0.1 tls_ms=0.0 first_byte_ms=0.0 error="Get \"http://127.0.0.1:8080/healthz\": dial tcp 127.0.0.1:8080: connect: connection refused"
+2026/10/11 07:44:00 check url=http://127.0.0.1:8080/healthz status=0 dns_ms=0.0 connect_ms=0.1 tls_ms=0.0 first_byte_ms=0.0 error="Get \"http://127.0.0.1:8080/healthz\": dial tcp 127.0.0.1:8080: connect: connection refused"
+2026/10/11 07:44:04 alert opened incident=1 monitor=1 url=http://127.0.0.1:8080/healthz cause="Get \"http://127.0.0.1:8080/healthz\": dial tcp 127.0.0.1:8080: connect: connection refused"
 ```
 
-The checks run 35 or 36 seconds apart: the 30-second interval, plus the wait for the next 5-second scheduler tick, plus up to one 1-second worker poll. The incident opens 9 seconds after the third failure, at the next alerter round. Start the api again with `make run-api`, and ask it for open incidents before the next check:
+The checks run 30 to 36 seconds apart: the 30-second interval, plus the wait for the next 5-second scheduler tick, plus up to one 1-second worker poll. The incident opens 4 seconds after the third failure, at the next alerter round. Start the api again with `make run-api`, and ask it for open incidents before the next check:
 
 ```txt
 $ curl -s 'http://127.0.0.1:8080/api/incidents?open=true'
-[{"id":1,"monitor_id":1,"started_at":"2026-10-11T07:03:28.810443Z","resolved_at":null,"cause":"Get \"http://127.0.0.1:8080/healthz\": dial tcp 127.0.0.1:8080: connect: connection refused"}]
+[{"id":1,"monitor_id":1,"started_at":"2026-10-11T07:42:54.989808Z","resolved_at":null,"cause":"Get \"http://127.0.0.1:8080/healthz\": dial tcp 127.0.0.1:8080: connect: connection refused"}]
 ```
 
 `started_at` matches the first failed check, not the alert. The next check succeeds, and the alerter resolves the incident:
 
 ```txt
-2026/10/11 07:05:14 check job=6 monitor=1 url=http://127.0.0.1:8080/healthz up=true status=200 first_byte_ms=0
-2026/10/11 07:05:18 alert resolved incident=1 monitor=1 url=http://127.0.0.1:8080/healthz cause="Get \"http://127.0.0.1:8080/healthz\": dial tcp 127.0.0.1:8080: connect: connection refused"
+2026/10/11 07:44:35 check url=http://127.0.0.1:8080/healthz status=200 dns_ms=0.0 connect_ms=0.1 tls_ms=0.0 first_byte_ms=0.6
+2026/10/11 07:44:44 alert resolved incident=1 monitor=1 url=http://127.0.0.1:8080/healthz cause="Get \"http://127.0.0.1:8080/healthz\": dial tcp 127.0.0.1:8080: connect: connection refused"
 ```
 
-`?open=true` now answers `[]`, and `GET /api/incidents` lists the incident with `"resolved_at":"2026-10-11T07:05:14.064431Z"`. Stop all four programs with **Ctrl+C**.
+`?open=true` now answers `[]`, and `GET /api/incidents` lists the incident with `"resolved_at":"2026-10-11T07:44:35.302132Z"`. Stop all four programs with **Ctrl+C**.
 
 ### Step 13: Add the Services to Docker and Compose
 
@@ -417,7 +411,7 @@ In the `Dockerfile`, build all four programs: `-o /out/ ./cmd/api ./cmd/worker .
 
 <CodeFrom file="go/week09/your-monitor/Dockerfile" region="targets" lang="dockerfile" title="Dockerfile" />
 
-In `compose.yaml`, set the `command` of `worker` to `["-workers", "${WORKERS:-10}"]`, delete its `urls.txt` volume, and add the two services after it:
+In `compose.yaml`, set the `command` of `worker` to `["-workers", "${WORKERS:-10}"]`, and add the two services after it:
 
 <CodeFrom file="go/week09/your-monitor/compose.yaml" region="new-services" lang="yaml" title="compose.yaml" />
 
