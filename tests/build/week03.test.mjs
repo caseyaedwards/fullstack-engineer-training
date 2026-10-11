@@ -43,11 +43,12 @@ test('week 3 shows the signal handling, the ticker loop and logging to stdout', 
 test('week 3 shows main.go imports with the reader module path, matching the tested example', () => {
   const src = example('main.go');
   const region = /\/\/ region: imports\n([\s\S]*?)\n\/\/ endregion: imports/.exec(src)[1].trim();
-  const expected = region.replaceAll('fsp/examples/week02/your-monitor', 'github.com/your-user/your-monitor');
+  const expected = region.replaceAll('fsp/examples/week02/your-monitor', 'github.com/<user>/your-monitor');
+  assert.notEqual(expected, region, 'main.go no longer imports the check package');
+  // The page renders tabs as spaces and adds line breaks, so compare with whitespace collapsed.
   const flat = (code) => code.replace(/\s+/g, ' ').trim();
-  // The CodeFrom block shows the example path; the page tells the reader to swap it.
-  assert.ok(goBlocks.some((b) => flat(b) === flat(region)), 'no Go block on the page equals the imports of main.go');
-  assert.ok(html.includes('github.com/your-user/your-monitor/check'), `the page never names the reader import path:\n${expected}`);
+  assert.ok(goBlocks.some((b) => flat(b) === flat(expected)), `no Go block on the page equals the imports of main.go:\n${expected}`);
+  assert.ok(!goCode.includes('fsp/examples'), 'a Go block on the page shows the examples module path instead of the reader path');
 });
 
 test('week 3 shows the unit file, and its ExecStart uses only flags that main.go defines', () => {
