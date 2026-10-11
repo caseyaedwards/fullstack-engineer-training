@@ -10,10 +10,18 @@
  * lifelines, B3-B6 container/shape fills (B6 = plain shapes, B4/B5 = nested
  * containers, sequence actors); AA/AB accents.
  *
- * Strokes take the accent green. Lifelines are a quieter mix of the accent and
- * the page, so the messages between them carry the eye.
+ * Strokes take the accent green (Gruvbox bright green #b8bb26 in dark mode,
+ * faded green #79740e in light). Plain shapes fill with --sl-color-accent-low, a
+ * Gruvbox green blended over the page. Containers and sequence actors use the
+ * neutral Gruvbox surfaces: bg1 #3c3836 and bg0 #282828 in dark mode, which sit
+ * between the page and the green tint. Gruvbox light's bg1 and bg2 are darker
+ * and more saturated than its green tint, so a neutral box would look heavier
+ * than a lit one; light mode (and print) fills them with bg1 #ebdbb2 and bg0
+ * #fbf1c7 instead. Lifelines are a quieter mix of the accent and the page, so
+ * the messages between them carry the eye.
  */
 .dg {
+  --dg-dim-opacity: 0.65;
   --d2-N1: var(--sl-color-white);
   --d2-N2: var(--sl-color-gray-2);
   --d2-N3: var(--sl-color-gray-3);
@@ -72,12 +80,35 @@
 /*
  * Walkthrough (src/scripts/walkthrough.ts). A step lights some elements and dims
  * the rest. Dimmed elements are context, so they fade (opacity) and lose the
- * accent (neutral strokes), but their labels keep 4.5:1 against the page:
- * full-strength text at 65% opacity. Lit elements keep full opacity, a thicker
- * accent stroke, an accent-tinted shape fill and the brightest text colour.
+ * accent (neutral fg3 strokes), but their labels keep 4.5:1 against what they sit
+ * on: full-strength fg0 text at 65% opacity on Gruvbox dark. Gruvbox light's fills
+ * (bg1, the green tint) are darker relative to its page than the dark ones are,
+ * so light mode and print fade less (75%) to keep labels in bg1 containers at
+ * 4.5:1. Lit elements keep full opacity, a thicker accent stroke, an
+ * accent-tinted shape fill and the brightest text colour.
  */
+:root[data-theme='light'] .dg {
+  --dg-dim-opacity: 0.75;
+  --d2-B3: var(--sl-color-gray-6);
+  --d2-B4: var(--sl-color-gray-6);
+  --d2-B5: var(--sl-color-gray-7);
+  --d2-AA5: var(--sl-color-gray-7);
+  --d2-AB5: var(--sl-color-gray-7);
+}
+
+@media print {
+  .dg {
+    --dg-dim-opacity: 0.75;
+    --d2-B3: var(--sl-color-gray-6);
+    --d2-B4: var(--sl-color-gray-6);
+    --d2-B5: var(--sl-color-gray-7);
+    --d2-AA5: var(--sl-color-gray-7);
+    --d2-AB5: var(--sl-color-gray-7);
+  }
+}
+
 .dg .dg-dim {
-  opacity: 0.65;
+  opacity: var(--dg-dim-opacity);
 }
 
 .dg .dg-dim text {

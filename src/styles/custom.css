@@ -1,8 +1,10 @@
 /*
  * Week template components (WeekHeader, ObserveIt, OperateIt, AiThisWeek, SideLab,
  * ReadWith, UsedInWeeks). Colours come only from Starlight's --sl-color-* variables,
- * which Starlight swaps when the light/dark toggle changes, so nothing here needs a
- * dark-mode variant.
+ * set to the Gruvbox palette in theme.css and swapped by Starlight when the
+ * light/dark toggle changes, so nothing here needs a dark-mode variant. Accent
+ * borders and tints are Gruvbox green; the Operate and AI callouts use Gruvbox
+ * orange and purple.
  */
 
 .week-header {
