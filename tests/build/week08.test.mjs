@@ -56,7 +56,8 @@ test('week 8 shows the migration exactly as the tested 001_init.sql holds it', (
 });
 
 test('week 8 names both pgx lines: latest for the reader, the go.mod version for Go 1.24', () => {
-  const required = /^require github\.com\/jackc\/pgx\/v5 (v\S+)$/m.exec(example('go.mod'))?.[1];
+  // One require line, or a line inside a require ( ... ) block once later weeks add modules.
+  const required = /^(?:require |\t)github\.com\/jackc\/pgx\/v5 (v\S+)$/m.exec(example('go.mod'))?.[1];
   assert.ok(required, 'examples/go/go.mod does not require github.com/jackc/pgx/v5');
   // The reader's go.mod says Go 1.27 since Week 0: the command block takes the newest pgx.
   const shown = blocks('sh').join('\n').match(/go get github\.com\/jackc\/pgx\/v5@(\S+)/)?.[1];
