@@ -31,13 +31,13 @@ Transactions give four promises, named ACID (atomicity, consistency, isolation, 
 - **Atomicity**: all the changes of a transaction land, or none of them does. A crash halfway through leaves nothing behind.
 - **Consistency**: every constraint holds after each transaction. A transaction that breaks a foreign key or a check constraint fails as a whole.
 - **Isolation**: concurrent transactions do not see the unfinished work of each other. The isolation level decides how much of the finished work of others they see, as the next section explains.
-- **Durability**: once `COMMIT` returns, the change survives a crash. Postgres writes it to the write-ahead log and flushes that log to disk with `fsync` before it answers.
+- **Durability**: once `COMMIT` returns, the change survives a crash. Postgres appends the change to the **write-ahead log**, or WAL, and flushes that log to disk with `fsync` before it answers. The WAL lives in the `pg_wal` folder and records every change before the table files get it.
 
 Atomicity matters whenever one fact lives in two places. In the example on this page, a check result goes into the `checks` table, and the status of the monitor goes into `monitors.last_status`. Without a transaction, a failure between the two writes leaves a monitor that says `up` with no check to back it.
 
 ### Concurrency: MVCC and Row Locks
 
-Postgres runs many transactions at once with **multiversion concurrency control**, or MVCC. An `UPDATE` does not overwrite a row: it writes a new version of the row and marks the old version as replaced. Each transaction reads from a **snapshot**, a view of the versions that are committed at one moment. Readers see the versions in their snapshot and never wait for writers. Writers never wait for readers. `VACUUM` later removes the old versions that no snapshot needs.
+Postgres runs many transactions at once with **multiversion concurrency control**, or MVCC. An `UPDATE` does not overwrite a row: it writes a new version of the row and marks the old version as replaced. Each transaction reads from a **snapshot**, a view of the versions that have committed by one moment. Readers see the versions in their snapshot and never wait for writers. Writers never wait for readers. `VACUUM` later removes the old versions that no snapshot needs.
 
 Two writers to the same row do wait. `UPDATE`, `DELETE` and `SELECT ... FOR UPDATE` take a **row lock** that lasts until the transaction ends. A second transaction that wants to change the same row waits for the first to commit or roll back. Two transactions that each wait for a row the other holds form a **deadlock**: Postgres detects the cycle after one second, the default `deadlock_timeout`, and cancels one of them.
 
@@ -60,7 +60,7 @@ Read Committed does not stop one bug: the **lost update**. Two transactions read
 Four fixes exist, from the simplest:
 
 - **Compute in SQL.** `update monitors set failures = failures + 1 where id = $1` reads and writes in one statement. Under Read Committed, the second `UPDATE` waits for the row lock, then adds one to the committed value.
-- **Lock on read.** `SELECT ... FOR UPDATE` takes the row lock at the read, which makes the second transaction wait before it reads.
+- **Lock on read.** `SELECT ... FOR UPDATE` takes the row lock at the read. When both transactions read with `SELECT ... FOR UPDATE`, the second waits at its read until the first commits, then reads the new value. A plain `SELECT` in the other transaction still reads without waiting.
 - **Detect and retry.** Under Repeatable Read, the second write fails with `40001`, and the code retries the transaction.
 - **Check a version.** Add a `version` column and write `update ... set version = version + 1 where id = $1 and version = $2`. Zero rows affected means someone else got there first. This is **optimistic locking**: nothing holds a lock between the read and the write, which suits an edit form that stays open for minutes.
 
@@ -114,21 +114,21 @@ pg: Postgres
 b: worker B
 
 a -> pg: "BEGIN; SELECT failures WHERE id = 42"
-pg -> a: "2"
+pg -> a: "1"
 b -> pg: "BEGIN; SELECT failures WHERE id = 42"
-pg -> b: "2"
-a -> pg: "UPDATE SET failures = 3; COMMIT"
-b -> pg: "UPDATE SET failures = 3; COMMIT"
+pg -> b: "1"
+a -> pg: "UPDATE SET failures = 2; COMMIT"
+b -> pg: "UPDATE SET failures = 2; COMMIT"
 `}
   steps={[
-    { hl: ['a', 'pg', 'a->pg', 'pg->a'], caption: 'Worker A starts a transaction and reads the counter: 2 failures in a row.' },
-    { hl: ['b', 'pg', 'b->pg', 'pg->b'], caption: 'Worker B reads the same row before A commits. A plain SELECT takes no row lock, and B also reads 2.' },
-    { hl: ['a', 'pg', 'a->pg#1'], caption: 'Worker A adds one in Go and writes 3. The UPDATE locks the row until A commits.' },
-    { hl: ['b', 'pg', 'b->pg#1'], caption: 'Worker B also writes 3, the value it computed from its stale read. The row holds 3 instead of 4, the third failure in a row goes unseen, and no alert fires.' },
+    { hl: ['a', 'pg', 'a->pg', 'pg->a'], caption: 'Worker A records the second failure in a row. It starts a transaction and reads the counter: one failure so far.' },
+    { hl: ['b', 'pg', 'b->pg', 'pg->b'], caption: 'Worker B reads the same row before A commits. A plain SELECT takes no row lock, and B also reads one.' },
+    { hl: ['a', 'pg', 'a->pg#1'], caption: 'Worker A adds one in Go and writes 2. The UPDATE locks the row until A commits.' },
+    { hl: ['b', 'pg', 'b->pg#1'], caption: 'Worker B records the third failure and also writes 2, the value it computed from its stale read. The row holds 2 instead of 3, the third failure in a row goes unseen, and the alert rule of three failures never fires.' },
   ]}
 />
 
-With `set failures = failures + 1`, the read and the write happen inside one statement. Worker B waits for the row lock of worker A, then adds one to the committed 3, and the row holds 4.
+With `set failures = failures + 1`, the read and the write happen inside one statement. Worker B waits for the row lock of worker A, then adds one to the committed 2, and the row holds 3.
 
 ## Example
 
