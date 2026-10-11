@@ -99,6 +99,9 @@ func TestExitCodes(t *testing.T) {
 	up := server(t, http.StatusOK, 0)
 	down := server(t, http.StatusInternalServerError, 0)
 	slow := server(t, http.StatusOK, 10*time.Second)
+	// A server closed straight away leaves a port where nothing listens.
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
 
 	tests := []struct {
 		name     string
@@ -109,7 +112,11 @@ func TestExitCodes(t *testing.T) {
 		{"up", []string{"-url", up.URL}, 0, "up url=" + up.URL + " status=200 latency_ms="},
 		{"server error", []string{"-url", down.URL}, 1, "down url=" + down.URL + " status=500 latency_ms="},
 		{"timeout", []string{"-url", slow.URL, "-timeout", "200ms"}, 1, `(Client.Timeout exceeded while awaiting headers)"`},
+		{"refused", []string{"-url", closed.URL}, 1, "connection refused"},
 		{"no url", nil, 2, "missing -url"},
+		{"url as a positional argument", []string{up.URL}, 2, "missing -url"},
+		{"duration without a unit", []string{"-url", up.URL, "-timeout", "5"}, 2, `invalid value "5" for flag -timeout: parse error`},
+		{"help", []string{"-h"}, 0, "Usage of"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
