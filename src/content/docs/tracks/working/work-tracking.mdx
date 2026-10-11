@@ -100,12 +100,15 @@ The ticket key links four records that live in different tools. Each arrow is a 
 <Diagram
   id="ticket-links"
   title="A ticket linked to a branch, a pull request and a deploy"
-  code={`direction: left
-ticket: "MON-42\\nRetry a failed check once"
+  code={`grid-rows: 2
+grid-columns: 3
+horizontal-gap: 150
+vertical-gap: 80
+pr: "pull request #57\\nMON-42 in the title"
+commit: "merge commit\\n3f1c2ab"
+deploy: "image tag\\n3f1c2ab"
+ticket: "ticket MON-42\\nRetry a failed check once"
 branch: "branch\\nMON-42-retry-once"
-pr: "pull request #57\\nMON-42: Retry a failed check once"
-commit: "merge commit 3f1c2ab"
-deploy: "deploy\\nimage tagged 3f1c2ab…"
 branch -> ticket: key in the name
 pr -> branch: from
 pr -> ticket: key in the title

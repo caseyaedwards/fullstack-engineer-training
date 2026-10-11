@@ -90,17 +90,17 @@ c1: "commit e39097c"
 t2: tree
 t1: tree
 r2: "blob\\nREADME.md, second version"
-r1: "blob\\nREADME.md, first version"
 gm: "blob\\ngo.mod"
+r1: "blob\\nREADME.md, first version"
 head -> branch
 branch -> c2
-c2 -> c1: parent
 c2 -> t2
+c2 -> c1: parent
 c1 -> t1
 t2 -> r2
 t2 -> gm
-t1 -> r1
 t1 -> gm
+t1 -> r1
 `}
   steps={[
     { hl: ['head', 'branch', 'c2', 'head->branch', 'branch->c2'], caption: 'HEAD holds ref: refs/heads/week-00, and week-00 holds the ID of the newest commit. Committing writes a new commit and moves week-00 to it. HEAD follows, because it names the branch and not a commit.' },

@@ -109,16 +109,16 @@ The three stages map onto the weeks of the course. Each stage keeps the rules of
   id="ai-ladder"
   title="The three AI stages by week"
   code={`direction: right
-s1: "Stage 1: explain only\\nWeeks 0 to 5\\nexplanations and hints,\\nyou write every line"
-s2: "Stage 2: review everything\\nWeeks 6 to 12\\nit drafts, you test,\\nread and explain"
-s3: "Stage 3: pair partner\\nWeeks 13 to 18\\nscaffolding, config, refactors,\\nreview of your code"
+s1: "Stage 1\\nExplain only\\nWeeks 0 to 5"
+s2: "Stage 2\\nReview everything\\nWeeks 6 to 12"
+s3: "Stage 3\\nPair partner\\nWeeks 13 to 18"
 s1 -> s2: "Week 6"
 s2 -> s3: "Week 13"
 `}
   steps={[
     { hl: ['s1'], caption: 'Weeks 0 to 5: you learn Go, Linux and networking by hand. The assistant explains errors and documentation and gives hints. No generated code enters the project.' },
     { hl: ['s1', 's2', 's1->s2'], caption: 'Week 6: the app grows to several programs, Docker and a web page. The assistant can draft code now, and nothing merges until you can explain every line and a test covers it.' },
-    { hl: ['s2', 's3', 's2->s3'], caption: 'Week 13: you hand it the work where you know what right looks like, and you keep architecture and incident response for yourself.' },
+    { hl: ['s2', 's3', 's2->s3'], caption: 'Week 13: the assistant drafts scaffolding, configuration and refactors, and reviews your code. You hand it the work where you know what right looks like, and you keep architecture and incident response for yourself.' },
   ]}
 />
 
@@ -127,17 +127,20 @@ In stage 2 and stage 3, every piece of generated code goes through the same loop
 <Diagram
   id="review-loop"
   title="The review loop for generated code"
-  code={`direction: down
+  code={`grid-rows: 3
+grid-columns: 3
+horizontal-gap: 150
+vertical-gap: 90
 spec: "you write the spec\\nand the test cases"
 gen: "the assistant\\ndrafts the code"
 run: "go test -race"
-read: "you read every line\\nand run go doc"
-mutate: "break it on purpose"
 explain: "explain it back\\nin the pull request"
+mutate: "break it on purpose"
+read: "you read every line\\nand run go doc"
 merge: merge
 spec -> gen
 gen -> run
-run -> gen: "red: paste the failure"
+run -> gen: "red: paste\\nthe failure"
 run -> read: green
 read -> spec: "a line you\\ncannot explain"
 read -> mutate
