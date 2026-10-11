@@ -1,0 +1,55 @@
+---
+# The playbook of the Automation track: installs chrony, writes its
+# configuration from a template, and restarts it through a handler only
+# when that configuration changes. It targets Ubuntu 24.04, where the
+# package and the service are both named chrony.
+#
+#   ansible-playbook -i inventory.ini playbook.yml --check --diff
+#   ansible-playbook -i inventory.ini playbook.yml
+
+# region: play
+- name: Keep the clock in sync with chrony
+  hosts: monitor
+  become: true
+  vars:
+    chrony_pool: pool.ntp.org
+    chrony_maxsources: 4
+    chrony_conf: /etc/chrony/chrony.conf
+# endregion: play
+
+  # region: tasks
+  tasks:
+    - name: Install chrony
+      ansible.builtin.package:
+        name: chrony
+        state: present
+
+    - name: Write chrony.conf
+      ansible.builtin.template:
+        src: chrony.conf.j2
+        dest: "{{ chrony_conf }}"
+        owner: root
+        group: root
+        mode: "0644"
+        validate: chronyd -p -f %s
+      notify: Restart chrony
+
+    - name: Start chrony now and at every boot
+      ansible.builtin.service:
+        name: chrony
+        state: started
+        enabled: true
+
+    - name: Read the time sources
+      ansible.builtin.command: chronyc -n sources
+      changed_when: false
+      register: chrony_sources
+  # endregion: tasks
+
+  # region: handlers
+  handlers:
+    - name: Restart chrony
+      ansible.builtin.service:
+        name: chrony
+        state: restarted
+  # endregion: handlers
