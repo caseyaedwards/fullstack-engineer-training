@@ -175,7 +175,7 @@ Create an SSH key on your laptop with `ssh-keygen -t ed25519` if you have none y
 
 ### Step 2: Make a User and Turn Off Passwords
 
-Log in as `root` and make your own user with `sudo` rights. On images that log you in as `ubuntu` instead, run `sudo -i` first, and copy `/home/ubuntu/.ssh/authorized_keys` on the fourth line. `adduser` asks for a password: `sudo` asks for it later, SSH never does. When the upgrade installs a new kernel, the last line reboots the box: log in as root again after a minute.
+Log in as `root` and make your own user with `sudo` rights. On images that log you in as `ubuntu` instead, run `sudo -i` first, and copy `/home/ubuntu/.ssh/authorized_keys` in the last `install` line. `adduser` asks for a password: `sudo` asks for it later, SSH never does. When the upgrade installs a new kernel, the last line reboots the box: log in as root again after a minute.
 
 ```sh
 ssh root@203.0.113.10
@@ -299,13 +299,13 @@ The Role of CI comes from what `deploy.yml` runs. `kubectl apply` reads each obj
 
 <CodeFrom file="go/week16/your-monitor/deploy/k8s/cluster/ci-deployer.yaml" region="role" lang="yaml" title="deploy/k8s/cluster/ci-deployer.yaml" />
 
-Be clear about what this Role does not stop. Anyone with `create` on Deployments can run any image in the namespace, and that pod can read the namespace's Secrets: whoever holds the CI token can reach the database password and the GHCR token. What the Role does stop: CI cannot change its own rights, reach another namespace, or, with Pod Security, reach the node.
+Be clear about what this Role does not stop. Anyone with `create` on Deployments can run any image in the namespace, and that pod can read the namespace's Secrets: whoever holds the CI token can reach the database password and the GHCR token. What the Role does stop: CI cannot change its own rights or reach another namespace. Pod Security keeps its pods off the node, and the policy below keeps its Services off the ports of the VPS.
 
-One more door stays to close. A Service of type `NodePort` or `LoadBalancer` opens a port on the VPS, and Kubernetes forwards that traffic before ufw's rules see it. A **ValidatingAdmissionPolicy** is a rule the API server checks on each request, written in CEL, the Common Expression Language. This one refuses any Service in `your-monitor` whose type is not `ClusterIP`:
+One more door stays to close. A Service of type `NodePort` or `LoadBalancer`, or any Service with `externalIPs`, opens a port on the VPS, and Kubernetes forwards that traffic before ufw's rules see it. A **ValidatingAdmissionPolicy** is a rule the API server checks on each request, written in CEL, the Common Expression Language. This one refuses any Service in `your-monitor` whose type is not `ClusterIP` or that sets `externalIPs`:
 
 <CodeFrom file="go/week16/your-monitor/deploy/k8s/cluster/service-policy.yaml" region="service-policy" lang="yaml" title="deploy/k8s/cluster/service-policy.yaml" />
 
-The policy covers `your-monitor` only. The `traefik` Service in `kube-system` keeps its two NodePorts, and anything you create in another namespace gets past ufw the same way: the provider firewall from Step 1 closes that gap. Apply the setup: both issuers show `READY` as `True` once cert-manager registers their ACME accounts.
+The policy covers `your-monitor` only. The `traefik` Service in `kube-system` keeps its two NodePorts, and a NodePort, LoadBalancer or `externalIPs` Service you create in another namespace gets past ufw the same way: the provider firewall from Step 1 closes that gap. Apply the setup: both issuers show `READY` as `True` once cert-manager registers their ACME accounts.
 
 ```sh
 kubectl apply -k deploy/k8s/cluster
@@ -490,10 +490,13 @@ sudo journalctl -u ssh --since today | grep -c 'Invalid user'
 | `You must be logged in to the server (Unauthorized)` | The token expired: run the token commands of Step 11 again and replace `KUBECONFIG` |
 | `no` from `kubectl auth can-i` | The Role lost the `patch` verb on Deployments |
 
-**The apply step says forbidden.** CI tried to write a kind its Role does not grant. The message names the verb and the resource, as in this one for Secrets:
+**The apply step says forbidden.** CI tried to write a kind its Role does not grant. `kubectl apply` first reads the object, and the message names that verb and the resource, as in this one for a Secret:
 
 ```txt
-Error from server (Forbidden): secrets is forbidden: User "system:serviceaccount:your-monitor:deployer" cannot list resource "secrets" in API group "" in the namespace "your-monitor"
+Error from server (Forbidden): error when retrieving current configuration of:
+Resource: "/v1, Resource=secrets", GroupVersionKind: "/v1, Kind=Secret"
+Name: "extra", Namespace: "your-monitor"
+from server for: "secret.yaml": secrets "extra" is forbidden: User "system:serviceaccount:your-monitor:deployer" cannot get resource "secrets" in API group "" in the namespace "your-monitor"
 ```
 
 Grant the new resource in `ci-deployer.yaml`, and apply the cluster setup yourself, from your laptop. CI cannot see pods or their logs either: debug a failed rollout with your administrator kubeconfig.
@@ -504,7 +507,7 @@ Grant the new resource in `ci-deployer.yaml`, and apply the cluster setup yourse
   Warning  FailedCreate  2s    replicaset-controller  Error creating: pods "rootfs-5f4f7f46d9-blt7q" is forbidden: violates PodSecurity "restricted:v1.36": restricted volume types (volume "host" uses restricted volume type "hostPath")
 ```
 
-Revoke the token by deleting the `deployer` ServiceAccount, which invalidates every token issued for it, then apply the cluster setup again and issue a new one. Replace the `tunnel` key in `authorized_keys`. Treat both Secrets as read: set a new database password in Postgres and in the `postgres` Secret, and revoke the GHCR token on GitHub and create a new `ghcr-pull`.
+Revoke the token by deleting the `deployer` ServiceAccount, which invalidates every token issued for it, then apply the cluster setup again and issue a new one. Replace the `tunnel` key in `authorized_keys`. The deployer cannot delete, and what the thief created keeps running: with your administrator kubeconfig, list `kubectl -n your-monitor get deploy,sts,svc,ingress,cm,middlewares`, compare it with `kubectl kustomize deploy/k8s/overlays/prod`, and delete everything else, except `kube-root-ca.crt` and older `monitor-config-` ConfigMaps. Then deploy a commit you trust. Treat both Secrets as read: set a new database password in Postgres and in the `postgres` Secret, and revoke the GHCR token on GitHub and create a new `ghcr-pull`.
 
 **You locked yourself out of SSH.** Open the web console of your provider, log in there, fix the file in `/etc/ssh/sshd_config.d/`, and run `sudo sshd -t` before the restart.
 
@@ -545,7 +548,7 @@ nmap -Pn -p 30000-32767 203.0.113.10
 
 The `PORT(S)` column reads `80:` and `443:`, each followed by a NodePort. Without a provider firewall, `nmap` lists those two NodePorts as open, although ufw has no rule for them.
 
-**3. Explain the gap.** ufw filters packets addressed to programs on the host, such as `sshd` and the API server. For a NodePort, and for the ports ServiceLB holds, Kubernetes rewrites the destination of each packet to a pod address before that filter runs, and forwards it through rules of its own: ufw never sees it. Here the leak does no harm, because both ports lead to the same Traefik as `80` and `443`. The admission policy of Step 8 keeps `your-monitor` from adding more. Try it: `kubectl -n your-monitor create service nodeport leak --tcp=5432:5432` gets refused with the message of the policy. Attach the provider firewall if you skipped it in Step 1, and scan again: the two NodePorts turn `filtered`.
+**3. Explain the gap.** ufw filters packets addressed to programs on the host, such as `sshd` and the API server. For a NodePort, and for the ports ServiceLB holds, Kubernetes rewrites the destination of each packet to a pod address before that filter runs, and forwards it through rules of its own: ufw never sees it. Here the leak does no harm, because both ports lead to the same Traefik as `80` and `443`. The admission policy of Step 8 keeps `your-monitor` from adding more, by type or by `externalIPs`. Try it: `kubectl -n your-monitor create service nodeport leak --tcp=5432:5432` gets refused with the message of the policy, as does `kubectl -n your-monitor patch service api -p '{"spec":{"externalIPs":["203.0.113.10"]}}'`. Attach the provider firewall if you skipped it in Step 1, and scan again: the two NodePorts turn `filtered`.
 
 </SideLab>
 

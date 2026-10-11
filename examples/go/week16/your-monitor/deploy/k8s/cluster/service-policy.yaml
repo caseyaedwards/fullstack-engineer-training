@@ -1,8 +1,9 @@
 # region: service-policy
 # Services in your-monitor stay inside the cluster. A NodePort or a
-# LoadBalancer Service opens a port on the VPS that ufw never sees,
-# because Kubernetes forwards that traffic before ufw's rules run. The
-# way in from the internet is the Traefik Ingress, on 80 and 443.
+# LoadBalancer Service, or any Service with externalIPs, opens a port on
+# the VPS that ufw never sees, because Kubernetes forwards that traffic
+# before ufw's rules run. The way in from the internet is the Traefik
+# Ingress, on 80 and 443.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -18,6 +19,10 @@ spec:
   validations:
     - expression: object.spec.type == 'ClusterIP'
       message: Services in this namespace must have type ClusterIP. Traffic from the internet comes in through the Traefik Ingress.
+    # externalIPs sends traffic for those addresses to the Service, even
+    # with type ClusterIP: the public address of the VPS would work.
+    - expression: "!has(object.spec.externalIPs) || size(object.spec.externalIPs) == 0"
+      message: Services in this namespace must not set externalIPs. Traffic from the internet comes in through the Traefik Ingress.
 ---
 # The policy applies only where this binding says: the your-monitor
 # namespace. Deny refuses the request with the message above.
