@@ -1,36 +1,229 @@
 ---
 title: "Automation"
+description: When to automate with a shell script, a Makefile or an Ansible playbook, and how idempotent, desired-state automation with handlers, templates and check mode keeps a server in a known state.
 track: automation
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+Automation turns the commands you type into files that a machine runs the same way every time. A command you run by hand lives in your shell history and your memory. A command in a script, a Makefile or a playbook lives in Git, where a colleague reviews it, and runs the same at 03:00 as at noon. As a full-stack engineer, you automate three kinds of work: repository commands, scheduled jobs, and the configuration of the servers your code runs on.
+
 ## What It Is
 
-This section is not written yet.
+### Steps or a State
+
+Automation comes in two styles.
+
+An **imperative** script lists steps: install this package, append this line, restart this service. It does exactly what it says, every time it runs. Run it twice, and it appends the line twice and restarts the service twice. When a step fails halfway, the machine sits in a state that no file describes.
+
+A **declarative** tool takes a **desired state**. For chrony, the service that keeps the system clock in sync, that state reads: the package is present, its configuration file holds these lines, its service runs. On each run, the tool compares that state with the machine, and changes only what differs. A task that finds the machine already right does nothing and reports `ok`. That property is **idempotence**: running the automation once or ten times leaves the machine in the same state. Week 9 uses the word for a queue job that runs twice safely.
+
+<Diagram
+  id="steps-vs-state"
+  title="An imperative script repeats its steps, a desired state converges"
+  code={`direction: right
+script: imperative script {
+  s1: "apt-get install chrony"
+  s2: "echo 'makestep 1 3'\\n>> chrony.conf"
+  s3: "systemctl restart chrony"
+  s1 -> s2 -> s3
+}
+state: desired state {
+  want: "chrony present,\\nconf matches template,\\nservice started"
+  host: "the server\\nas it is now"
+  diff: "change only\\nwhat differs"
+  want -> diff
+  host -> diff
+}
+`}
+/>
+
+Idempotence turns a run into a check. A second run that reports zero changes proves that the first run reached the desired state. A run that reports changes on a machine nobody touched finds **drift**: a change someone made by hand, outside the automation.
+
+### Three Tools and When to Reach for Each
+
+| Tool | Reach for it when | Move on when |
+| --- | --- | --- |
+| Shell script | You glue a few commands together on one machine, such as a backup in a container or a Git hook | It needs to know the state of the machine before it acts, or it passes 100 lines |
+| Makefile | A repository needs short, shared names for its commands: `make test`, `make lint`, `make ci` | The recipes grow logic of their own: move that logic into a script and call the script |
+| Ansible playbook | You configure one or more servers over SSH: packages, files, services, users | You create the servers themselves: a provisioning tool such as Terraform or OpenTofu does that |
+
+The three combine. A Makefile target runs a script, and a playbook copies a script to a server and schedules it.
+
+### Shell Scripts That Fail Loudly
+
+A **shell script** is a file of commands for a shell such as `sh` or `bash`. By default, the shell runs the next line after a command fails, and a backup script that fails at the dump goes on to upload an empty file. Start every script with `set -eu`:
+
+- `-e`: exits at the first command that fails.
+- `-u`: exits when the script reads a variable that is not set, instead of reading an empty string.
+- In bash, add `-o pipefail`: a pipeline such as `pg_dump | gzip` then fails when `pg_dump` fails, not only when `gzip` does.
+
+Quote every variable, as `"$file"`: unquoted, a value with a space splits into two arguments. **ShellCheck**, a linter for shell scripts, finds these mistakes before they run.
+
+### Makefiles as the Front Door
+
+`make` runs commands by name. A `Makefile` holds **rules**: a target, a colon, its prerequisites, and below them the **recipe**, each line indented with one tab. Make rebuilds a file target only when it is missing or older than a prerequisite. Most targets in a Go repository name commands rather than files, and the `.PHONY` line declares them as such. Without that line, a file named `test` in the folder makes `make test` report that the target is up to date and run nothing.
+
+A Makefile is the front door of a repository: whoever clones it, a colleague or a continuous integration runner, CI for short, types `make ci` and runs every check, in the same order, with the same options.
+
+### Ansible in One Page
+
+**Ansible** configures servers over SSH. It installs no agent: for each task, it copies a small Python program, called a **module**, to the server, runs it, and reads back a JSON result that says `ok`, `changed` or `failed`. The vocabulary:
+
+- **Control node:** the machine you run `ansible-playbook` on, such as your laptop or a CI runner.
+- **Inventory:** the list of servers, called **managed nodes**, sorted into groups, such as `monitor`.
+- **Playbook:** a file in YAML, an indented text format for data, that holds a list of **plays**. A play maps a group of hosts to a list of **tasks**.
+- **Task:** one call to one module with its arguments, such as `ansible.builtin.package` with `name: chrony` and `state: present`. A task describes a state, and the module works out the steps.
+- **FQCN:** the fully qualified collection name of a module, such as `ansible.builtin.template`. Modules ship in **collections**. A short name such as `template` resolves at run time, and the full name always means one module.
+- **Facts:** what Ansible learns about a host at the start of a play: the distribution, the package manager, the addresses. `ansible.builtin.package` reads the package manager fact to call `apt` on Ubuntu and `dnf` on Fedora.
+- **Become:** runs the task as another user, `root` by default, through `sudo`, the Unix tool for that.
+- **Template:** a file with Jinja2 placeholders such as `{{ chrony_pool }}`, which Ansible fills in from variables and writes to the host.
+- **Handler:** a task that runs only when another task reports `changed` and **notifies** it by name. A handler runs once, however many tasks notify it: after the last task of its section, `pre_tasks`, `tasks` or `post_tasks`, or earlier at an `ansible.builtin.meta: flush_handlers` task.
+
+### Check Mode and Honest Tasks
+
+`ansible-playbook --check` is a dry run: each module that supports it reports the changes it finds necessary, and makes none. `--diff` adds the line-by-line difference for every file a task plans to write. Together they show drift and every template change before the run. Check mode has two limits:
+
+- Each task sees the server as it is, not as the earlier simulated tasks leave it. On a fresh server, the package task reports `changed` and installs nothing, and the service task then fails: no chrony service exists yet.
+- `validate`, the template option that tests a new file before it replaces the old one, runs only on a real run. A template with a typo passes `--check`.
+
+On a fresh server, run the playbook for real. Before each later change, run it with `--check --diff`, and read the diff the way you read a pull request.
+
+A module such as `ansible.builtin.template` knows its own state: it compares a checksum of the rendered file with the file on the host. `ansible.builtin.command` and `ansible.builtin.shell` run whatever you hand them, and cannot know whether the command changed anything. They report `changed` on every run, which breaks the zero-changes check and fires every handler they notify. Make each one honest:
+
+- `creates: /path`: skips the command when that file exists. `removes: /path` skips it when the file is missing.
+- `changed_when`: decides from the result, such as `changed_when: false` for a command that only reads.
+
+Better still, look for a module that does the job: `ansible.builtin.user` instead of `useradd`, `ansible.builtin.lineinfile` instead of `echo >>`.
 
 ## Diagrams
 
-This section is not written yet.
+An Ansible run against a fresh server, then the same run again:
+
+<Diagram
+  id="ansible-runs"
+  title="The chrony playbook on a fresh server, first run and second run"
+  code={`grid-rows: 2
+grid-columns: 3
+horizontal-gap: 90
+vertical-gap: 70
+facts: "SSH, gather facts\\nevery run"
+pkg: "package: chrony\\nfirst run: changed\\nsecond run: ok"
+tpl: "template: chrony.conf\\nfirst run: changed\\nsecond run: ok"
+hdl: "handler: Restart chrony\\nfirst run: runs once\\nsecond run: not notified"
+cmd: "command: chronyc\\nfirst run: ok\\nsecond run: ok"
+svc: "service: chrony\\nfirst run: ok\\nsecond run: ok"
+
+facts -> pkg
+pkg -> tpl
+tpl -> svc
+svc -> cmd
+cmd -> hdl: "if notified"
+`}
+  steps={[
+    { hl: ['facts'], caption: 'ansible-playbook connects from your laptop, the control node, over SSH to every host in the monitor group, and gathers facts: Ubuntu, with apt as its package manager.' },
+    { hl: ['pkg', 'facts->pkg'], caption: 'The package module finds no chrony, installs it with apt, and reports changed. The Ubuntu package starts the service with its own default configuration.' },
+    { hl: ['tpl', 'pkg->tpl'], caption: 'The template module renders chrony.conf, finds that the file on the host differs, checks the new file with chronyd -p, and moves it into place. It reports changed, which queues the Restart chrony handler.' },
+    { hl: ['svc', 'tpl->svc'], caption: 'The service module finds chrony running and enabled at boot, and reports ok. It does not restart anything: running is the state it asks for.' },
+    { hl: ['cmd', 'svc->cmd'], caption: 'The command module runs chronyc -n sources, which lists the time servers chrony reaches. changed_when: false makes it report ok.' },
+    { hl: ['hdl', 'cmd->hdl'], caption: 'After the last task, the queued handler runs once and restarts chrony, which now reads the new configuration.' },
+    { hl: ['facts', 'pkg', 'tpl', 'svc', 'cmd', 'hdl'], caption: 'Run the playbook again. Every task finds the host already in its desired state and reports ok. Nothing notifies the handler, and chrony keeps running without a restart.' },
+  ]}
+/>
 
 ## Example
 
-This section is not written yet.
+The example lives in `examples/go/tracks/automation/`. It starts with the idea behind every idempotent tool, in Go: `EnsureLine`, a small cousin of the Ansible `lineinfile` module.
+
+<CodeFrom file="go/tracks/automation/ensureline.go" region="ensureline" lang="go" title="ensureline.go" />
+
+`EnsureLine` checks before it acts. It reads the file, splits it into lines and returns `false` when one of them equals `line`. Only otherwise does it append the line, after a newline when the last line lacks one. The `changed` result is what Ansible reports as `changed` or `ok`. It writes through `replace`:
+
+<CodeFrom file="go/tracks/automation/ensureline.go" region="replace" lang="go" title="ensureline.go" />
+
+The new content goes to a temporary file in the same folder, which then replaces the old file with one `rename`. A rename within one file system is atomic: a program that reads the file sees the old version or the new one, never half of each. Ansible modules write files the same way. The test runs `EnsureLine` twice and expects `true`, then `false`:
+
+<CodeFrom file="go/tracks/automation/ensureline_test.go" region="ensureline-test" lang="go" title="ensureline_test.go" />
+
+Other tests cover a missing file, a last line without a newline, an empty line, and a key file whose mode `0600` must survive the rewrite.
+
+The playbook sets up chrony, the time service from the <TrackLink slug="time-ntp">Time and NTP track</TrackLink>, on Ubuntu 24.04. The inventory names the one server:
+
+<CodeFrom file="go/tracks/automation/inventory.ini" region="inventory" lang="ini" title="inventory.ini" />
+
+The play maps the `monitor` group to its tasks, runs them through `sudo` with `become: true`, and sets the variables the template reads:
+
+<CodeFrom file="go/tracks/automation/playbook.yml" region="play" lang="yaml" title="playbook.yml" />
+
+The tasks and the handler sit under the play, indented by two spaces:
+
+<CodeFrom file="go/tracks/automation/playbook.yml" region="tasks" lang="yaml" title="playbook.yml" />
+
+- **Install chrony:** `state: present` installs the package when it is missing and leaves an installed one alone. `state: latest` upgrades on every run, which makes the playbook change the server whenever Ubuntu publishes a release.
+- **Write chrony.conf:** renders `templates/chrony.conf.j2`. `validate` runs `chronyd -p -f` on the rendered file before it replaces the real one, and Ansible puts the path of the temporary file where `%s` stands. A typo such as `makestepp` fails the task with `Invalid directive` and leaves the working configuration in place. `notify` queues the handler only when the file changes.
+- **Start chrony now and at every boot:** `state: started` starts a stopped service and leaves a running one alone. `enabled: true` starts it at boot.
+- **Read the time sources:** `chronyc -n sources` only reads, and `changed_when: false` tells Ansible that. Ansible skips a command task in check mode, and `check_mode: false` runs this one anyway.
+
+<CodeFrom file="go/tracks/automation/playbook.yml" region="handlers" lang="yaml" title="playbook.yml" />
+
+The handler restarts chrony once, after the last task, and only after a run that changed its configuration. The template itself:
+
+<CodeFrom file="go/tracks/automation/templates/chrony.conf.j2" region="template" lang="txt" title="templates/chrony.conf.j2" />
+
+`{{ ansible_managed }}` renders as `Ansible managed`, a warning to anyone who opens the file on the server that the next run overwrites a change made by hand. Run the playbook twice. The second run ends with a recap like this one:
+
+```txt
+PLAY RECAP *********************************************************************
+monitor.example.com        : ok=5    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+```
+
+`ok=5` counts fact gathering and the four tasks. `changed=0` is the idempotence check passing.
+
+`playbook_test.go` reads the playbook as YAML and enforces four rules: every task and handler has a `name`, every task calls exactly one module, by FQCN, every `notify` names a handler that exists, and no `command` or `shell` task runs without `creates`, `removes` or `changed_when`:
+
+<CodeFrom file="go/tracks/automation/playbook_test.go" region="checks" lang="go" title="playbook_test.go" />
+
+`TestChecksCatchMistakes` breaks a copy of the playbook once per rule and expects exactly that rule to fail. Another test checks that the play defines every variable the template reads. When it finds `ansible-playbook` on the `PATH`, a last test runs `ansible-playbook --syntax-check`. `ansible-lint` checks many more rules, and passes on this playbook with its `production` profile.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={6} anchor="step-6-write-the-makefile">Step 6 of Week 6</WeekLink> writes the first Makefile of the monitor: `make up`, `make test`, `make build`, with `web/node_modules` as a real file target that runs `npm ci` only when the lock file changes.
+
+<WeekLink n={14} anchor="step-2-configure-the-linters">Step 2 of Week 14</WeekLink> adds `make lint` and `make ci`, and the CI workflow runs every command that `make ci` runs: a test in the examples compares the two. <WeekLink n={14} anchor="side-lab">The Week 14 side lab</WeekLink> writes a Git pre-push hook, a three-line shell script that runs `make lint` and cancels the push when it fails.
+
+<WeekLink n={16} anchor="step-2-make-a-user-and-turn-off-passwords">Steps 2 and 3 of Week 16</WeekLink> set up the virtual private server by hand: a user, an SSH drop-in file, which adds settings from `/etc/ssh/sshd_config.d/` without editing the main file, and a firewall script. Each of those steps maps to one Ansible module, `ansible.builtin.user`, `ansible.builtin.copy` with `validate: sshd -t -f %s`, and `community.general.ufw`, and a playbook made from them rebuilds the box in minutes after a loss.
+
+<WeekLink n={17} anchor="step-11-send-an-encrypted-backup-off-the-box">Step 11 of Week 17</WeekLink> writes `backup.sh`, a shell script with `set -eu` that a Kubernetes CronJob runs every night, and that names the failed step in every error. <WeekLink n={17} anchor="step-12-drill-the-restore-on-your-laptop">Step 12 of Week 17</WeekLink> automates the restore drill the same way, with a test that breaks it ten ways.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **A `command` or `shell` task without `changed_when` or `creates`.** It reports `changed` on every run, fires its handlers every time, and hides real drift among false changes. Find a module that does the job, or add `creates`, `removes` or `changed_when`.
+- **Short module names.** `package:` runs whatever module a local `library/` folder or a `collections:` keyword puts behind that name, and `ansible-lint` fails it under its `fqcn` rule. Write `ansible.builtin.package`.
+- **A restart task instead of a handler.** The service restarts on every run, which drops connections for nothing. Notify a handler from the task that changes the configuration.
+- **A failed run that skips its handlers.** When a later task fails, the handlers queued earlier do not run, and the new configuration waits on disk for a restart that never comes. Fix the failure and run again: the file is already in place, the template reports `ok`, and nothing notifies the handler. Set `force_handlers: true` on the play, or pass `--force-handlers`, and queued handlers run even when a later task fails.
+- **`lineinfile` for a whole file.** Five `lineinfile` tasks against one configuration file leave every other line as the package wrote it, and the repository never shows the whole file the server runs with. Own the whole file with `ansible.builtin.template`.
+- **Secrets in plain variables.** A password in `vars:` lands in Git. Encrypt it with `ansible-vault`, the Ansible tool for encrypted variable files, and hide its value in the output with `no_log: true` on the tasks that use it.
+- **A shell script without `set -eu`.** The script carries on past a failure and reports success. Start every script with it, and run ShellCheck in CI.
+- **Spaces in a Makefile recipe.** Make accepts only a tab at the start of a recipe line, and stops with `missing separator` otherwise. Set your editor to keep tabs in files named `Makefile`.
 
 ## Going Deeper
 
-This section is not written yet.
+- **Roles and collections:** a role packages the tasks, handlers, templates and defaults for one service, such as chrony, for reuse across playbooks.
+- **Molecule:** runs a role against a throwaway container or virtual machine, runs it twice, and fails when the second run reports changes.
+- **cloud-init and ansible-pull:** a new server configures itself at first boot, without a control node reaching in.
+- **Terraform and OpenTofu:** declarative provisioning of the servers, networks and DNS records that Ansible then configures.
+- **systemd timers:** the systemd answer to cron, the classic Unix job scheduler, on a plain server, with logs in the journal and a status you can query.
 
 ## Further Reading
 
-This section is not written yet.
+- [Handlers: running operations on change](https://docs.ansible.com/projects/ansible/latest/playbook_guide/playbooks_handlers.html): when handlers run, `listen` topics, `flush_handlers` and what happens on failure.
+- [Validating tasks: check mode and diff mode](https://docs.ansible.com/projects/ansible/latest/playbook_guide/playbooks_checkmode.html): how `--check` and `--diff` behave, and how to set check mode per task.
+- [The template module](https://docs.ansible.com/projects/ansible/latest/collections/ansible/builtin/template_module.html): every option of `ansible.builtin.template`, including `validate` and `backup`.
+- [GNU Make manual](https://www.gnu.org/software/make/manual/make.html): rules, prerequisites, phony targets and variables, from the maintainers of Make.
+- [ShellCheck](https://www.shellcheck.net/): the shell script linter, with a page for each warning that explains the mistake and the fix.

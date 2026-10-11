@@ -1,36 +1,209 @@
 ---
 title: "Kubernetes"
+description: How Kubernetes 1.36 turns stored objects into running pods through control loops, what each part of the control plane and the nodes does, and how Services, Secrets and RBAC fit around the workloads.
 track: kubernetes
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+Kubernetes runs containers on a set of machines and keeps them running the way you describe. You never tell it to start a container. You store a description of what you want, and a set of control loops works, without end, to make the cluster match it. As a full-stack engineer, you write those descriptions for every program you ship, and when a pod does not start, you read the cluster state to find which loop is stuck and why. Facts on this page are for Kubernetes 1.36.
+
 ## What It Is
 
-This section is not written yet.
+### Objects, Desired State and Control Loops
+
+Everything in Kubernetes is an **object**: a Deployment, a Pod, a Service, a Secret. You write objects as **manifests**: documents in YAML, an indented text format for data, and `kubectl apply` sends them to the cluster. `kubectl` is the command-line client of Kubernetes. Most objects have two halves. The **spec** is the desired state, which you write. The **status** is the observed state, which the cluster writes.
+
+A **controller** is a program that runs a **control loop** for one type of object: read the spec, read what exists, act on the difference, and repeat. The loop is **level-triggered**: it acts on the state it finds now, not on a list of events it missed. A controller that restarts after a crash reads the current state and carries on, with no history to replay. A node that dies, a pod that exits, a `kubectl scale`: each one shows up as a difference on the next pass of some loop, and the loop repairs it.
+
+Controllers never talk to each other. Each one watches the objects it cares about through the API server, and writes the objects that the next controller watches. A Deployment controller writes ReplicaSets, a ReplicaSet controller writes Pods, the scheduler writes a node name into each Pod, and the kubelet on that node starts the containers. Each loop is small and does one job.
+
+### The Control Plane and the Nodes
+
+The **control plane** stores the desired state and decides what runs where. The **nodes** run the containers.
+
+<Diagram
+  id="cluster"
+  title="The control plane stores and decides, the nodes run the pods"
+  code={`grid-rows: 2
+grid-columns: 2
+horizontal-gap: 50
+vertical-gap: 90
+y: "" {
+  style.opacity: 0
+  you: "you:\\nkubectl\\napply"
+}
+cp: control plane {
+  grid-rows: 2
+  grid-columns: 2
+  horizontal-gap: 110
+  vertical-gap: 70
+  cm: "controller\\nmanager"
+  sched: scheduler
+  api: "API server"
+  etcd: etcd
+  cm -> api: watches
+  sched -> api: watches
+  api -> etcd: "reads, writes"
+}
+gap: "" {style.opacity: 0}
+node: node {
+  grid-columns: 4
+  horizontal-gap: 52
+  proxy: "kube-proxy"
+  kubelet: kubelet
+  cri: "containerd"
+  pods: pods
+  kubelet -> cri: "CRI"
+  cri -> pods: runs
+}
+y.you -> cp.api
+node.proxy -> cp.api: watches
+node.kubelet -> cp.api: watches
+`}
+  steps={[
+    { hl: ['y.you', 'cp.api', 'cp.etcd', 'y.you->cp.api', 'cp.api->cp.etcd'], caption: 'The API server is the only door. It authenticates each request, checks that the caller holds the permission for it, validates the object against its schema, and stores it in etcd, a key-value database that keeps the cluster state.' },
+    { hl: ['cp.cm', 'cp.api', 'cp.cm->cp.api'], caption: 'The controller manager runs dozens of control loops in one process: Deployments, ReplicaSets, Jobs, nodes, and EndpointSlices, the lists of ready pod addresses behind each Service. Each loop watches its objects through the API server and writes new ones.' },
+    { hl: ['cp.sched', 'cp.api', 'cp.sched->cp.api'], caption: 'The scheduler watches for pods with no node. It filters out nodes that lack the processor time and memory the pod requests, or break a rule, scores the rest, and writes the best node name into the pod.' },
+    { hl: ['node.kubelet', 'node.cri', 'node.pods', 'node.kubelet->cp.api', 'node.kubelet->node.cri', 'node.cri->node.pods'], caption: 'The kubelet on each node watches for pods assigned to it, and starts their containers through containerd over the Container Runtime Interface, CRI. It runs the probes, the health checks defined for each container, and reports the pod status back.' },
+    { hl: ['node.proxy', 'node.proxy->cp.api'], caption: 'kube-proxy watches Services and EndpointSlices, and writes packet rules on the node that send traffic for each Service address to one of its ready pods.' },
+  ]}
+/>
+
+A small cluster such as k3s on one virtual private server (VPS) runs all of these on one machine, and the node is its own control plane. k3s keeps the cluster state in SQLite by default, in place of etcd. kind runs each node as a Docker container on your laptop.
+
+### Workloads
+
+| Object | Runs | Use it for |
+| --- | --- | --- |
+| Pod | one or more containers that share an IP address and volumes | nothing directly: a controller creates pods for you |
+| ReplicaSet | a number of identical pods from one template | nothing directly: a Deployment manages its ReplicaSets |
+| Deployment | ReplicaSets, one per template revision, with rolling updates | stateless programs such as the api, the worker and the web server |
+| StatefulSet | pods with stable names, such as `postgres-0`, and one volume each | databases and other programs that keep state on disk |
+| DaemonSet | one pod on every node | log collectors and node agents |
+| Job, CronJob | pods that run to completion, once or on a schedule | migrations and backups |
+
+A Deployment finds its pods by **labels**, key and value pairs such as `app.kubernetes.io/name: api`, through a **selector**. When you change the pod template, such as the image tag, the Deployment controller creates a new ReplicaSet and moves pods from the old one to the new one a few at a time: a **rolling update**. `maxSurge` and `maxUnavailable` bound each step, and the old ReplicaSet stays at zero pods as a revision that `kubectl rollout undo` returns to.
+
+### Services and Proxy Modes
+
+Pods come and go, and each new pod gets a new IP address. A **Service** gives a set of pods one stable virtual address, the ClusterIP, and a DNS name such as `api.your-monitor.svc.cluster.local`. No process listens on a ClusterIP. kube-proxy on each node writes kernel packet rules that rewrite each connection to that address into a connection to one ready pod. It has three modes on Linux:
+
+- **iptables**: the default in Kubernetes 1.36. One chain of rules per Service, and one rule per pod, which the kernel walks in order. kind uses it, and the <WeekLink n={15} anchor="side-lab">Week 15 side lab</WeekLink> reads its rules.
+- **nftables**: uses nftables, the successor to iptables in the Linux kernel, which looks up a Service in a map instead of walking a list. It handles endpoint changes faster, and the gap grows with the number of Services. It needs kernel 5.13 or newer, and the Kubernetes documentation names it as the future default.
+- **IPVS**: uses the kernel load balancer, IP Virtual Server, with hash tables and several balancing algorithms. Kubernetes 1.35 deprecates it, 1.40 turns it off by default and 1.43 removes it. Do not start a new cluster on it.
+
+Set the mode explicitly in the kube-proxy configuration. A cluster that relies on the default changes its packet path on the upgrade that changes the default.
+
+### Configuration, Secrets and RBAC
+
+A **ConfigMap** holds settings, and a **Secret** holds passwords and keys. Both reach a container as environment variables or as files. A Secret is not encrypted by default: etcd stores it as plain bytes, and the API returns its values in base64, which is an encoding, not encryption. Turn on **encryption at rest** in the API server, as the k3s setting `secrets-encryption` does in Week 16, and the datastore holds only ciphertext.
+
+What protects a Secret is who can read it, and **RBAC**, role-based access control, decides that:
+
+- A **ServiceAccount** is an identity for a program, such as a continuous integration (CI) pipeline or a pod.
+- A **Role** lists **verbs**, such as `get`, `list`, `watch`, `create` and `patch`, on **resources**, such as `deployments` or `secrets`, in one **namespace**, a named group of objects inside the cluster. A **ClusterRole** does the same across the cluster.
+- A **RoleBinding** grants a Role to users, groups or ServiceAccounts, and a **ClusterRoleBinding** grants a ClusterRole everywhere.
+
+RBAC only adds permissions, and the API server refuses anything no rule allows. The <TrackLink slug="iam">identity and access management (IAM) track</TrackLink> draws the `deployer` ServiceAccount of Week 16 with its Role and RoleBinding. Three details catch people. `list` and `watch` on `secrets` return every value in full, the same as `get`. Permission to create pods in a namespace is permission to read its Secrets, because a pod can mount any Secret of its namespace. And `kubectl auth can-i get secrets --as=system:serviceaccount:your-monitor:deployer` answers what an identity can do before you hand it out.
+
+### Versions and Skew
+
+Kubernetes ships three minor releases a year, and each one gets patches for about 14 months. The project patches the newest three minor versions, and a cluster more than two minor versions behind the newest release runs without security fixes. `kubectl` works with an API server one minor version older or newer: `kubectl` 1.36 talks to 1.35, 1.36 and 1.37. The course pins `kubectl` and the cluster to 1.36.
 
 ## Diagrams
 
-This section is not written yet.
+A Deployment rollout, from `kubectl apply` with a new image tag to the new pods serving:
+
+<Diagram
+  id="rollout"
+  title="From kubectl apply to new pods: each controller writes what the next one watches"
+  code={`shape: sequence_diagram
+you: "you\\nkubectl"
+api: "API server"
+dc: "Deployment\\ncontroller"
+rc: "ReplicaSet\\ncontroller"
+sched: scheduler
+kubelet: "kubelet\\non node-1"
+
+you -> api: "apply: image api:v2"
+dc -> api: "create ReplicaSet api-6f9c7d"
+rc -> api: "create Pod api-6f9c7d-x7k2q"
+sched -> api: "bind Pod to node-1"
+kubelet -> api: "Pod Ready"
+dc -> api: "scale ReplicaSet api-5d8b4c down"
+rc -> api: "delete one Pod of api-5d8b4c"
+`}
+  steps={[
+    { hl: ['you', 'api', 'you->api'], caption: 'kubectl sends the Deployment with the new image tag. The API server checks RBAC and the schema, stores the new spec in etcd, and answers at once. Nothing runs yet.' },
+    { hl: ['dc', 'api', 'dc->api'], caption: 'The Deployment controller sees a pod template that no ReplicaSet matches. It creates a new ReplicaSet, named after a hash of the template, with one replica: maxSurge allows one pod above the wanted count.' },
+    { hl: ['rc', 'api', 'rc->api'], caption: 'The ReplicaSet controller sees a ReplicaSet that wants one pod and has none, and creates a Pod object from the template, with a random suffix on its name.' },
+    { hl: ['sched', 'api', 'sched->api'], caption: 'The scheduler sees a pod with no node, picks node-1, which has the requested processor time and memory free, and binds the pod to it.' },
+    { hl: ['kubelet', 'api', 'kubelet->api'], caption: 'The kubelet on node-1 sees the pod, pulls the image, starts the container and runs the readiness probe, the check that says whether the pod can take traffic. When the probe passes, it marks the pod Ready, and the EndpointSlice controller adds the pod to the Service.' },
+    { hl: ['dc', 'rc', 'api', 'dc->api#1', 'rc->api#1'], caption: 'With the new pod available and maxUnavailable at 0, the Deployment controller scales the old ReplicaSet down by one, and the ReplicaSet controller deletes one old pod. The two loops repeat until every pod runs the new template.' },
+  ]}
+/>
 
 ## Example
 
-This section is not written yet.
+The example in `examples/go/tracks/kubernetes/` is one pass of a control loop, in the spirit of the ReplicaSet controller plus the template check of a Deployment. Three types describe the world it sees:
+
+<CodeFrom file="go/tracks/kubernetes/reconcile.go" region="types" lang="go" title="reconcile.go" />
+
+`Spec` is the desired state, `Pod` is what runs, and `Action` is one change. `Reconcile` compares them and returns the actions, without carrying any of them out:
+
+<CodeFrom file="go/tracks/kubernetes/reconcile.go" region="reconcile" lang="go" title="reconcile.go" />
+
+- The first loop sorts the pods into `current`, made from the desired template, and `outdated`, made from any other. It also records every name in use.
+- `want` treats a negative replica count as zero. `missing` counts the pods to create, and each one gets the first name of the form `<template>-<n>` that no pod holds.
+- Every outdated pod gets a delete. When more current pods run than wanted, the ones after the first `want`, in name order, get a delete too.
+- Creates come before deletes, the way a rolling update with `maxUnavailable: 0` starts a new pod before it stops an old one.
+
+The real controllers differ in the details. A Deployment names each ReplicaSet after a hash of its pod template, and records that hash in a `pod-template-hash` label on every pod. A pod name ends in five random characters. The rolling update creates and deletes a few pods per step, bounded by `maxSurge` and `maxUnavailable`, and waits for each new pod to become available. The shape stays the same: compare, act on the difference, repeat.
+
+The test runs each case through `Reconcile`, plays the actions against the pod list, and runs the loop again:
+
+<CodeFrom file="go/tracks/kubernetes/reconcile_test.go" region="reconcile-test" lang="go" title="reconcile_test.go" />
+
+The second pass is the property that matters. A control loop must **converge**: once the cluster carries out its actions, the next pass over the result finds nothing to do. A loop that keeps finding work on a cluster that matches its spec deletes and creates pods without end. Other tests cover a rollout halfway through, scaling to zero, a negative count, a new pod name that must skip one in use, and a pod list in any order.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={15} anchor="from-compose-to-a-cluster">From Compose to a Cluster in Week 15</WeekLink> moves the monitor from Compose to kind with Kubernetes 1.36, and walks through the API server, etcd, the controller manager, the scheduler and the kubelet as you apply your first manifest. <WeekLink n={15} anchor="pods-deployments-and-labels">Pods, Deployments and Labels</WeekLink> gives every program a Deployment, <WeekLink n={15} anchor="services-a-stable-name-for-changing-pods">Services: A Stable Name for Changing Pods</WeekLink> gives each one a Service, and <WeekLink n={15} anchor="state-statefulset-volumes-configmap-and-secret">State: StatefulSet, Volumes, ConfigMap and Secret</WeekLink> runs Postgres with a volume of its own. <WeekLink n={15} anchor="side-lab">The Week 15 side lab</WeekLink> follows a Service into the iptables rules of the node.
+
+<WeekLink n={16} anchor="one-box-running-kubernetes">One Box Running Kubernetes in Week 16</WeekLink> moves the cluster to k3s on a VPS, and <WeekLink n={16} anchor="step-4-install-k3s">Step 4</WeekLink> installs it with Secrets encrypted at rest. <WeekLink n={16} anchor="who-can-reach-what">Who Can Reach What</WeekLink> and <WeekLink n={16} anchor="step-11-give-ci-a-way-in">Step 11</WeekLink> give CI a `deployer` ServiceAccount whose Role can apply the prod overlay in one namespace and reach no other. The prod overlay is a layer of production settings over the Week 15 base, built with Kustomize, the manifest tool built into `kubectl`.
+
+<WeekLink n={17} anchor="rolling-updates-and-rollbacks">Rolling Updates and Rollbacks in Week 17</WeekLink> tunes `maxSurge`, `maxUnavailable` and `minReadySeconds`, adds a preStop hook, a command that the kubelet runs before it stops a container, against dropped requests, and practices `kubectl rollout undo`. <WeekLink n={17} anchor="scaling-out-with-the-horizontalpodautoscaler">Scaling Out with the HorizontalPodAutoscaler</WeekLink> adds a controller that writes the replica count of a Deployment for you.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **A selector that matches no pods.** The API server refuses a Deployment whose selector does not match its own template labels. It accepts a Service whose selector matches no pod labels, and that Service sends every connection nowhere, with no error anywhere. Keep the selector labels and the template labels in one place, and check them with a test, as Week 15 does.
+- **`replicas` in a manifest that an autoscaler scales.** Every `kubectl apply` resets the count, and the autoscaler scales back up a moment later. Remove `replicas` from every Deployment that a HorizontalPodAutoscaler manages.
+- **A liveness probe that checks a dependency.** The kubelet restarts a container whose liveness probe fails. When Postgres goes down, the kubelet restarts every api pod, and the restarts fix nothing. Keep liveness to the process itself, and put dependencies in readiness, which only takes the pod out of its Service.
+- **No requests on a container.** The scheduler places the pod as if it needs nothing, and the node runs out of memory under load. Set processor and memory requests on every container, and a memory limit.
+- **A Secret treated as encrypted.** base64 is an encoding, and anyone with `get`, `list` or `watch` on Secrets, or permission to create pods in the namespace, reads every value. Encrypt etcd at rest and grant Secret access to as few identities as possible.
+- **The `latest` image tag.** With `latest`, the default pull policy is `Always`: each new pod pulls whatever the tag points at that moment, and two pods of one Deployment run two versions under one name. A push of a new `latest` changes no pod template, which means no rollout starts, and a rollback has no older name to return to. Tag images with the commit SHA, the Git hash of the commit.
+- **Changes made with `kubectl edit` in production.** The next `kubectl apply` from Git overwrites them, or keeps a change nobody reviewed. Change the manifests in Git and apply them.
 
 ## Going Deeper
 
-This section is not written yet.
+- **Server-side apply:** the API server tracks which client owns each field, which ends the fights between `kubectl`, controllers and autoscalers over the same object.
+- **Operators and custom resources:** your own object types with your own control loop, built on the same pattern as `Reconcile` with a library such as controller-runtime.
+- **NetworkPolicy:** firewall rules between pods. Until a policy selects a pod, it accepts traffic from every other pod, and a policy works only when the network plugin of the cluster enforces it.
+- **Pod Security Standards and admission control:** the API server checks each pod against a profile, such as `restricted`, before it stores it, but only in a namespace labeled to enforce one. Without the label, the level is `privileged`, which allows everything. Your own policies run as admission control too.
+- **Gateway API:** the successor to Ingress for routing HTTP traffic into the cluster, with roles split between cluster operators and application teams.
+- **Cluster upgrades:** one minor version at a time, control plane first, then the nodes, with the deprecated API versions removed from every manifest before the upgrade.
 
 ## Further Reading
 
-This section is not written yet.
+- [Kubernetes Components](https://kubernetes.io/docs/concepts/overview/components/): the official overview of the control plane and node components and what each one does.
+- [Controllers](https://kubernetes.io/docs/concepts/architecture/controller/): the control loop pattern, desired state and how built-in controllers act through the API server.
+- [Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/): rolling updates, `maxSurge` and `maxUnavailable`, rollout status and rollbacks.
+- [Using RBAC Authorization](https://kubernetes.io/docs/reference/access-authn-authz/rbac/): Roles, ClusterRoles, bindings, the default roles and the warnings about Secrets.
+- [Virtual IPs and Service Proxies](https://kubernetes.io/docs/reference/networking/virtual-ips/): how kube-proxy implements Services in the iptables, nftables and IPVS modes, and the IPVS deprecation schedule.

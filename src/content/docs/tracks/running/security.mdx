@@ -53,11 +53,11 @@ vps.worker -> sites
 vps.worker -> meta: blocked {style.stroke-dash: 4}
 `}
   steps={[
-    { hl: ['user', 'vps.traefik', 'vps.api', 'user->vps.traefik', 'vps.traefik->vps.api'], caption: 'The internet to the api: every request from a browser crosses here. TLS protects it on the way, the session cookie names the user, and sameOrigin refuses writes that another site starts.' },
+    { hl: ['user', 'vps.traefik', 'vps.api', 'user->vps.traefik', 'vps.traefik->vps.api'], caption: 'The internet to the api: every request from a browser crosses here. Transport Layer Security (TLS) protects it on the way, the session cookie names the user, and sameOrigin refuses writes that another site starts.' },
     { hl: ['vps.api', 'vps.pg', 'vps.api->vps.pg'], caption: 'The api to Postgres: user input reaches the database only as SQL parameters, never as part of the statement text.' },
     { hl: ['vps.worker', 'sites', 'meta', 'vps.worker->sites', 'vps.worker->meta'], caption: 'The worker to the URLs it fetches: users choose these targets. Public sites pass. The metadata service, the Kubernetes API and every other internal address must stay out of reach, and SafeDialer refuses them at dial time.' },
-    { hl: ['ci', 'vps.kube', 'ci->vps.kube'], caption: 'CI to the cluster: the deploy job reaches the Kubernetes API only through an SSH tunnel, and RBAC limits its token to one namespace.' },
-    { hl: ['laptop', 'vps.kube', 'laptop->vps.kube'], caption: 'Your laptop to the VPS: SSH with a key, no passwords, and the administrator kubeconfig that only you hold.' },
+    { hl: ['ci', 'vps.kube', 'ci->vps.kube'], caption: 'CI to the cluster: the deploy job reaches the Kubernetes API only through an SSH tunnel, and role-based access control (RBAC) limits its token to one namespace, a named partition of the cluster.' },
+    { hl: ['laptop', 'vps.kube', 'laptop->vps.kube'], caption: 'Your laptop to the VPS: SSH with a key, no passwords. Only you hold the administrator kubeconfig, the file with the cluster address and credentials.' },
   ]}
 />
 
@@ -74,7 +74,7 @@ The Open Worldwide Application Security Project (OWASP) publishes the **OWASP To
 | A01 Broken Access Control | A user reads or changes data that belongs to someone else, or reaches a server-side resource through the app. Since 2025, the category includes server-side request forgery | Check every request on the server, deny by default, check the object and not only the route |
 | A02 Security Misconfiguration | A debug page in production, a default password, a port open to the internet, a missing security header | A minimal, reviewed configuration in Git, and a test that checks it |
 | A03 Software Supply Chain Failures | A dependency, a build tool or a base image carries malicious or vulnerable code | Pinned versions with checksums, fewer dependencies, a vulnerability scan in CI |
-| A04 Cryptographic Failures | Plain HTTP, a fast hash for passwords, a hardcoded key, a weak random number | Transport Layer Security (TLS) everywhere, bcrypt or Argon2id for passwords, `crypto/rand` for tokens |
+| A04 Cryptographic Failures | Plain HTTP, a fast hash for passwords, a hardcoded key, a weak random number | TLS everywhere, bcrypt or Argon2id for passwords, `crypto/rand` for tokens |
 | A05 Injection | Input becomes code: SQL built by string concatenation, HTML shown without escaping, a shell command with user text in it | Parameters in SQL, escaping in templates, no shell |
 | A06 Insecure Design | The design itself has no answer to a threat: no rate limit on a login, no limit on what a URL can reach | Threat modeling before building, abuse cases next to use cases |
 | A07 Authentication Failures | Guessable passwords, unlimited guesses, a session that never ends or survives logout | Slow hashes, a login limit, random session tokens with an expiry |
@@ -86,18 +86,18 @@ The Open Worldwide Application Security Project (OWASP) publishes the **OWASP To
 
 **Server-side request forgery** (SSRF) makes your server send a request that the attacker chooses. The server sits inside your network, with network access and credentials the attacker does not have. A request from the server reaches what the internet cannot.
 
-An uptime monitor is SSRF as a feature: a user types a URL, and the worker fetches it every 30 seconds. Nothing stops the URL from naming an address inside your own network:
+An uptime monitor is SSRF as a feature: a user types a URL, and the worker fetches it at an interval of 30 seconds or more. Nothing stops the URL from naming an address inside your own network:
 
-- `http://169.254.169.254/` is the **metadata service** of AWS, Google Cloud, DigitalOcean, Hetzner Cloud and others: an HTTP server, reachable only from the machine itself, that answers questions about the machine. On AWS, with version 1 of the Instance Metadata Service (IMDS) enabled, a plain `GET` returns temporary credentials for the role of the machine.
-- `https://10.43.0.1/` is the Kubernetes API inside a K3s cluster, and `http://postgres:5432/` is the database.
+- `http://169.254.169.254/` is the **metadata service** of Amazon Web Services (AWS), Google Cloud, DigitalOcean, Hetzner Cloud and others: an HTTP server, reachable only from the machine itself, that answers questions about the machine. On AWS, with version 1 of the Instance Metadata Service (IMDS) enabled, a plain `GET` returns temporary credentials for the role of the machine.
+- `https://10.43.0.1/` is the Kubernetes API inside a K3s cluster, the small Kubernetes distribution that Week 16 installs, and `http://postgres:5432/` is the database.
 - `http://127.0.0.1:6061/debug/pprof/profile` is the Go profiler of the worker itself, when you start it with `-pprof-addr`. It listens only on loopback because its owner trusts the machine. `/debug/pprof/cmdline` hands out the command line of the worker, and each request to `/debug/pprof/profile` starts a 30-second CPU profile of it.
 
-The monitor shows only the status code and the timings, not the body. That still leaks: an attacker maps which internal addresses and ports answer, and an internal service that changes state on a `GET` changes it every 30 seconds.
+The monitor shows only the status code and the timings, not the body. That still leaks: an attacker maps which internal addresses and ports answer, and an internal service that changes state on a `GET` changes it at every interval, as short as 30 seconds.
 
 Checking the URL text before the request fails, for four reasons:
 
 1. **A name hides the address.** `http://evil.example/` resolves to whatever its owner sets, including `169.254.169.254`.
-2. **The answer changes.** In a **DNS rebinding** attack, the name resolves to a public address when your check asks and to an internal address a second later, when the HTTP client asks again. The gap between the check and the use is the bug: a time-of-check to time-of-use race.
+2. **The answer changes.** In a **Domain Name System (DNS) rebinding** attack, the name resolves to a public address when your check asks and to an internal address a second later, when the HTTP client asks again. The gap between the check and the use is the bug: a time-of-check to time-of-use race.
 3. **One address has many spellings.** `::ffff:169.254.169.254` is the same address in IPv6 form. The C library and `curl` also accept `2852039166` and `0xA9FEA9FE` for `169.254.169.254`.
 4. **Redirects.** A public URL answers `302` with a `Location` header that names an internal one.
 

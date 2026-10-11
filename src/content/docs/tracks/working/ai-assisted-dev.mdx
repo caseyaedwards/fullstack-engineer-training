@@ -31,7 +31,7 @@ When your Go program fails to compile and you work out why, you build a model of
 
 Anthropic measured this in a randomized trial published in January 2026. Its 52 engineers, most of them junior, learned Trio, a Python library new to all of them, and half of them worked with an assistant. On the quiz afterward, the assistant group averaged 50% and the hand-coding group 67%, with the widest gap on debugging questions. The assistant group finished about two minutes faster, a difference the study found not statistically significant. The participants who scored well used the assistant for conceptual questions and explanations, and fixed their own errors.
 
-Early on, you need the skill more than the speed, because every later week assumes you can read Go, a stack trace and a diff. Once you can judge the output, the speed is worth having.
+Early on, you need the skill more than the speed, because every later week assumes you can read Go, a stack trace and a diff.
 
 ### The Three Stages
 
@@ -99,7 +99,7 @@ At stage 3, the assistant writes most of the boilerplate. Two kinds of decision 
 - **Architecture**: which programs exist, what they own, how they talk, which details each metric records, which limits protect the service. Week 13 shows how one extra detail on a metric multiplies its storage. An assistant optimizes for the prompt in front of it, without the constraints you know from running the system.
 - **Incident response**: when production breaks, you follow the **runbook**, the page that tells the person on call what to do for each alert, read your graphs and choose the **mitigation**, the action that stops the damage before the real fix. A model handed a pasted log suggests the most common fix for that error text, not the fix for your system.
 
-Use it around those decisions: to list options before you decide, to review the record where you write down a decision and its reasons, and to check the timeline of a **postmortem**, the write-up after an incident, for gaps.
+Use it around those decisions: to list options before you decide, to review the record where you write down a decision and its reasons, and to check the timeline of an incident for gaps and a **postmortem**, the write-up after an incident, for sentences that blame a person.
 
 ## Diagrams
 
@@ -214,7 +214,7 @@ The NaN line shows a huge negative index on amd64 processors. On arm64, Go conve
 
 <CodeFrom file="go/tracks/aiassisted/percentile.go" region="percentile" lang="go" title="percentile.go" />
 
-`slices.Clone` copies the input before `slices.Sort` sorts the copy. The **rank** is the position of the percentile in the sorted copy, counted from `0`: for p 50 of four values, `1.5`. The function interpolates between the values on either side, which gives `25` for 10, 20, 30 and 40. Tools define percentiles in different ways: the doc comment names this one, and the cases pin it down.
+`slices.Clone` copies the input before `slices.Sort` sorts the copy. The **rank** is the position of the percentile in the sorted copy, counted from `0`: for p 50 of four values, `1.5`. The function interpolates between the values on either side, which gives `25` for 10, 20, 30 and 40. The doc comment names this definition, and the cases pin it down.
 
 At stage 1, you write `Percentile` yourself and ask the assistant why NaN slips through `p < 0 || p > 100`. At stage 2, the assistant drafts it, and your cases decide whether the draft merges.
 
@@ -224,7 +224,7 @@ At stage 1, you write `Percentile` yourself and ask the assistant why NaN slips 
 
 <WeekLink n={6} anchor="ai-this-week">Week 6</WeekLink> starts stage 2: the assistant writes the api stub and a test, and you break the handler on purpose, add the missing cases and explain each function. <WeekLink n={11} anchor="ai-this-week">Week 11</WeekLink> keeps `.env`, session tokens and password hashes out of the chat.
 
-<WeekLink n={13} anchor="ai-this-week">Week 13</WeekLink> starts stage 3. The assistant builds a panel for Grafana, the dashboard tool of that week, and you choose the labels on each metric: every distinct label value creates one more series that Prometheus, the metrics database, stores. The p95 latency on that dashboard is the 95th percentile from the example, which Prometheus estimates from counts of requests per duration range. <WeekLink n={14} anchor="step-7-read-every-sha-yourself">Week 14</WeekLink> reads every action SHA from `git ls-remote`. <WeekLink n={18} anchor="ai-this-week">Week 18</WeekLink> keeps the incident drill in your hands and asks the assistant afterward to check the postmortem for gaps.
+<WeekLink n={13} anchor="ai-this-week">Week 13</WeekLink> starts stage 3. The assistant builds a panel for Grafana, the dashboard tool of that week, and you choose the labels on each metric: every distinct label value creates one more series that Prometheus, the metrics database, stores. The p95 latency on that dashboard is the 95th percentile from the example, which Prometheus estimates from counts of requests per duration range. <WeekLink n={14} anchor="step-7-read-every-sha-yourself">Week 14</WeekLink> reads every action SHA from `git ls-remote`. <WeekLink n={18} anchor="ai-this-week">Week 18</WeekLink> keeps the incident drill in your hands and afterward asks the assistant to check your timeline for gaps and your postmortem draft for sentences that blame a person.
 
 ## Common Mistakes
 

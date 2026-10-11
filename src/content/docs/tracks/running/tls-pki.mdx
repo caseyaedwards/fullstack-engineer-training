@@ -20,7 +20,7 @@ TLS (Transport Layer Security) encrypts a connection and proves that the server 
 
 **Public-key cryptography** works with a key pair. The **private key** stays secret with its owner. The **public key** goes to anyone. Data signed with the private key verifies with the public key, and nobody without the private key can produce a valid signature. That is the whole basis of a certificate: a trusted party signs a statement that a public key belongs to a name.
 
-In TLS 1.3, the certificate key only signs. During the handshake, both sides create a fresh key pair for this one connection and combine them in a **key exchange** to agree on a session key. The server signs the handshake with its certificate key, in the **CertificateVerify** message, to prove it holds the private key. Because the session key comes from throwaway keys, a stolen certificate key later cannot decrypt traffic recorded today. This property is **forward secrecy**. The <TrackLink slug="networking">Networking track</TrackLink> and <WeekLink n={4} anchor="tls-making-the-connection-private">Week 4</WeekLink> walk through the handshake itself.
+In TLS 1.3, the certificate key only signs. During the handshake, both sides create a fresh key pair for this one connection and combine them in a **key exchange** to agree on a session key. The server signs the handshake with its certificate key, in the **CertificateVerify** message, to prove it holds the private key. Because the session key comes from throwaway keys, a stolen certificate key later cannot decrypt traffic recorded today. This property is **forward secrecy**. <WeekLink n={4} anchor="tls-making-the-connection-private">Week 4</WeekLink> walks through the handshake itself, message by message, with the matching `curl -v` output.
 
 ### What a Certificate Holds
 
@@ -32,7 +32,7 @@ A certificate is a small file in the **X.509** format, spelled `x509` in the nam
 - **Issuer**: the name of the CA that signed it.
 - **Validity**: `NotBefore` and `NotAfter`. Outside those dates, clients reject it.
 - **Serial number**: unique per CA, which names one certificate in a revocation.
-- **Key usage** and **extended key usage**: what the key can do. A server certificate carries `serverAuth`. A CA certificate carries `certSign`.
+- **Key usage** and **extended key usage**: what the key can do. A server certificate carries `serverAuth`. A CA certificate carries `keyCertSign`.
 - **Basic constraints**: whether the certificate belongs to a CA, and how many CAs can sit below it.
 - **Signature**: the issuer signature over all of the above.
 
@@ -68,7 +68,7 @@ The industry answer is short lifetimes. A stolen key is useful only until the ce
 **ACME**, the Automatic Certificate Management Environment protocol, automates issuance. Request for Comments (RFC) 8555, the specification of the Internet Engineering Task Force (IETF) for ACME, defines it. An ACME client creates an **account** with a key pair of its own and signs every request with that account key. It places an **order** for a list of names. For each name, the CA returns an **authorization** with one or more **challenges**, ways to prove control:
 
 - **HTTP-01**: serve a token at `http://<name>/.well-known/acme-challenge/<token>`, on port `80`. It cannot issue a wildcard certificate.
-- **DNS-01**: publish a token in a TXT record, a DNS record that holds free text, at `_acme-challenge.<name>`. It works for wildcards and for servers that the internet cannot reach, and it needs an API key for your DNS provider.
+- **DNS-01**: publish a token in a TXT record, a DNS record that holds free text, at `_acme-challenge.<name>`. It works for wildcards and for servers that the internet cannot reach, and it needs an API key for your DNS provider. The <TrackLink slug="dns">DNS track</TrackLink> covers TXT records and TTLs.
 - **TLS-ALPN-01**: answer a special TLS handshake on port `443`. ALPN, Application-Layer Protocol Negotiation, is the TLS extension that names the protocol inside the connection, and this challenge asks for a protocol name of its own.
 
 Once every authorization is valid, the client sends a **certificate signing request** (CSR): its new public key and the names, signed with the matching private key. The CA signs the certificate, and the client downloads it with the chain.
