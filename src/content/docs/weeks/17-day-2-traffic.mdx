@@ -48,13 +48,7 @@ In <a href={weekHref(16)}>Week 16</a>, your monitor went live on a k3s server wi
 
 **Scaling out** adds copies of a program; **scaling up** gives one copy a bigger machine. A **HorizontalPodAutoscaler**, HPA for short, scales a Deployment out and back in. It needs one number per pod, and the simplest one is CPU.
 
-k3s ships **metrics-server**, a small program that collects the CPU and memory use of every pod from the kubelet on each node every 15 seconds, and serves the latest numbers through the Kubernetes API. `kubectl top pods` reads them, and the HPA controller does too. The controller divides the CPU use of each pod by its CPU **request**, the share of a CPU that the pod asked for in <a href={weekHref(15)}>Week 15</a>, and averages the percentages. Every 15 seconds, it computes:
-
-```txt
-desired replicas = ceil(current replicas × current average / target average)
-```
-
-With two api pods at 140% of their request and a target of 70%, it asks for four. A pod without a CPU request has no percentage: the HPA shows `<unknown>` and does nothing.
+k3s ships **metrics-server**, a small program that collects the CPU and memory use of every pod from the kubelet on each node every 15 seconds, and serves the latest numbers through the Kubernetes API. `kubectl top pods` reads them, and the HPA controller does too. The controller divides the CPU use of each pod by its CPU **request**, the share of a CPU that the pod asked for in <a href={weekHref(15)}>Week 15</a>, and averages the percentages. Every 15 seconds, it computes `desired replicas = ceil(current replicas × current average / target average)`. With two api pods at 140% of their request and a target of 70%, it asks for four. A pod without a CPU request has no percentage: the HPA shows `<unknown>` and does nothing.
 
 Two defaults shape what you see. Scaling up happens at once, by up to four pods or double the count every 15 seconds. Scaling down waits for a **stabilization window** of 300 seconds and uses the highest count it computed in that window, which keeps the count from jumping with every spike.
 
@@ -64,10 +58,7 @@ CPU is a good signal for the api: every request costs CPU. It is a weak signal f
 
 ### Rolling Updates and Rollbacks
 
-Every change to the pod template of a Deployment, such as a new image tag or a new environment variable, creates a new **ReplicaSet** and a new **revision**. A **rolling update** moves the pods from the old ReplicaSet to the new one in steps. Two settings bound each step:
-
-- `maxSurge`: how many pods above the wanted count can exist during the rollout.
-- `maxUnavailable`: how many pods below the wanted count the rollout allows.
+Every change to the pod template of a Deployment, such as a new image tag or a new environment variable, creates a new **ReplicaSet** and a new **revision**. A **rolling update** moves the pods from the old ReplicaSet to the new one in steps. Two settings bound each step: `maxSurge`, how many pods above the wanted count can exist during the rollout, and `maxUnavailable`, how many pods below the wanted count the rollout allows.
 
 With `maxSurge: 1` and `maxUnavailable: 0`, the controller starts one new pod, waits until it is **available**, then stops one old pod, and repeats. Available means ready, and ready for `minReadySeconds` in a row: a pod that passes its first probe and crashes 5 seconds later never counts. When no step succeeds for `progressDeadlineSeconds`, Kubernetes marks the rollout as failed. The old pods keep serving, because none of them stops before a new one is available.
 
@@ -135,7 +126,7 @@ Each api pod keeps its buckets in its own memory. With four replicas, a client w
 
 ### Backups You Have Restored
 
-<a href={weekHref(8)}>Week 8</a> set two rules: keep a backup on another machine, and restore it on a schedule. A dump on the VPS disk breaks the first rule: the disk, the VPS or one `kubectl delete namespace` takes it with the data. This week, each dump leaves the box at once, to **object storage**, a service that stores files, called objects, in buckets over an S3-compatible API. It leaves encrypted with **age**, a small file encryption tool: the VPS holds only the public key, which can encrypt and never decrypt. The cluster gets an upload key that can add objects and nothing else, which leaves an attacker on the VPS no way to read or delete your backups.
+<a href={weekHref(8)}>Week 8</a> set two rules: keep a backup on another machine, and restore it on a schedule. A dump on the VPS disk breaks the first rule: the disk, the VPS or one `kubectl delete namespace` takes it with the data. This week, each dump leaves the box at once, to **object storage**, a service that stores files, called objects, in buckets over an S3-compatible API. It leaves encrypted with **age**, a small file encryption tool: the VPS holds only the public key, which can encrypt and never decrypt. The cluster gets only an upload key: an attacker on the VPS cannot read your backups, and the bucket rules of Step 11 keep what that key can hide or overwrite for 30 days.
 
 Two numbers describe a backup plan. The **recovery point objective**, RPO, is how much data you accept to lose. It is the interval between two copies that reached another machine: with one upload a night, up to 24 hours of check results. The **recovery time objective**, RTO, is how long you accept the monitor to stay down while you restore. You do not know how long a restore takes until you time one. A **restore drill** does exactly that, into a new, empty server, and fails loudly when the newest backup is missing, too old, unreadable or not the database you meant to save. It runs on your laptop, the one place that holds the private key. The <a href={trackHref('backups')}>Backups track</a> covers physical backups with write-ahead log (WAL) archiving, which brings the RPO down to minutes.
 
@@ -151,8 +142,7 @@ your-monitor/
 ├── Dockerfile                        new target: backup
 └── deploy/
     ├── backup/                       new: backup.sh, restore-drill.sh
-    ├── backup_test.go                new: runs both scripts
-    ├── deploy_test.go                new: checks the overlay files against each other
+    ├── backup_test.go, deploy_test.go  new: run the scripts, check the overlay
     ├── vps/k3s/traefik-config.yaml   new: keeps the client address
     ├── k8s/cluster/ci-deployer.yaml  grants CI the new kinds
     ├── k8s/manifests_test.go         the Role test learns the new kinds
@@ -268,14 +258,7 @@ The last command prints `Local` once k3s has redeployed Traefik. The k3s documen
 
 ### Step 8: Limit at the Edge with Traefik
 
-Traefik reads Middleware objects from a custom resource, and its API group depends on the Traefik version. Traefik 3 reads `traefik.io/v1alpha1`; it dropped the `traefik.containo.us` group of Traefik 2. Check what your k3s runs:
-
-```sh
-kubectl -n kube-system get deploy traefik -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
-kubectl get crd middlewares.traefik.io -o jsonpath='{.spec.versions[*].name}{"\n"}'
-```
-
-The first prints the image with its tag, such as `rancher/mirrored-library-traefik:3.7.14`. The second prints `v1alpha1`. This page checked its Middleware against the CRD of the Traefik chart that the k3s 1.36 branch ships, chart 40.1.0 with Traefik 3.7.14, read from the k3s and Traefik source repositories. Add the Middleware:
+Traefik reads Middleware objects from a custom resource, and its API group depends on the Traefik version. Traefik 3 reads `traefik.io/v1alpha1`; it dropped the `traefik.containo.us` group of Traefik 2. Check what your k3s runs: `kubectl -n kube-system get deploy traefik -o wide` shows the image with its tag, such as `rancher/mirrored-library-traefik:3.7.14`, and `kubectl get crd middlewares.traefik.io -o jsonpath='{.spec.versions[*].name}'` prints `v1alpha1`. This page checked its Middleware against the CRD of the Traefik chart that the k3s 1.36 branch ships, chart 40.1.0 with Traefik 3.7.14, read from the k3s and Traefik source repositories. Add the Middleware:
 
 <CodeFrom file="go/week17/your-monitor/deploy/k8s/overlays/prod/ratelimit.yaml" region="middleware" lang="yaml" title="deploy/k8s/overlays/prod/ratelimit.yaml" />
 
@@ -321,11 +304,26 @@ The HPA computes against the CPU requests of Week 15, which `kubectl describe de
 
 Start with the key, on your laptop. `mkdir -p ~/.config/your-monitor && age-keygen -o ~/.config/your-monitor/backup.key` writes a private key to a file that only you can read, and prints its public key. Put the public key, the line that starts with `age1`, into `AGE_RECIPIENT` in the kustomization of Step 9. The private key never goes to the VPS or into Git. Keep a copy in your password manager and one offline, on a USB stick in a drawer: without the key, every backup is noise.
 
-Next, a bucket at a provider with an S3-compatible API. Backblaze B2 is a cheap one, and AWS S3 itself works too. Create `your-monitor-backups` and set it up in three parts:
+Next, a bucket, `your-monitor-backups`, at a provider with an S3-compatible API. Backblaze B2 is a cheap one, and AWS S3 itself works too. It needs two keys: an upload key for the cluster, and a read key for your laptop, which lists and reads. No provider offers an upload key that can only add, and the bucket rules cover what each key can do beyond that:
 
-- Turn on object versioning where the provider offers it: an upload under an existing name then keeps the old object.
-- Add a lifecycle rule that deletes objects after 30 days. The cluster key cannot delete, which leaves the pruning to the provider.
-- Make two keys. The upload key, for the cluster, can add objects and nothing else: on B2, an application key for this bucket with the single capability `writeFiles`; on AWS, an IAM policy that allows only `s3:PutObject` on the bucket. The read key, for your laptop, can list and read.
+- **Backblaze B2.** The `writeFiles` capability also hides files, and a delete through the S3 API hides the newest version of a file. The lifecycle rule below hides each file 30 days after its upload and keeps hidden versions for 30 more days (`daysFromHidingToDeleting`): an attacker who hides your backups leaves you a month to unhide them.
+- **AWS S3.** A policy that allows only `s3:PutObject` on the objects cannot delete, but it can upload over an existing name. Turn on versioning, which keeps the old version, and add a lifecycle rule that expires objects after 30 days, with a `NoncurrentVersionExpiration` of 30 days for the old versions that expiry and overwrites leave behind.
+- **Both.** Any upload key can add a newer `.dump.age` and `.counts` pair of its own, encrypted to your public key, which is no secret. The drill takes the newest pair, and a planted one restores without error. Read the drill counts before a real restore, and restore an older backup by name when they do not look like your data.
+
+Object Lock, which both providers offer, is the stronger option: no key can delete or overwrite a locked object until its retention period ends. With the `b2` command-line tool, the bucket and the two keys are:
+
+```sh
+b2 bucket create --lifecycle-rule '{"fileNamePrefix": "", "daysFromUploadingToHiding": 30, "daysFromHidingToDeleting": 30}' your-monitor-backups allPrivate
+b2 key create --bucket your-monitor-backups backup-upload writeFiles
+b2 key create --bucket your-monitor-backups backup-read listBuckets,listFiles,readFiles
+```
+
+On AWS, the IAM user of the upload key gets this policy, and the one of the read key gets `s3:ListBucket` on the bucket and `s3:GetObject` on `arn:aws:s3:::your-monitor-backups/*`:
+
+```json
+{"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s3:PutObject",
+  "Resource": "arn:aws:s3:::your-monitor-backups/*"}]}
+```
 
 rclone, the tool that copies files to object storage, reads a remote named `offsite` from variables named `RCLONE_CONFIG_OFFSITE_*`. Put the upload key into a Secret:
 
@@ -348,7 +346,7 @@ CI builds it next to the other five, with `backup` added to the target list in `
 
 <CodeFrom file="go/week17/your-monitor/deploy/backup/backup.sh" region="backup-script" lang="sh" title="deploy/backup/backup.sh" />
 
-`pg_export_snapshot` names the snapshot of the open transaction, and `pg_dump --snapshot` dumps exactly that snapshot: the `.counts` file describes the dump, whatever the worker writes meanwhile, and the drill compares against it. The three `rclone` options keep it from listing the bucket or reading an object back, two things a write-only key cannot do. The CronJob:
+`pg_export_snapshot` names the snapshot of the open transaction, and `pg_dump --snapshot` dumps exactly that snapshot: the `.counts` file describes the dump, whatever the worker writes meanwhile, and the drill compares against it. The three `rclone` options keep it from listing the bucket or reading an object back, two things the upload key has no right to. The CronJob:
 
 <CodeFrom file="go/week17/your-monitor/deploy/k8s/overlays/prod/backup.yaml" region="backup-cronjob" lang="yaml" title="deploy/k8s/overlays/prod/backup.yaml" />
 
@@ -364,15 +362,16 @@ The drill needs the private key, which lives on your laptop, and runs there, in 
 
 ```sh
 docker build --target backup -t your-monitor-backup .
-docker run --rm -i --env-file ~/.config/your-monitor/offsite-read.env -e AGE_IDENTITY=- \
+live=$(kubectl exec statefulset/postgres -- psql -U monitor -d monitor -Atc 'select count(*) from monitors')
+docker run --rm -i --env-file ~/.config/your-monitor/offsite-read.env -e AGE_IDENTITY=- -e LIVE_MONITORS="$live" \
   your-monitor-backup restore-drill.sh < ~/.config/your-monitor/backup.key
 ```
 
-`AGE_IDENTITY=-` makes `age` read the key from standard input, which `-i` connects to the file: the key never lands on a disk inside the container.
+`LIVE_MONITORS` passes the monitor count of the live database. `AGE_IDENTITY=-` makes `age` read the key from standard input, which `-i` connects to the file: the key never lands on a disk inside the container.
 
 <CodeFrom file="go/week17/your-monitor/deploy/backup/restore-drill.sh" region="drill-script" lang="sh" title="deploy/backup/restore-drill.sh" />
 
-A new server, rather than a new database on the live one, proves more: the dump restores with no roles, no extensions and no settings from production. `MAX_AGE_HOURS` of 26 turns a backup CronJob that silently stopped into a failed drill. The counts catch a dump that restores without error but holds the wrong data, such as an empty database. Against an S3-compatible server on the machine that built this page, holding a backup of three monitors and 280,240 results, the drill printed:
+A new server, rather than a new database on the live one, proves more: the dump restores with no roles, no extensions and no settings from production. `MAX_AGE_HOURS` of 26 turns a backup CronJob that silently stopped into a failed drill. The counts of the `.counts` file catch a dump that restores only in part. They cannot catch a backup of the wrong database, whose dump and counts agree with each other; `LIVE_MONITORS` does: a restore with no monitors fails while the live database has some. A backup dated in the future fails too. Against an S3-compatible server on the machine that built this page, holding a backup of three monitors and 280,240 results, the drill printed:
 
 ```txt
 dump:     monitor-20261011-095512.dump.age, 728 KiB, 0 hours old
@@ -382,11 +381,11 @@ backup:   3 280240 0 3
 restore drill: ok, restore 1 s, whole drill 2 s
 ```
 
-Write the restore time down next to the size of the dump: that is how long a restore of your data takes, today. `backup_test.go` runs both scripts against a Postgres that the test starts, with a local folder as the bucket, and breaks the drill six ways:
+Write the restore time down next to the size of the dump: that is how long a restore of your data takes, today. `backup_test.go` runs both scripts against a Postgres that the test starts, with a local folder as the bucket, and breaks the drill seven ways:
 
 <CodeFrom file="go/week17/your-monitor/deploy/backup_test.go" region="drill-test" lang="go" title="deploy/backup_test.go" />
 
-The tests need `age`, `rclone` and the Postgres server tools, and a user other than root, which `initdb` refuses. They skip on a laptop without them and fail in CI, whose test job now installs `age` and `rclone` before `go test`.
+The region calls helpers further up in the file, `live`, `key`, `backup`, `script` and `shortDir`: copy `deploy/backup_test.go` whole from the examples. The tests need `age`, `rclone` and the Postgres server tools, and a user other than root, which `initdb` refuses. They skip on a laptop without them and fail in CI, whose test job now installs `age` and `rclone` before `go test`.
 
 ### Step 13: Validate and Ship
 
@@ -496,13 +495,13 @@ kubectl scale deployment/api deployment/worker deployment/scheduler deployment/a
 docker run --rm -i --env-file ~/.config/your-monitor/offsite-read.env your-monitor-backup \
   sh -c 'rclone copyto "$BACKUP_REMOTE/$1" /tmp/b.age && age --decrypt --identity=- /tmp/b.age' sh monitor-20261011-031702.dump.age \
   < ~/.config/your-monitor/backup.key \
-  | kubectl exec -i statefulset/postgres -- pg_restore -U monitor -d monitor --clean --if-exists --no-owner --exit-on-error
+  | kubectl exec -i statefulset/postgres -- pg_restore -U monitor -d monitor --clean --if-exists --no-owner --single-transaction --exit-on-error
 kubectl scale deployment/api --replicas=2
 kubectl scale deployment/worker deployment/scheduler deployment/alerter --replicas=1
 kubectl patch cronjob pg-backup -p '{"spec":{"suspend":false}}'
 ```
 
-`--clean --if-exists` drops each object of the dump before it creates it again. Your RTO is the restore time of the drill plus the minutes these steps take around it.
+`--single-transaction` rolls the whole restore back when the stream breaks halfway, and `--clean --if-exists` drops each object of the dump before it creates it again. Your RTO is the restore time of the drill plus the minutes these steps take around it.
 
 | What you see | What it points to |
 | --- | --- |
@@ -512,10 +511,10 @@ kubectl patch cronjob pg-backup -p '{"spec":{"suspend":false}}'
 | `502` answers during every rollout | No preStop pause on web or api: requests reach pods after `SIGTERM` |
 | Visitors get 429 together, one `client` address in the log | `externalTrafficPolicy` is `Cluster`: the node hides the client |
 | The backup log ends with `rclone could not upload` | The `offsite` Secret: a wrong endpoint, or a key without the right to add objects |
-| The drill fails with `no dump` | No backup reached the bucket: the log of the last backup job says why |
-| The drill fails with `hours old` | The backup CronJob stopped uploading |
+| The drill fails with `no dump` or `hours old` | No backup reached the bucket lately: the log of the last backup job says why |
 | The drill fails with `age could not decrypt` | The object is cut short, or `AGE_RECIPIENT` is not your public key |
-| The drill fails with `no monitors` or `counts differ` | The dump holds other data than the backup counted: trust no backup of that day yet |
+| The drill fails with `no monitors` or `counts differ` | A backup of the wrong database, or a dump that restores only in part |
+| The drill fails with `dated in the future` | An upload that is not yours, or a wrong clock: restore an older backup by name |
 
 </OperateIt>
 

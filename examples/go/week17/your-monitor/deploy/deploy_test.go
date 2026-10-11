@@ -308,6 +308,16 @@ func TestBackupCronJob(t *testing.T) {
 			t.Error(err)
 		}
 	}
+
+	// postgres:17 purges its CA certificates. Without the package, rclone
+	// fails x509 verification on every https endpoint, and no backup
+	// ever uploads.
+	df, _ := os.ReadFile("../Dockerfile")
+	_, stage, _ := strings.Cut(string(df), " AS backup\n")
+	stage, _, _ = strings.Cut(stage, "\nFROM ")
+	if !regexp.MustCompile(`apt-get install [^\n]*\bca-certificates\b`).MatchString(stage) {
+		t.Errorf("the backup stage of the Dockerfile does not install ca-certificates:\n%s", stage)
+	}
 }
 
 // envFrom lists the ConfigMap and Secret names a container reads all keys

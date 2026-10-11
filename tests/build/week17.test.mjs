@@ -78,12 +78,24 @@ test('week 17 encrypts each backup, sends it off the box and drills a restore th
   assert.match(sh, /pg_restore --host="\$work"/, 'the drill script is not on the page');
   assert.match(sh, /\[ "\$restored" = "\$want" \] \|\| fail/, 'the drill must fail on a count mismatch');
   assert.match(sh, /kubectl create secret generic offsite --from-env-file=offsite\.env/);
-  assert.match(sh, /pg_restore -U monitor -d monitor --clean --if-exists/, 'the restore runbook is not on the page');
+  assert.match(sh, /pg_restore -U monitor -d monitor --clean --if-exists --no-owner --single-transaction/,
+    'the restore runbook must restore in one transaction');
+  assert.match(sh, /-e LIVE_MONITORS="\$live"/, 'the drill needs the live monitor count');
+  assert.match(sh, /\[ "\$live" = 0 \] \|\|\s+fail "the restored database has no monitors, the live one has/);
+  assert.match(sh, /\[ "\$secs" -ge 0 \] \|\| fail "the newest dump, \$name, is dated in the future"/);
+  assert.match(sh, /b2 key create --bucket your-monitor-backups backup-upload writeFiles/);
+  assert.match(sh, /"daysFromHidingToDeleting": 30/);
+  assert.match(blocks('json').join('\n'), /"Action": "s3:PutObject",\s+"Resource": "arn:aws:s3:::your-monitor-backups\/\*"/);
+  assert.match(text, /NoncurrentVersionExpiration/);
+  assert.match(text, /Object Lock/);
+  assert.match(blocks('dockerfile').join('\n'), /apt-get install -y --no-install-recommends age ca-certificates/,
+    'rclone needs CA certificates to reach the bucket over https');
   assert.doesNotMatch(sh, /pg_dump -U monitor -d monitor --format=custom >/, 'no plaintext dump to the laptop');
   const go = blocks('go').join('\n');
   assert.match(go, /func TestNewPodsPassRestricted/);
   assert.match(go, /func TestRestoreDrill/);
-  assert.match(go, /"FAILED: the restored database has no monitors, the backup counted 2"/);
+  assert.match(go, /"FAILED: the restored database has no monitors, the live one has 2"/);
+  assert.match(go, /"the newest backup is dated in the future"/);
   assert.match(text, /RPO is now the interval between uploads/);
 });
 

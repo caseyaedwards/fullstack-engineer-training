@@ -171,8 +171,9 @@ func TestBackupUploadsOnlyCiphertext(t *testing.T) {
 // region: drill-test
 
 // TestRestoreDrill takes a real backup, then runs the drill on copies of
-// the remote: as it is, and broken six ways. Each way fails with its own
-// message, which is what the reader sees in the drill log.
+// the remote: as it is, and broken seven ways. Each way fails with its own
+// message, which is what the reader sees in the drill log. The live
+// database holds two monitors, which LIVE_MONITORS=2 tells the drill.
 func TestRestoreDrill(t *testing.T) {
 	env := live(t, pgBin(t))
 	identity := key(t)
@@ -181,11 +182,12 @@ func TestRestoreDrill(t *testing.T) {
 	files, _ := filepath.Glob(filepath.Join(good, "*.dump.age"))
 	dump := filepath.Base(files[0])
 
-	// A backup of the empty database, to slip in under the name of the
-	// real one: what a backup of the wrong database looks like.
+	// A whole backup of the empty database, dump and counts: what a
+	// backup with the wrong PGDATABASE looks like. Its counts match its
+	// dump; only the live count shows that it is the wrong database.
 	emptied := t.TempDir()
 	backup(t, append(env, "PGDATABASE=empty"), identity, emptied)
-	emptyDump, _ := filepath.Glob(filepath.Join(emptied, "*.dump.age"))
+	stem := strings.TrimSuffix(dump, ".dump.age")
 
 	tests := []struct {
 		name  string
@@ -196,16 +198,21 @@ func TestRestoreDrill(t *testing.T) {
 		{"a good backup", nil, func(string) {}, "restore drill: ok, restore "},
 		{"no backup at all", nil, func(r string) { os.RemoveAll(r); os.Mkdir(r, 0o755) }, "FAILED: no dump"},
 		{"the newest backup is too old", []string{"MAX_AGE_HOURS=0"}, func(string) {}, "hours old"},
+		{"the newest backup is dated in the future", nil, func(r string) {
+			for _, ext := range []string{".dump.age", ".counts"} {
+				b, _ := os.ReadFile(filepath.Join(r, stem+ext))
+				os.WriteFile(filepath.Join(r, "monitor-20991231-235959"+ext), b, 0o644)
+			}
+		}, "FAILED: the newest dump, monitor-20991231-235959, is dated in the future"},
 		{"the dump is cut short", nil, func(r string) { os.Truncate(filepath.Join(r, dump), 2000) }, "FAILED: age could not decrypt"},
 		{"another key encrypted it", []string{"AGE_IDENTITY=" + key(t)}, func(string) {}, "FAILED: age could not decrypt"},
 		{"the counts differ", nil, func(r string) {
-			counts := strings.TrimSuffix(dump, ".dump.age") + ".counts"
-			os.WriteFile(filepath.Join(r, counts), []byte("2 4 0 3\n"), 0o644)
+			os.WriteFile(filepath.Join(r, stem+".counts"), []byte("2 4 0 3\n"), 0o644)
 		}, "FAILED: the restored counts differ"},
-		{"the dump holds an empty database", nil, func(r string) {
-			b, _ := os.ReadFile(emptyDump[0])
-			os.WriteFile(filepath.Join(r, dump), b, 0o644)
-		}, "FAILED: the restored database has no monitors, the backup counted 2"},
+		{"a backup of the empty database", nil, func(r string) {
+			os.RemoveAll(r)
+			os.CopyFS(r, os.DirFS(emptied))
+		}, "FAILED: the restored database has no monitors, the live one has 2"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -215,7 +222,7 @@ func TestRestoreDrill(t *testing.T) {
 			}
 			tt.spoil(remote)
 			drill := append(env, "BACKUP_REMOTE=offsite:"+remote, "AGE_IDENTITY="+identity,
-				"BACKUP_DIR="+t.TempDir(), "DRILL_DIR="+shortDir(t))
+				"LIVE_MONITORS=2", "BACKUP_DIR="+t.TempDir(), "DRILL_DIR="+shortDir(t))
 			out, err := script(append(drill, tt.env...), "sh", filepath.Join(scripts, "restore-drill.sh"))
 			if ok := tt.want == "restore drill: ok, restore "; ok != (err == nil) || !strings.Contains(out, tt.want) {
 				t.Errorf("err %v, output:\n%s\nwant it to contain %q", err, out, tt.want)

@@ -4,11 +4,13 @@
 # decrypts it with the age identity file AGE_IDENTITY ("-" reads it from
 # standard input), restores it into a new, empty Postgres server in
 # DRILL_DIR, and checks the row counts against the counts that backup.sh
-# wrote beside the dump.
+# wrote beside the dump. LIVE_MONITORS, the monitor count of the live
+# database, catches a backup of the wrong or an empty database.
 set -eu
 work=${DRILL_DIR:-/tmp/drill}
 backups=${BACKUP_DIR:-$work}
 max_age=${MAX_AGE_HOURS:-26}
+live=${LIVE_MONITORS:-0}
 start=$(date +%s)
 
 fail() { echo "restore drill: FAILED: $*"; exit 1; }
@@ -20,7 +22,11 @@ name=$(printf '%s\n' "$list" | sort | tail -n 1)
 [ -n "$name" ] || fail "no dump in $BACKUP_REMOTE"
 name=${name%.counts}
 taken=$(echo "$name" | sed -E 's/monitor-(....)(..)(..)-(..)(..)(..)/\1-\2-\3 \4:\5:\6/')
-age=$(((start - $(date -u -d "$taken" +%s)) / 3600))
+secs=$((start - $(date -u -d "$taken" +%s)))
+# A name from the future is no backup of this database: only someone
+# else's upload, or a clock that is wrong, makes one.
+[ "$secs" -ge 0 ] || fail "the newest dump, $name, is dated in the future"
+age=$((secs / 3600))
 [ "$age" -lt "$max_age" ] || fail "the newest dump, $name, is $age hours old"
 
 mkdir -p "$backups" "$work"
@@ -53,8 +59,8 @@ echo "dump:     $name.dump.age, $(($(stat -c %s "$backups/$name.dump.age") / 102
 echo "          monitors results incidents schema"
 echo "restored: $restored"
 echo "backup:   $want"
-[ "${restored%% *}" != 0 ] || [ "${want%% *}" = 0 ] ||
-  fail "the restored database has no monitors, the backup counted ${want%% *}"
 [ "$restored" = "$want" ] || fail "the restored counts differ from the backup counts"
+[ "${restored%% *}" != 0 ] || [ "$live" = 0 ] ||
+  fail "the restored database has no monitors, the live one has $live"
 echo "restore drill: ok, restore $restore_secs s, whole drill $(($(date +%s) - start)) s"
 # endregion: drill-script
