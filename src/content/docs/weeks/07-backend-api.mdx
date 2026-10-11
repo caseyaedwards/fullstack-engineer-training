@@ -84,7 +84,7 @@ The `net/http` package does the network work for you. `http.Server` accepts conn
 
 The server runs each connection in its own goroutine, the concurrency tool from <a href={weekHref(5)}>Week 5</a>. Two clients therefore run your handlers at the same time, and any data the handlers share needs a lock.
 
-`http.ServeMux` is a handler that picks another handler. It is a **router**, also called a mux, short for multiplexer. Since Go 1.22, its patterns hold a method, a path and **wildcards**: `"GET /api/monitors/{id}"` matches `GET /api/monitors/7`, and `r.PathValue("id")` returns `"7"`. A wildcard matches one whole path segment. When two patterns match a request, the more specific one wins: `/api/monitors/new` beats `/api/monitors/{id}`. When the path matches no pattern, the mux answers `404`. When the path matches but the method does not, it answers `405` with an `Allow` header.
+`http.ServeMux` is a handler that picks another handler. It is a **router**, also called a mux, short for multiplexer. Since Go 1.22, a pattern can hold a method before the path, and **wildcards** in the path: `"GET /api/monitors/{id}"` matches `GET /api/monitors/7`, and `r.PathValue("id")` returns `"7"`. A wildcard matches one whole path segment. When two patterns match a request, the more specific one wins: `/api/monitors/new` beats `/api/monitors/{id}`. When the path matches no pattern, the mux answers `404`. When the path matches but the method does not, it answers `405` with an `Allow` header.
 
 A handler that wraps another handler is called **middleware**: it runs code before and after the inner handler, for every route at once. Your api gets two pieces of middleware this week: one turns the plain-text `404` and `405` answers of the mux into JSON, and one logs every request.
 
@@ -117,12 +117,13 @@ h -> client: "201, Location, JSON"
 
 ### Reading and Writing JSON
 
-The `encoding/json` package turns Go values into JSON and back. A **struct tag**, from Week 6, names the JSON field of each struct field: `IntervalSeconds int` with the tag `json:"interval_seconds"` reads and writes `"interval_seconds"`. Four behaviors of the package shape your handlers:
+The `encoding/json` package turns Go values into JSON and back. A **struct tag**, from Week 6, names the JSON field of each struct field: `IntervalSeconds int` with the tag `json:"interval_seconds"` reads and writes `"interval_seconds"`. Five behaviors of the package shape your handlers:
 
 - **A missing field gets its zero value.** A body without `interval_seconds` decodes with `IntervalSeconds` set to `0`. Validation then refuses `0`, which turns a missing field into a clear error.
 - **Unknown fields are ignored** by default. Without a check, a client that sends `"interval": 60` gets `interval_seconds must be between 30 and 3600, got 0` for a value it believes it sent. `Decoder.DisallowUnknownFields` makes the typo itself the error.
 - **A nil slice encodes as `null`, not `[]`.** A list handler that returns a nil slice for an empty store sends `null`, and a frontend that calls `.map` on it crashes.
 - **`time.Time` encodes as RFC 3339 text**, such as `"2026-10-11T06:52:07.622539Z"`: the date, a `T`, the time, and the time zone, where `Z` means UTC.
+- **Field names match without regard to case** when decoding. `{"URL": "https://example.com", "Interval_Seconds": 60}` creates a monitor, and Go has no setting to stop it. The contract names the lowercase fields, and clients send those.
 
 A body is untrusted input of any size. `http.MaxBytesReader` wraps the body and fails the read after a limit, here 1 MiB, which stops a client from filling the memory of your api with one request.
 
@@ -262,7 +263,7 @@ Create `internal/monitor/monitor_test.go`, in `package monitor`, with the import
 
 <CodeFrom file="go/week07/your-monitor/internal/monitor/monitor_test.go" region="store-test" lang="go" title="internal/monitor/monitor_test.go" />
 
-Run `go test -race ./internal/monitor`. Then comment out every `s.mu.Lock()` and `defer s.mu.Unlock()` line in `memstore.go` and run it again: `TestMemStoreConcurrent` fails with `WARNING: DATA RACE`, the report from Week 5. Put the lines back.
+Run `go test -race ./internal/monitor`. Then comment out every `s.mu.Lock()` and `defer s.mu.Unlock()` line in `memstore.go` and run it again. The run prints `WARNING: DATA RACE`, the report from Week 5. Then `TestMemStoreConcurrent` fails, or the test binary crashes with `fatal error: concurrent map writes` or `fatal error: concurrent map iteration and map write`: the Go runtime stops a program that changes a map from two goroutines at once, with or without the race detector. Put the lines back.
 
 ### Step 4: Write the JSON Helpers
 
@@ -276,6 +277,7 @@ The order inside `writeJSON` matters. Headers set after `WriteHeader` never reac
 
 - `mime.ParseMediaType` splits `application/json; charset=utf-8` into the type and its parameters, which accepts the header with a charset as well.
 - `errors.As` finds an error of a given type anywhere in the chain of wrapped errors and fills in the variable. `*http.MaxBytesError` carries the limit, and `*json.UnmarshalTypeError` carries the field name and the JSON type that arrived.
+- `decodeJSON[T any]` has a **type parameter**, like a generic function in TypeScript: `decodeJSON[createRequest](w, r)` returns a `*createRequest`. It decodes into a pointer, which a body of `null` leaves nil. Without that check, `null` decodes into an empty request and fails validation with a message about the URL.
 - The second `Decode` reads what follows the object. `io.EOF` means the body ends there. A second value, such as `{}`, is an error, because a client that sends two objects expects two monitors and gets one.
 - `encoding/json` in Go 1.24 has no error type for an unknown field, only the message `json: unknown field "interval"`. The helper matches that text and drops the `json: ` prefix.
 
@@ -303,19 +305,23 @@ The routes live in a map, which gives the OpenAPI test in Step 9 one list to com
 
 <CodeFrom file="go/week07/your-monitor/internal/api/api.go" region="delete" lang="go" title="internal/api/api.go" />
 
-`internalError` writes the cause to the log and the fixed message to the client. The `log` package writes to standard output, as it has since Week 3.
+`internalError` writes the cause to the log and the fixed message to the client. `main` points the `log` package at standard output, as it has since Week 3.
 
 ### Step 7: Test the API
 
-Create `internal/api/api_test.go`, in `package api`. It imports `bytes`, `context`, `encoding/json`, `errors`, `io`, `log`, `net/http`, `net/http/httptest`, `os`, `strings`, `testing`, `time` and your `internal/monitor` package. Move `TestHealthz` from `cmd/api/main_test.go` into it, with two changes: call `NewHandler(monitor.NewMemStore())` where it calls `newMux()`, and decode into `struct{ Status string }` where it uses the deleted `health` type. Two helpers build a handler with one monitor in it and send one request:
+Create `internal/api/api_test.go`, in `package api`. It imports `bytes`, `context`, `encoding/json`, `errors`, `io`, `log`, `net/http`, `net/http/httptest`, `os`, `strings`, `testing`, `time` and your `internal/monitor` package. Move `TestHealthz` from `cmd/api/main_test.go` into it, and remove the `encoding/json` import from `cmd/api/main_test.go`, which nothing there uses after the move. `TestHealthz` needs two changes: call `NewHandler(monitor.NewMemStore())` where it calls `newMux()`, and decode into `struct{ Status string }` where it uses the deleted `health` type. Two helpers build a handler with one monitor in it and send one request:
 
 <CodeFrom file="go/week07/your-monitor/internal/api/api_test.go" region="helpers" lang="go" title="internal/api/api_test.go" />
 
-The table of bad requests checks each status code and the exact error message:
+The table of bad requests checks each status code and the exact error message. `TestCreateAccepts`, below it, checks that a `Content-Type` with `charset=utf-8` and field names in another case both create a monitor:
 
 <CodeFrom file="go/week07/your-monitor/internal/api/api_test.go" region="errors-test" lang="go" title="internal/api/api_test.go" />
 
-`TestMonitorLifecycle` in the example file starts the API with `httptest.NewServer` and walks one monitor through list, create, get, list and delete with a real client: an empty list is exactly `[]` plus a newline, `Location` is `/api/monitors/1`, and a `GET` after the delete answers `404`. The fake store covers what a healthy `MemStore` never does:
+`TestMonitorLifecycle` starts the API with `httptest.NewServer` and walks one monitor through list, create, get, list and delete with a real client: an empty list is exactly `[]` plus a newline, `Location` is `/api/monitors/1`, and a `GET` after the delete answers `404`. Its helpers send a request, read a body and decode JSON:
+
+<CodeFrom file="go/week07/your-monitor/internal/api/api_test.go" region="lifecycle-test" lang="go" title="internal/api/api_test.go" />
+
+The fake store covers what a healthy `MemStore` never does:
 
 <CodeFrom file="go/week07/your-monitor/internal/api/api_test.go" region="fake-store-test" lang="go" title="internal/api/api_test.go" />
 
@@ -355,7 +361,7 @@ The linter checks that the file is valid OpenAPI, not that it matches your code.
 
 <CodeFrom file="go/week07/your-monitor/internal/api/openapi_test.go" region="openapi-test" lang="go" title="internal/api/openapi_test.go" />
 
-`go test` runs each test in the folder of its package, which is why the path is `../../api/openapi.yaml`. The Go standard library has no YAML parser, and the test reads only the two indentation levels it needs. Add `"PUT /api/monitors/{id}": h.create,` to `routes`, run `go test ./internal/api`, and read the two lists the test prints. Then remove the line.
+`go test` runs each test in the folder of its package, which is why the path is `../../api/openapi.yaml`. The Go standard library has no YAML parser, and the test reads only the two indentation levels it needs. Add `"PATCH /api/monitors/{id}": h.create,` to `routes` and run `go test ./internal/api`. Two tests fail: `TestOpenAPIMatchesRoutes` prints the two lists, with `PATCH /api/monitors/{id}` only in the second, and `TestMethodNotAllowedListsAllowedMethods` reports `Allow = "DELETE, GET, HEAD, PATCH"`, because the mux builds `Allow` from the routes. Then remove the line.
 
 ### Step 10: Run It
 
@@ -522,7 +528,7 @@ printf 'POST /api/monitors HTTP/1.1\r\nHost: localhost\r\nContent-Type: applicat
 
 The answer is `201 Created` with a `Location` header.
 
-**3. Lie about the length.** Set `Content-Length: 20` and send the same body. The server reads 20 bytes, `{"url": "https://exa`, and answers `400` with `body is not valid JSON`. Then set `Content-Length: 100`. The server waits for the 46 bytes that never arrive, and `nc` waits for an answer that never comes. Press **Ctrl+C**. The api logs the request with a `duration_ms` as long as you waited: the Week 6 `ReadHeaderTimeout` covers the headers, not the body. Week 11 covers the timeouts that stop a slow client from holding a connection.
+**3. Lie about the length.** Set `Content-Length: 20` and send the same body. The server reads 20 bytes, `{"url": "https://exa`, and answers `400` with `body is not valid JSON`. Then set `Content-Length: 100`. The server waits for the 46 bytes that never arrive, and `nc` waits for an answer that never comes. Press **Ctrl+C**. The api logs the request with a `duration_ms` as long as you waited: the Week 6 `ReadHeaderTimeout` covers the headers, not the body. `http.Server` has a second setting, `ReadTimeout`, which bounds the whole request, body included, and stops a slow client from holding a connection.
 
 </SideLab>
 

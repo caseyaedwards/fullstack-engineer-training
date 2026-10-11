@@ -23,7 +23,7 @@ type handler struct {
 }
 
 // routes maps each route pattern to the method that serves it. Since Go
-// 1.22, a pattern starts with a method, and {id} matches one path segment.
+// 1.22, a pattern can start with a method, and {id} matches one path segment.
 func (h *handler) routes() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
 		"GET /healthz":              h.healthz,
@@ -142,8 +142,8 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
 		return
 	}
-	var req createRequest
-	if status, err := decodeJSON(w, r, &req); err != nil {
+	req, status, err := decodeJSON[createRequest](w, r)
+	if err != nil {
 		writeError(w, status, err.Error())
 		return
 	}
