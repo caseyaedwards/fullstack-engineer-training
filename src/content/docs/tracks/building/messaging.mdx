@@ -52,7 +52,7 @@ Week 9 builds its queue as a Postgres table instead of running a broker. The tab
 | --- | --- | --- | --- |
 | Postgres table | Queue | The worker deletes the row in the transaction that stores the result | The jobs live next to your data, and hundreds of jobs a second are enough |
 | RabbitMQ | Queue, with streams as a second type | The ack deletes the message from the queue | Messages need routing rules that copy them into several queues |
-| NATS JetStream | Stream, readable as a log or as a work queue | The stream keeps it until a limit on age, size or count, or deletes it on ack in work-queue mode | You want one small server for both queues and fan-out to several readers |
+| NATS JetStream | Stream, readable as a log or as a work queue | The stream keeps it until a limit on age, size or count, or deletes it on ack in work-queue mode | You want one small server for work queues and for fan-out, where every reader gets its own copy of each message |
 | Redis Streams | Log with consumer groups | The stream keeps it until a trim, such as `XADD` with `MAXLEN` | You already run Redis, and its persistence settings cover what a restart loses |
 | Apache Kafka | Partitioned log | The log keeps it for seven days by default | Many groups read the same events at thousands of messages a second, or replay them |
 
@@ -81,7 +81,7 @@ When the effect leaves your system, such as a webhook, no shared transaction exi
 
 ### Retries and Dead Letters
 
-A message whose handler fails goes back to the broker and comes round again. A message that fails on every attempt, for example because its body does not parse, is a **poison message**. Retrying it forever wastes workers and, on a log, blocks every message behind it in the same partition. Cap the attempts, wait longer between them with **backoff**, and move a message that runs out of attempts to a **dead-letter queue**: a separate queue that a person inspects. The <TrackLink slug="system-design" anchor="example">System and Software Design track</TrackLink> shows a retry loop with backoff and jitter.
+A message whose handler fails goes back to the broker and comes around again. A message that fails on every attempt, for example because its body does not parse, is a **poison message**. Retrying it forever wastes workers and, on a log, blocks every message behind it in the same partition. Cap the attempts, wait longer between them with **backoff**, and move a message that runs out of attempts to a **dead-letter queue**: a separate queue that a person inspects. The <TrackLink slug="system-design" anchor="example">System and Software Design track</TrackLink> shows a retry loop with backoff and jitter.
 
 ## Diagrams
 
@@ -158,7 +158,7 @@ The tests cover a redelivery, a failure followed by a redelivery, and ten delive
 
 <CodeFrom file="go/tracks/messaging/messaging_test.go" region="tests" lang="go" title="messaging_test.go" />
 
-Move `in.seen[m.ID] = true` above the handler call, and `TestHandlerErrorLeavesMessageUnseen` fails: the redelivery after the error comes back as a duplicate, and the work never happens. Release the lock around the handler, and `TestConcurrentDeliveriesRunHandlerOnce` fails with the handler running twice. The first delivery in that test holds the handler open until nine more deliveries have arrived, which makes the overlap happen on every run.
+Move `in.seen[m.ID] = true` above the handler call, and `TestHandlerErrorLeavesMessageUnseen` fails: the redelivery after the error comes back as a duplicate, and the work never happens. Release the lock around the handler, and `TestConcurrentDeliveriesRunHandlerOnce` fails with the handler running twice. The first delivery in that test holds the handler open while nine more deliveries start, and a 50 ms sleep gives them time to reach `Process` before the handler returns. A correct `Inbox` passes whatever the timing. A broken one fails as long as the nine arrive within those 50 ms, which they do on an idle machine and can miss on a heavily loaded one.
 
 The example keeps `seen` in memory, which a restart empties, and which grows with every message. A real consumer keeps the IDs in the same database as its effect, and deletes the ones older than the longest redelivery window. In Postgres, a primary key on the ID does the check and the record in one statement:
 
