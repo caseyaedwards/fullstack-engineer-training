@@ -1,36 +1,153 @@
 ---
 title: "Time and NTP"
+description: How computers keep their clocks in step with NTP, why a program measures durations with a monotonic clock, and how one exchange of four timestamps gives offset and delay, with a tested Go function.
 track: time-ntp
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+Every server keeps its own clock, and every clock drifts. A server whose clock runs five minutes fast rejects valid certificates, writes log lines that sort out of order against its neighbors, and makes an outage timeline impossible to trust. NTP, the Network Time Protocol, keeps clocks within milliseconds of each other. This page explains how it works, and how a Go program tells time and measures time without mixing up the two.
+
 ## What It Is
 
-This section is not written yet.
+### Wall Clocks and Monotonic Clocks
+
+An operating system keeps two kinds of clock:
+
+- The **wall clock** tells the time of day, such as October 11, 2026, at 14:00 UTC. It can jump: NTP corrects it, an administrator sets it, and a virtual machine that resumes from a pause finds it far behind. A duration computed from two wall-clock readings comes out wrong, or negative, when the clock jumps in between.
+- The **monotonic clock** only moves forward, at a steady rate, from an arbitrary starting point such as the boot of the machine. It cannot tell the time of day, but the difference between two readings is a true duration.
+
+**Unix time** is the wall clock as a number: seconds since January 1, 1970, at 00:00 UTC, with leap seconds left out. UTC, Coordinated Universal Time, is the time zone servers and logs use: it has no daylight saving time, and every machine agrees on it.
+
+Go hides the two clocks behind one type. `time.Now()` returns a `time.Time` with both readings. Methods that tell time, such as `Format` and `Unix`, use the wall reading. Methods that measure, `Sub`, `Since`, `Until`, `Before` and `After`, use the monotonic reading when both values carry one. `fmt.Println(time.Now())` prints the monotonic reading at the end as `m=+0.000021375`, seconds since the program started. `t.Round(0)` strips it, and `UTC`, `In` and `Truncate` strip it too. A `time.Time` parsed from text, or from JSON, never has one.
+
+### Clock Drift
+
+A computer counts time with a quartz crystal that vibrates at a fixed rate. No two crystals match exactly, and the rate changes with temperature. A typical error of 20 parts per million, ppm, adds up to 1.7 seconds a day. Without correction, two servers drift seconds apart within a week.
+
+### How NTP Corrects a Clock
+
+An NTP **client** asks one or more **servers** for the time over UDP, the User Datagram Protocol, on port `123`. One exchange records four timestamps:
+
+- **t1:** the client sends the request, by the client clock.
+- **t2:** the server receives it, by the server clock.
+- **t3:** the server sends the reply, by the server clock.
+- **t4:** the client receives the reply, by the client clock.
+
+From those four, the client computes two numbers. The **offset** is how far the server clock runs ahead of the client clock: `((t2 - t1) + (t3 - t4)) / 2`. The **delay** is the time the packets spend on the network, the round trip without the server time: `(t4 - t1) - (t3 - t2)`. The formula assumes the request and the reply take the same time on the network. When the path out is slower than the path back, the offset comes out wrong by half the difference, and NTP has no way to detect it. That is why clients prefer servers with a low delay: a short path has little room for asymmetry.
+
+A client repeats the exchange every 64 to 1,024 seconds, keeps the best measurements from several servers, and throws out a server that disagrees with the rest. Then it corrects the clock in one of two ways:
+
+- **Slew:** it runs the clock slightly fast or slow until the offset is gone. The clock never jumps, and durations measured on the wall clock stay nearly right. Small offsets get slewed.
+- **Step:** it sets the clock to the right time at once. Clients step only for a large offset, such as at boot. A step backward makes the wall clock repeat a stretch of time.
+
+A client also learns the drift rate of its own crystal and corrects for it between exchanges, which keeps the clock close even when the network goes away for hours.
+
+### Strata
+
+NTP servers form a hierarchy of **strata**. **Stratum 0** is a reference clock: an atomic clock, or a receiver for GPS, the Global Positioning System, whose satellites carry atomic clocks. A **stratum 1** server connects to a reference clock directly. A stratum 2 server synchronizes from stratum 1 servers, and each level below sits one hop further from the reference, down to stratum 15. Stratum 16 means unsynchronized. A laptop that synchronizes from a stratum 2 pool server sits at stratum 3. The number counts hops, not accuracy.
+
+### NTP on Your Machines
+
+On Ubuntu 24.04, `systemd-timesyncd` keeps the clock in step: a small client that speaks SNTP, Simple NTP, to one server at a time. `timedatectl` shows whether the clock is synchronized. **chrony** is the full NTP implementation: several servers, drift tracking, and NTS, Network Time Security, which authenticates the replies with keys agreed over TLS, Transport Layer Security. `chronyc tracking` prints the current offset and stratum. Cloud providers run NTP servers inside each data center, at the link-local address `169.254.169.123` on AWS, short for Amazon Web Services, and `metadata.google.internal` on Google Cloud. Public pools such as `pool.ntp.org` serve everyone else.
+
+A **leap second** is one second added to UTC to keep it in step with the rotation of the Earth, last added on December 31, 2016. Some providers, Google and AWS among them, **smear** a leap second: they slow their clocks over 24 hours instead of repeating a second. The General Conference on Weights and Measures decided in 2022 to stop adding leap seconds by 2035.
 
 ## Diagrams
 
-This section is not written yet.
+The four timestamps of one exchange, with the server clock 100 ms ahead, the same numbers the Example tests:
+
+<Diagram
+  id="four-timestamps"
+  title="One NTP exchange and its four timestamps"
+  code={`shape: sequence_diagram
+client: "client\\nyour clock"
+server: "NTP server\\n100 ms ahead"
+
+client -> server: "request, t1 = 0 ms"
+server -> server: "t2 = 110 ms, t3 = 111 ms"
+server -> client: "reply carries t2 and t3"
+client -> client: "t4 = 21 ms"
+`}
+  steps={[
+    { hl: ['client', 'server', 'client->server'], caption: 'The client reads its own clock, t1 = 0 ms, and sends the request. The trip to the server takes 10 ms.' },
+    { hl: ['server', 'server->server'], caption: 'The server stamps the arrival with its own clock, t2 = 110 ms: 10 ms of travel plus a clock 100 ms ahead. It spends 1 ms and stamps the departure, t3 = 111 ms.' },
+    { hl: ['server', 'client', 'server->client'], caption: 'The reply carries t2 and t3 back. The trip back takes 10 ms as well.' },
+    { hl: ['client', 'client->client'], caption: 'The client stamps the arrival, t4 = 21 ms by its own clock: 20 ms of travel and 1 ms on the server.' },
+    { hl: ['client', 'server'], caption: 'Delay: 21 ms minus the 1 ms on the server gives 20 ms. Offset: half of 110 plus 90 gives 100 ms. The client slews its clock forward by 100 ms.' },
+  ]}
+/>
+
+The stratum tree from a reference clock to your laptop:
+
+<Diagram
+  id="strata"
+  title="NTP strata, from an atomic clock to your laptop"
+  code={`direction: down
+s0: "stratum 0\\natomic clock, GPS"
+s1: "stratum 1\\ntime server wired to it"
+s2a: "stratum 2\\npool.ntp.org server"
+s2b: "stratum 2\\ncloud NTP server"
+s3: "stratum 3\\nyour laptop"
+vps: "stratum 3\\nyour server"
+s0 -> s1: "direct connection"
+s1 -> s2a: NTP
+s1 -> s2b: NTP
+s2a -> s3: NTP
+s2b -> vps: NTP
+`}
+/>
 
 ## Example
 
-This section is not written yet.
+`Offset` turns the four timestamps of one exchange into the offset and the delay, with the formulas from What It Is:
+
+<CodeFrom file="go/tracks/timentp/offset.go" region="offset" lang="go" title="offset.go" />
+
+`time.Time.Sub` returns a `time.Duration`. The order of each subtraction matters: `t2.Sub(t1)` is the trip out plus the offset, and `t3.Sub(t4)` is minus the trip back plus the offset. Their sum has the trips cancel when they are equal, which leaves twice the offset.
+
+In a real client, `t1` and `t4` come from `time.Now()` and carry monotonic readings, while `t2` and `t3` come from the packet and carry none. `t4.Sub(t1)` uses the monotonic readings, which keeps the delay right even when NTP steps the clock during the exchange. The other subtractions mix a local time with a server time and fall back to the wall readings, which is exactly what an offset needs.
+
+The tests build every timestamp from a fixed date, which keeps them free of the real clock:
+
+<CodeFrom file="go/tracks/timentp/offset_test.go" region="test" lang="go" title="offset_test.go" />
+
+The first test uses the numbers from the walkthrough. The second confirms the Go behavior this page describes: `time.Now()` prints an `m=` reading, and `Round(0)` removes it. Two more tests in the file cover a server clock that runs behind, which gives a negative offset, and an asymmetric path of 30 ms out and 10 ms back with no real offset: `Offset` reports 10 ms, half of the 20 ms difference.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={4} anchor="step-3-add-the-helpers-that-record-the-times">Week 4</WeekLink> times every step of a check with `time.Now()` and `time.Since`. Both use the monotonic clock, which keeps the DNS, connect, TLS and first-byte rows right even when NTP corrects the wall clock during a check.
+
+The same week shows the cost of a wrong wall clock. In <WeekLink n={4} anchor="operate-it">Operate It</WeekLink>, an expired certificate fails with `x509: certificate has expired or is not yet valid`, and a clock set far in the future or the past gives the very same error, because the check compares the certificate dates with the system clock.
+
+From then on, every log line, every check result in Postgres and every alert carries a wall-clock timestamp, in UTC. Those timestamps line up across the api, the worker and the database only while every machine runs NTP. The <TrackLink slug="automation">Automation track</TrackLink> installs and configures chrony with Ansible, and the <TrackLink slug="tls-pki">TLS and PKI track</TrackLink>, where PKI stands for public key infrastructure, covers certificate lifetimes.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **Measuring a duration with two wall-clock readings.** `time.Now().Unix()` before and after, or two times parsed from a log, give a wrong or negative duration when the clock steps between them. Measure with `time.Now()` and `time.Since` in the same process, which use the monotonic reading.
+- **Comparing `time.Time` values with `==`.** `==` compares the monotonic reading and the location too, which makes two values for the same instant unequal. Use `t.Equal(u)`.
+- **Storing local time.** A timestamp without a zone, or in a zone with daylight saving time, repeats an hour every autumn. Store and log UTC, and convert to local time only for display.
+- **Turning NTP off in a container or a virtual machine image.** A container shares the clock of its host, which needs NTP. A virtual machine has its own clock, which drifts more than real hardware and falls behind after every pause. Run NTP on every host and virtual machine.
+- **Trusting one NTP server.** One server with a wrong clock moves your clock with it, and no client can tell. Configure four or more servers, or a pool, and chrony discards the one that disagrees.
+- **Setting the clock by hand on a running server.** A step backward makes timestamps repeat and can make scheduled jobs run twice. Let the NTP client slew the clock.
 
 ## Going Deeper
 
-This section is not written yet.
+- **PTP, the Precision Time Protocol:** hardware timestamps in network cards give sub-microsecond accuracy, which trading systems and some databases rely on.
+- **Clock bounds in distributed databases:** systems such as Google Spanner wait out the clock error before they commit, which turns time uncertainty into a design parameter.
+- **Logical clocks:** Lamport clocks and vector clocks order events without trusting wall clocks at all.
+- **NTS, Network Time Security:** it authenticates NTP replies, which blocks an attacker on the path from moving your clock to make expired certificates look valid.
+- **The 2036 NTP era rollover:** the 32-bit seconds field of an NTP timestamp wraps on February 7, 2036, and clients have to tell the eras apart.
 
 ## Further Reading
 
-This section is not written yet.
+- [The time package, Monotonic Clocks section](https://pkg.go.dev/time): the exact rules for when Go uses the wall and the monotonic reading, and which methods strip it.
+- [The beevik/ntp package](https://pkg.go.dev/github.com/beevik/ntp): a small NTP client for Go whose documentation walks through offset, delay, stratum and the other fields of a reply.
+- [The golang.org/x/sys/unix package](https://pkg.go.dev/golang.org/x/sys/unix): `ClockGettime` with `CLOCK_REALTIME` and `CLOCK_MONOTONIC`, the two kernel clocks behind `time.Now`.
+- [The context package](https://pkg.go.dev/context): `WithTimeout` computes a deadline from `time.Now()`, and the timer behind it runs on the monotonic clock.
