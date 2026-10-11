@@ -248,7 +248,7 @@ docker compose exec postgres psql -U monitor -d monitor -c 'select version()'
 go get github.com/jackc/pgx/v5@v5.8.0
 ```
 
-This page is tested with `v5.8.0`, the newest release that builds with Go 1.24. Pin the version: without `@v5.8.0`, `go get` picks the newest release, and from `v5.9.0` pgx needs Go 1.25, which raises the `go` line of your `go.mod` and with it the `GO_VERSION` your Dockerfile needs. `go get` also writes `go.sum`, the checksums of every module you depend on. Commit it: the go command refuses a download that does not match. The Dockerfile from <a href={weekHref(6)}>Week 6</a> already copies `go.*`, which includes it.
+This page is tested with `v5.8.0`, the newest release that builds with Go 1.24. Pin the version: without `@v5.8.0`, `go get` picks the newest release, and from `v5.9.0` pgx needs Go 1.25: when your `go.mod` says less, `go get` raises its `go` line, and with it the `GO_VERSION` your Dockerfile needs. Until your code imports pgx, `go.mod` marks it `// indirect`; run `go mod tidy` after Step 4. `go get` also writes `go.sum`, the checksums of every module you depend on. Commit it: the go command refuses a download that does not match. The Dockerfile from <a href={weekHref(6)}>Week 6</a> already copies `go.*`, which includes it.
 
 ### Step 2: Write the First Migration
 

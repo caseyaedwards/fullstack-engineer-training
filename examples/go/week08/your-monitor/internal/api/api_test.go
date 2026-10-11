@@ -101,6 +101,7 @@ func TestErrors(t *testing.T) {
 		{"not JSON", "POST", "/api/monitors", jsonType, `{"url": https://example.org}`, 400, "body is not valid JSON"},
 		{"cut off", "POST", "/api/monitors", jsonType, `{"url": "https://example.org"`, 400, "body is not valid JSON"},
 		{"array", "POST", "/api/monitors", jsonType, `[]`, 400, "body must be a JSON object, got a JSON array"},
+		{"null", "POST", "/api/monitors", jsonType, `null`, 400, "body must be a JSON object, got a JSON null"},
 		{"two objects", "POST", "/api/monitors", jsonType, `{"url":"https://example.org","interval_seconds":60} {}`, 400, "body must hold a single JSON object"},
 		{"array after the object", "POST", "/api/monitors", jsonType, `{"url":"https://example.org","interval_seconds":60} []`, 400, "body must hold a single JSON object"},
 		{"text after the object", "POST", "/api/monitors", jsonType, `{"url":"https://example.org","interval_seconds":60} x`, 400, "body is not valid JSON"},
@@ -129,6 +130,24 @@ func TestErrors(t *testing.T) {
 			}
 			if body.Error != tt.wantError {
 				t.Errorf("error = %q, want %q", body.Error, tt.wantError)
+			}
+		})
+	}
+}
+
+// TestCreateAccepts sends bodies that the API accepts, although they differ
+// from the example in openapi.yaml.
+func TestCreateAccepts(t *testing.T) {
+	tests := []struct{ name, contentType, body string }{
+		{"charset parameter", "application/json; charset=utf-8", `{"url":"https://example.org","interval_seconds":60}`},
+		// encoding/json matches field names without regard to case.
+		{"field names in another case", "application/json", `{"URL":"https://example.org","Interval_Seconds":60}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := serve(newTestHandler(t), "POST", "/api/monitors", tt.contentType, tt.body)
+			if rec.Code != http.StatusCreated {
+				t.Errorf("status = %d, want 201; body %s", rec.Code, rec.Body)
 			}
 		})
 	}
