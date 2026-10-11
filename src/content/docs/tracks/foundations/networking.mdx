@@ -20,7 +20,7 @@ An uptime monitor is a networking program: every check opens a connection to ano
 
 Networking splits into **layers**, and each one solves one problem for the layer above it:
 
-- **Link layer:** moves a frame from one machine to the next on the same network, over Ethernet or Wi-Fi. A standard Ethernet frame carries at most 1500 bytes of data, the **MTU**, short for maximum transmission unit.
+- **Link layer:** moves a frame from one machine to the next on the same network, over Ethernet or Wi-Fi. A standard Ethernet frame carries at most 1,500 bytes of data, the **MTU**, short for maximum transmission unit.
 - **Internet layer:** IP, the Internet Protocol, moves a **packet** from any machine to any other across many networks, one hop at a time. IP makes no promises: a packet can arrive late, twice, out of order or never.
 - **Transport layer:** TCP, the Transmission Control Protocol, and UDP, the User Datagram Protocol, deliver data to one program on the machine, picked by its port. TCP adds reliable, ordered delivery on top of IP. UDP adds only the port number.
 - **Application layer:** the protocol your program speaks, such as HTTP, DNS or the Postgres wire protocol.
@@ -117,7 +117,7 @@ The example is a line echo server and a client for it, in plain TCP with no HTTP
 
 <CodeFrom file="go/tracks/networking/echo.go" region="serve" lang="go" title="echo.go" />
 
-`ln.Accept` blocks until a client completes the handshake, then returns a `net.Conn`, the socket for that one connection. Each connection gets its own goroutine, which keeps one slow client from holding up the rest. The read deadline moves forward before each line, which makes it an idle timeout: a client that sends nothing for two seconds loses its connection, and its file descriptor goes back to the kernel. When the caller closes the listener, `Accept` returns an error that wraps `net.ErrClosed`, and `Serve` returns `nil`.
+`ln.Accept` blocks until a client completes the handshake, then returns a `net.Conn`, the socket for that one connection. Each connection gets its own goroutine, a function that the Go runtime runs at the same time as the rest of the program, which keeps one slow client from holding up the rest. The read deadline moves forward before each line, which makes it an idle timeout: a client that sends nothing for two seconds loses its connection, and its file descriptor goes back to the kernel. When the caller closes the listener, `Accept` returns an error that wraps `net.ErrClosed`, and `Serve` returns `nil`.
 
 The client sets one deadline for the whole exchange:
 
@@ -129,7 +129,7 @@ The tests run the server on `127.0.0.1:0`: port `0` asks the kernel for any free
 
 <CodeFrom file="go/tracks/networking/echo_test.go" region="test" lang="go" title="echo_test.go" />
 
-The second test takes a free port and closes it before it dials, which leaves nothing listening there. The kernel answers the SYN with a reset, and the error wraps `syscall.ECONNREFUSED`. Three more tests in the file cover the other answers: a listener that never calls `Accept` still completes the handshake from its backlog but never replies, and `Echo` fails with `os.ErrDeadlineExceeded` well within two seconds of a 100 ms timeout. A client that connects and stays silent gets an `io.EOF` once the server idle deadline closes the connection. Several clients in a row each get their line back.
+The second test takes a free port and closes it before it dials, which leaves nothing listening there. The kernel answers the SYN with a reset, and the error wraps `syscall.ECONNREFUSED`. Three more tests in the file cover the other answers: a listener that never calls `Accept` still completes the handshake, because the kernel finishes handshakes on its own and queues the connections in a **backlog** until the program accepts them, but never replies, and `Echo` fails with `os.ErrDeadlineExceeded` well within two seconds of a 100 ms timeout. A client that connects and stays silent gets an `io.EOF` once the server idle deadline closes the connection. Several clients in a row each get their line back.
 
 ## In the Uptime Monitor
 
@@ -137,16 +137,16 @@ The second test takes a free port and closes it before it dials, which leaves no
 
 <WeekLink n={12} anchor="step-6-a-slow-handshake-found-with-delve">Week 12</WeekLink> finds a timing bug between the TCP handshake and the handshake of TLS, Transport Layer Security. Its test wraps the dialer to wait 300 ms between the two, on `127.0.0.1`, the same offline approach as the tests here, and `curl -w` confirms the real handshake times.
 
-From <WeekLink n={4} anchor="step-5-send-the-request">Step 5 of Week 4</WeekLink> on, each check opens a fresh connection with `req.Close = true`, which keeps the connect row honest. The <TrackLink slug="load-balancing">Load Balancing track</TrackLink> continues with what sits between the internet and your api, and the <TrackLink slug="tls-pki">TLS and PKI track</TrackLink>, where PKI stands for public key infrastructure, with the encryption on top of TCP.
+From <WeekLink n={4} anchor="step-5-send-the-request">Step 5 of Week 4</WeekLink> on, each check opens a fresh connection with `req.Close = true`, which keeps the connect row honest. The <TrackLink slug="load-balancing">Load Balancing track</TrackLink> continues with what sits between the internet and your api. The <TrackLink slug="tls-pki">TLS and PKI track</TrackLink>, where PKI stands for public key infrastructure, covers the encryption on top of TCP.
 
 ## Common Mistakes
 
 - **No deadline on a connection.** A `Read` on a socket with no deadline waits as long as the peer stays silent, which can be forever. One silent server then holds a goroutine and a file descriptor for good. Set a deadline on every connection, or use a client with a timeout, as `http.Client` does with `Timeout`.
 - **Setting a deadline once on a long-lived connection.** A deadline is an absolute time. Set once at connect, it ends a healthy connection that runs past it. Move the deadline forward before each read when it means idle time, as `handle` does.
 - **Reading a refused connection as a down machine.** `connection refused` means the machine answered: the host is up, and nothing listens on the port, or a firewall rejects the connection. A timeout means no answer at all. The fix differs: start the program, or open the firewall and check the route.
-- **Binding a server to `127.0.0.1` inside a container.** `127.0.0.1` accepts connections only from the same network namespace. Docker forwards a published port to the container address, not to its loopback, and every request from outside the container fails with a reset or an empty reply. Listen on `0.0.0.0:8080` or `:8080` inside a container.
+- **Binding a server to `127.0.0.1` inside a container.** `127.0.0.1` is the **loopback** address: it reaches only the same machine, and inside a container only the same network namespace, the private network view the container gets. Docker forwards a published port to the container address, not to its loopback, and every request from outside the container fails with a reset or an empty reply. Listen on `0.0.0.0:8080` or `:8080` inside a container.
 - **Tests that use a fixed port.** A test that listens on `127.0.0.1:8080` fails when another program, or a parallel test, holds the port. Listen on port `0` and read the real address from the listener.
-- **Treating one `Read` as one message.** TCP is a stream: one `Write` of 10 bytes can arrive as two reads of 5, and two writes can arrive as one read. Frame your messages, with a newline as the Example does or with a length prefix, and read until a frame is complete.
+- **Treating one `Read` as one message.** TCP is a stream: one `Write` of 10 bytes can arrive as two reads of five bytes, and two writes can arrive as one read. Frame your messages, with a newline as the Example does or with a length prefix, and read until a frame is complete.
 
 ## Going Deeper
 
@@ -158,7 +158,9 @@ From <WeekLink n={4} anchor="step-5-send-the-request">Step 5 of Week 4</WeekLink
 
 ## Further Reading
 
+- [RFC 9293: Transmission Control Protocol](https://www.rfc-editor.org/rfc/rfc9293): the current TCP specification, with the handshake, the states and the reset rules in one document.
+- [RFC 791: Internet Protocol](https://www.rfc-editor.org/rfc/rfc791): the IPv4 specification, with the header every packet on this page carries.
+- [RFC 1918: Address Allocation for Private Internets](https://www.rfc-editor.org/rfc/rfc1918): the three private IPv4 blocks and why routers on the internet drop them.
+- [The Linux tcp man page](https://man7.org/linux/man-pages/man7/tcp.7.html): the Linux TCP settings, such as `tcp_syn_retries`, behind the retry timings on this page.
+- [High Performance Browser Networking](https://hpbn.co/): a free book by Ilya Grigorik on latency, TCP, UDP and TLS, written for web developers.
 - [The net package](https://pkg.go.dev/net): the reference for `Listen`, `Dial`, `Conn` and its deadlines, with the rules for address strings such as `127.0.0.1:0`.
-- [The net/netip package](https://pkg.go.dev/net/netip): small, comparable types for addresses and CIDR prefixes, with methods such as `IsPrivate` and `IsLoopback`.
-- [The syscall package](https://pkg.go.dev/syscall): the error numbers, such as `ECONNREFUSED` and `ECONNRESET`, that network errors wrap.
-- [The golang.org/x/net/ipv4 package](https://pkg.go.dev/golang.org/x/net/ipv4): control over IP header fields such as the TTL, the tool behind a traceroute written in Go.
