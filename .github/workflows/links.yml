@@ -1,0 +1,29 @@
+name: External Links
+
+on:
+  pull_request:
+    paths:
+      - 'src/content/docs/**'
+      - 'scripts/check-external-links.mjs'
+  workflow_dispatch:
+  schedule:
+    # Mondays 06:00 UTC: docs sites move pages without telling anyone.
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  links:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Fails on 404, 410 and unreachable hosts. 401, 403, 429 and other 5xx
+      # answers are warnings: bot protection returns them for live pages.
+      # The script uses only the Node standard library, so no npm ci.
+      - run: node scripts/check-external-links.mjs

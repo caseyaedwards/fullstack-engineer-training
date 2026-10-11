@@ -1,0 +1,17 @@
+---
+// A link to a week page, or to a section of it, that respects the site base.
+// Markdown links in MDX do not get the base, so prose links to weeks use this.
+// The build test tests/build/tracks.test.mjs checks that the anchor exists.
+import { weekHref } from '../lib/links';
+
+interface Props {
+  n: number;
+  /** Heading id on the week page, without the #. */
+  anchor?: string;
+}
+
+const { n, anchor } = Astro.props;
+const href = anchor ? `${weekHref(n)}#${anchor}` : weekHref(n);
+---
+
+<a href={href}><slot /></a>

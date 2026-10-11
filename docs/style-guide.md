@@ -127,6 +127,7 @@ The comment names one or more words, separated by commas, and covers its own lin
 - Write dates with a spelled-out month, no ordinal suffix, a comma after the year, and 24-hour time. Bad: 10/10/26 2:02 PM, October 10th. Good: October 10, 2026, at 14:02.
 - Describe what a command does instead of announcing it. Bad: The following command lists the files. Good: List the files:
 - A heading has no trailing period and no punctuation other than colons and the commas of a list that ends in and or or. Number steps as Step 1:, not 1. **Lint**
+- Link to a week or a track with `<WeekLink n={4} anchor="…">` or `<TrackLink slug="dns" anchor="…">`, not a Markdown link: a Markdown link in MDX does not get the site base. On a written track page, `tests/build/tracks.test.mjs` checks in `dist/` that each week and track link names a built page and that its anchor exists. Nothing checks these anchors on week pages: starlight-links-validator does not read `WeekLink` or `TrackLink` props, so check those by hand.
 - Link text describes the target. Never write here or click here. **Lint** Bad: read more [here](#). Good: read the [Time and NTP track](#).
 
 ## Example Values

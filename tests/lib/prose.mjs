@@ -106,7 +106,7 @@ export function matchLine(text) {
 const blank = (s) => s.replace(/[^\n]/g, ' ');
 
 /** Index just past the quoted string that opens at i (', " or `), honoring backslash escapes. */
-function skipString(src, i) {
+export function skipString(src, i) {
   const q = src[i];
   let j = i + 1;
   while (j < src.length) {
@@ -118,7 +118,7 @@ function skipString(src, i) {
 }
 
 /** Index just past the `}` that closes the `{` at i. */
-function skipBraces(src, i) {
+export function skipBraces(src, i) {
   let depth = 0;
   let j = i;
   while (j < src.length) {
@@ -135,7 +135,7 @@ function skipBraces(src, i) {
 }
 
 /** Index just past the `>` that closes the JSX or HTML tag opening at i. */
-function skipTag(src, i) {
+export function skipTag(src, i) {
   let j = i + 1;
   while (j < src.length) {
     const c = src[j];

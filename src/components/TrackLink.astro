@@ -1,0 +1,17 @@
+---
+// A link to a track page, or to a section of it, that respects the site base.
+// The build test tests/build/tracks.test.mjs checks that the anchor exists.
+import type { TrackSlug } from '../data/tracks';
+import { trackHref } from '../lib/links';
+
+interface Props {
+  slug: TrackSlug;
+  /** Heading id on the track page, without the #. */
+  anchor?: string;
+}
+
+const { slug, anchor } = Astro.props;
+const href = anchor ? `${trackHref(slug)}#${anchor}` : trackHref(slug);
+---
+
+<a href={href}><slot /></a>
