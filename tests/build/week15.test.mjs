@@ -74,6 +74,8 @@ test('every Kubernetes version names the same minor, 1.36', () => {
     'site.yml kubectl': /dl\.k8s\.io\/release\/v1\.(\d+)\.\d+\/bin\/linux\/amd64\/kubectl/.exec(readFileSync(join(root, '.github/workflows/site.yml'), 'utf8'))?.[1],
     'page kubectl install': blocks('sh').join('\n').match(/stable-1\.(\d+)\.txt/)?.[1],
     'page kubeconform output': blocks('txt').join('\n').match(/-kubernetes-version 1\.(\d+)\.0/)?.[1],
+    'page kubeconform schema URL': blocks('txt').join('\n').match(/\/v1\.(\d+)\.0-standalone/)?.[1],
+    'page Pod Security warning': /restricted:v1\.(\d+)/.exec(html)?.[1],
   };
   for (const [where, minor] of Object.entries(minors)) {
     assert.equal(minor, '36', `${where} names Kubernetes 1.${minor}, want 1.36`);
@@ -94,4 +96,16 @@ test('week 15 links to weeks 14 and 16 under the base path', () => {
   for (const slug of ['14-ci-cd', '16-going-live']) {
     assert.ok(html.includes(`href="${base}weeks/${slug}/"`), `no link to ${slug}`);
   }
+});
+
+// Three statements the review corrected: deleting the overlay deletes the
+// data, restricted does not demand a read-only root filesystem, and a
+// container without probes is never probed.
+test('week 15 keeps the corrected statements on delete -k, the restricted standard and probes', () => {
+  const text = html.replace(/<[^>]+>/g, '');
+  assert.ok(text.includes('kubectl delete -k deploy/k8s/base'), 'the page must give delete -k on the base to keep the data');
+  assert.match(text, /kubectl delete -k deploy\/k8s\/overlays\/kind deletes the data/);
+  assert.doesNotMatch(text, /demands exactly these/);
+  assert.match(text, /The restricted Pod Security Standard demands the first four/);
+  assert.match(text, /A container without probes is never probed/);
 });

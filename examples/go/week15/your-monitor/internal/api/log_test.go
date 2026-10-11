@@ -14,7 +14,7 @@ import (
 func TestLogRequests(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
-	h := LogRequests(logger, NewHandler(monitor.NewMemStore(), nil, nil, fakeAuth{}))
+	h := LogRequests(logger, NewHandler(monitor.NewMemStore(), &spyResults{}, nil, fakeAuth{}))
 
 	serve(h, "POST", "/api/monitors", "application/json", `{"url":"https://example.com","interval_seconds":60}`)
 	serve(h, "GET", "/api/monitors/7", "", "")

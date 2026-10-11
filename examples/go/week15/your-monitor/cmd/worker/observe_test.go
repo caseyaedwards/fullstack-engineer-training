@@ -12,8 +12,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
-	"fsp/examples/week15/your-monitor/internal/dbtest"
+	"fsp/examples/week15/your-monitor/internal/db"
+	"fsp/examples/week15/your-monitor/internal/db/dbtest"
 	"fsp/examples/week15/your-monitor/internal/obs"
 	"fsp/examples/week15/your-monitor/internal/obstest"
 	"fsp/examples/week15/your-monitor/internal/queue"
@@ -81,7 +83,8 @@ func histogramCount(t *testing.T, reg *prometheus.Registry, name string) uint64 
 // that store its result inside it.
 func TestJobTrace(t *testing.T) {
 	captureLog(t)
-	_, url := dbtest.NewWithURL(t)
+	url := dbtest.URL(t)
+	dbtest.Pool(t, url, db.Migrate) // an empty schema with every migration
 	cfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		t.Fatal(err)
@@ -114,14 +117,16 @@ func TestJobTrace(t *testing.T) {
 		names = append(names, s.Name)
 	}
 	// Spans are exported as they end: the children first, the job last.
-	if strings.Join(names, " ") != "check INSERT DELETE COMMIT job" {
-		t.Fatalf("spans %q, want check INSERT DELETE COMMIT job", names)
+	// SAVEPOINT and RELEASE are the savepoint of Week 9 around the check.
+	const want = "SAVEPOINT check INSERT DELETE RELEASE COMMIT job"
+	if strings.Join(names, " ") != want {
+		t.Fatalf("spans %q, want %s", names, want)
 	}
 	job := obstest.Find(t, got, "job")
 	if job.Parent.IsValid() {
 		t.Error("the job span has a parent; it must start the trace")
 	}
-	for _, s := range got[:4] {
+	for _, s := range got[:len(got)-1] {
 		if s.Parent.SpanID() != job.SpanContext.SpanID() || s.SpanContext.TraceID() != job.SpanContext.TraceID() {
 			t.Errorf("span %s is not a child of the job span", s.Name)
 		}
@@ -129,6 +134,9 @@ func TestJobTrace(t *testing.T) {
 	c := obstest.Find(t, got, "check")
 	if a := obstest.Attrs(c); a["check.result"].AsString() != "down" || a["http.response.status_code"].AsInt64() != 503 {
 		t.Errorf("check span attributes %v, want result down, status 503", c.Attributes)
+	}
+	if c.SpanKind != trace.SpanKindClient {
+		t.Errorf("check span kind %v, want client: it covers a call to another program", c.SpanKind)
 	}
 	if c.Status.Code == codes.Error {
 		t.Error("a site that answers 503 is a successful check: the check span must not be an error")

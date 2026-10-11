@@ -13,14 +13,12 @@ scrape_configs:
     static_configs:
       - targets: ["scheduler:2112"]
 
-  # Docker answers a lookup of the name worker with one address for each
-  # worker container. dns_sd_configs scrapes every one of them, which keeps
-  # docker compose up --scale worker=3 in view.
+  # A fixed target: when the worker stops, the scrape fails and
+  # up{job="worker"} reads 0, which an alert can catch. With more than one
+  # worker container, the name worker answers with one of them per scrape.
   - job_name: worker
-    dns_sd_configs:
-      - names: ["worker"]
-        type: A
-        port: 6060
+    static_configs:
+      - targets: ["worker:6060"]
 
   - job_name: otel-collector
     static_configs:

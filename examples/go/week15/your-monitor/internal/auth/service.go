@@ -25,18 +25,26 @@ const (
 	AttemptWindow = 15 * time.Minute
 )
 
+// MaxEmailBytes is the longest email address SMTP allows (RFC 5321).
+// Longer input never reaches the limiter or the log.
+const MaxEmailBytes = 254
+
 // Service logs users in and out. Create it with NewService. Tests change
-// Cost and Now before the first call.
+// Cost, Now and Check before the first call.
 type Service struct {
 	Store Store
-	Cost  int              // bcrypt cost of new hashes
-	Now   func() time.Time // the clock; tests set a fixed one
+	Cost  int                              // bcrypt cost of new hashes
+	Now   func() time.Time                 // the clock; tests set a fixed one
+	Check func(hash, password string) bool // CheckPassword; tests watch it
 
 	limiter *limiter
 }
 
 func NewService(store Store) *Service {
-	return &Service{Store: store, Cost: Cost, Now: time.Now, limiter: newLimiter(MaxAttempts, AttemptWindow)}
+	return &Service{
+		Store: store, Cost: Cost, Now: time.Now, Check: CheckPassword,
+		limiter: newLimiter(MaxAttempts, AttemptWindow),
+	}
 }
 
 // TooManyAttemptsError is the error Login returns once an email address
@@ -64,6 +72,9 @@ func seconds(d time.Duration) int {
 // stored in lowercase, and login lowercases what people type.
 func (s *Service) CreateUser(ctx context.Context, email, password string) (User, error) {
 	email = normalize(email)
+	if len(email) > MaxEmailBytes {
+		return User{}, fmt.Errorf("the email address is longer than %d bytes", MaxEmailBytes)
+	}
 	if addr, err := mail.ParseAddress(email); err != nil || addr.Address != email {
 		return User{}, fmt.Errorf("%q is not an email address", email)
 	}
@@ -86,6 +97,10 @@ func normalize(email string) string { return strings.ToLower(strings.TrimSpace(e
 // which emails have an account. The log tells you.
 func (s *Service) Login(ctx context.Context, email, password string) (Session, error) {
 	email = normalize(email)
+	if len(email) > MaxEmailBytes { // no such account can exist
+		slog.WarnContext(ctx, "login failed", "email_bytes", len(email), "reason", "email too long")
+		return Session{}, ErrBadCredentials
+	}
 	if ok, wait := s.limiter.take(email, s.Now()); !ok {
 		slog.WarnContext(ctx, "login refused", "email", email, "reason", "too many attempts")
 		return Session{}, &TooManyAttemptsError{RetryAfter: wait}
@@ -93,14 +108,14 @@ func (s *Service) Login(ctx context.Context, email, password string) (Session, e
 
 	user, hash, err := s.Store.UserByEmail(ctx, email)
 	if errors.Is(err, ErrNoUser) {
-		CheckPassword(dummyHash, password) // spend the same time as a real check
+		s.Check(dummyHash, password) // spend the same time as a real check
 		slog.WarnContext(ctx, "login failed", "email", email, "reason", "no such user")
 		return Session{}, ErrBadCredentials
 	}
 	if err != nil {
 		return Session{}, err
 	}
-	if !CheckPassword(hash, password) {
+	if !s.Check(hash, password) {
 		slog.WarnContext(ctx, "login failed", "email", email, "reason", "wrong password")
 		return Session{}, ErrBadCredentials
 	}

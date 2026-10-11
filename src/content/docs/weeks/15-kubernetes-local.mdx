@@ -241,7 +241,7 @@ The test sleeps past `maxAge` and expects `503`, then beats and expects `200`:
 
 <CodeFrom file="go/week15/your-monitor/internal/obs/health_test.go" region="health-test" lang="go" title="internal/obs/health_test.go" />
 
-The example code also builds each program, starts it with its ops address and an interval of 200 milliseconds, and expects `{"status":"ok"}` from `/healthz` for longer than one `maxAge`. A loop without `Beat` fails it. For web, nginx answers the probe itself. Add this location to `web/nginx.conf`, above `location /assets/`:
+The example code also builds each program, starts it with its ops address and a short interval, and expects `{"status":"ok"}` from `/healthz` for longer than one `maxAge`. A loop without `Beat` fails it. For web, nginx answers the probe itself. Add this location to `web/nginx.conf`, above `location /assets/`:
 
 <CodeFrom file="go/week15/your-monitor/web/nginx.conf" region="healthz" lang="nginx" title="web/nginx.conf" />
 
@@ -426,7 +426,7 @@ Four commands answer most questions about a cluster: `kubectl get` lists objects
 
 ```txt wrap
 $ kubectl logs --previous deploy/worker
-{"time":"2026-10-11T09:12:03.418Z","level":"ERROR","msg":"fatal","service":"worker","err":"failed to connect to `user=monitor database=monitor`: hostname resolving error: lookup postgres on 10.96.0.10:53: no such host"}
+{"time":"2026-10-11T09:12:03.418Z","level":"ERROR","msg":"fatal","service":"worker","err":"connect to database: failed to connect to `user=monitor database=monitor`: hostname resolving error: lookup postgres on 10.96.0.10:53: no such host"}
 ```
 
 The Service `postgres` is headless: until `postgres-0` is ready, its name has no address at all. `10.96.0.10` is CoreDNS.
@@ -486,7 +486,7 @@ The patch changes the pod template, which starts a rolling update. The new pod r
 
 **Pending.** `kubectl set resources deployment/worker --requests=cpu=64 --limits=cpu=64` asks for 64 cores. The new pod stays `Pending`, and `kubectl describe` shows a `FailedScheduling` event that starts with `0/1 nodes are available: 1 Insufficient cpu.` No node can take it, and nothing starts.
 
-**Data that outlives its pod.** Run `kubectl delete pod postgres-0`. The StatefulSet creates a new `postgres-0` within seconds. For those seconds, the api answers reads with `500`, and the workers log `job failed`. Once it is ready, reload the status page: your monitors and their history are there, on the claim `data-postgres-0`, which `kubectl get pvc` lists as `Bound`. `kubectl delete -k deploy/k8s/overlays/kind` deletes the data: the overlay holds the Namespace, and deleting a namespace deletes every claim in it, and kind deletes the volume of each claim. To remove the monitor and keep the data, run `kubectl delete -k deploy/k8s/base`: the base names the namespace but holds neither the Namespace nor the claim. `make kind-down`, which deletes the node container, deletes the data too.
+**Data that outlives its pod.** Run `kubectl delete pod postgres-0`. The StatefulSet creates a new `postgres-0` within seconds. For those seconds, the api answers reads with `500`, and the workers log `job failed`. Once it is ready, reload the status page: your monitors and their history are there, on the claim `data-postgres-0`, which `kubectl get pvc` lists as `Bound`. `kubectl delete -k deploy/k8s/overlays/kind` deletes the data: the overlay holds the Namespace, and deleting a namespace deletes every claim in it, and the StorageClass of kind, `standard`, sets the reclaim policy `Delete`: its local-path provisioner deletes the volume of a claim once the claim goes. To remove the monitor and keep the data, run `kubectl delete -k deploy/k8s/base`: the base names the namespace but holds neither the Namespace nor the claim. `make kind-down`, which deletes the node container, deletes the data too.
 
 | What you see | What it points to |
 | --- | --- |
