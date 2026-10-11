@@ -24,6 +24,9 @@ func EnsureLine(path, line string) (changed bool, err error) {
 	if strings.ContainsAny(line, "\r\n") {
 		return false, errors.New("ensureline: line must not hold a line break")
 	}
+	if line == "" {
+		return false, errors.New("ensureline: line must not be empty")
+	}
 	data, err := os.ReadFile(path)
 	mode := fs.FileMode(0o644)
 	switch {

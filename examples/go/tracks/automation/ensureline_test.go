@@ -108,15 +108,18 @@ func TestEnsureLineKeepsTheMode(t *testing.T) {
 	}
 }
 
-// TestEnsureLineRejectsANewline refuses a line that holds a newline: it can
-// never match a single line, and every run appends it again.
-func TestEnsureLineRejectsANewline(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "f.conf")
-	if _, err := EnsureLine(path, "a\nb"); err == nil {
-		t.Error("EnsureLine accepts a line with a newline")
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("EnsureLine created the file anyway: %v", err)
+// TestEnsureLineRejectsBadLines refuses a line that holds a newline, which
+// can never match a single line, and an empty line, which matches the empty
+// element after the last newline of any file and is never written.
+func TestEnsureLineRejectsBadLines(t *testing.T) {
+	for _, line := range []string{"a\nb", "a\r", ""} {
+		path := filepath.Join(t.TempDir(), "f.conf")
+		if _, err := EnsureLine(path, line); err == nil {
+			t.Errorf("EnsureLine accepts the line %q", line)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("EnsureLine(%q) created the file anyway: %v", line, err)
+		}
 	}
 }
 

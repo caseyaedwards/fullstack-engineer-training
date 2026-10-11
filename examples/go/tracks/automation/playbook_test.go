@@ -25,14 +25,22 @@ type play struct {
 	Handlers  []map[string]any `yaml:"handlers"`
 }
 
-// keywords are the task keys that are not a module. The one key of a task
-// that is not in this list names its module.
+// keywords are the task keys that are not a module, from the task keyword
+// list of ansible-core. Every with_ key, such as with_items, is a keyword
+// too. The one key of a task that is not a keyword names its module.
 var keywords = []string{
 	"name", "notify", "listen", "when", "register", "become", "become_user",
-	"loop", "loop_control", "tags", "vars", "args", "environment",
+	"become_method", "become_flags", "become_exe", "remote_user", "connection",
+	"port", "loop", "loop_control", "tags", "vars", "args", "environment",
 	"changed_when", "failed_when", "check_mode", "diff", "ignore_errors",
-	"no_log", "retries", "delay", "until", "delegate_to", "run_once",
-	"block", "rescue", "always", "timeout", "throttle",
+	"ignore_unreachable", "any_errors_fatal", "no_log", "retries", "delay",
+	"until", "delegate_to", "delegate_facts", "run_once", "async", "poll",
+	"module_defaults", "collections", "debugger", "block", "rescue", "always",
+	"timeout", "throttle",
+}
+
+func keyword(k string) bool {
+	return slices.Contains(keywords, k) || strings.HasPrefix(k, "with_")
 }
 
 // commands are the modules that run whatever you hand them. Ansible cannot
@@ -75,11 +83,16 @@ func problems(src []byte) []string {
 				name = fmt.Sprintf("task %d", i+1)
 				out = append(out, fmt.Sprintf("play %q: %s has no name", p.Name, name))
 			}
-			module := moduleOf(task)
-			if module == "" {
+			modules := modulesOf(task)
+			if len(modules) == 0 {
 				out = append(out, fmt.Sprintf("%q runs no module", name))
 				continue
 			}
+			if len(modules) > 1 {
+				out = append(out, fmt.Sprintf("%q holds more than one module: %s", name, strings.Join(modules, ", ")))
+				continue
+			}
+			module := modules[0]
 			if !fqcn.MatchString(module) {
 				out = append(out, fmt.Sprintf("%q calls %s, want its fully qualified name", name, module))
 			}
@@ -144,14 +157,17 @@ func flatten(tasks []map[string]any) []map[string]any {
 	return out
 }
 
-// moduleOf returns the one key of a task that is not a keyword.
-func moduleOf(task map[string]any) string {
+// modulesOf returns the keys of a task that are not keywords, sorted. A
+// valid task has exactly one: its module.
+func modulesOf(task map[string]any) []string {
+	var out []string
 	for k := range task {
-		if !slices.Contains(keywords, k) {
-			return k
+		if !keyword(k) {
+			out = append(out, k)
 		}
 	}
-	return ""
+	slices.Sort(out)
+	return out
 }
 
 func str(v any) string {
@@ -241,6 +257,7 @@ func TestChecksCatchMistakes(t *testing.T) {
 		{"short module name", "      ansible.builtin.package:", "      package:", `"Install chrony" calls package, want its fully qualified name`},
 		{"unknown handler", "      notify: Restart chrony", "      notify: Restart chronyd", `"Write chrony.conf" notifies "Restart chronyd", and no handler has that name`},
 		{"command without changed_when", "      changed_when: false\n", "", `"Read the time sources" runs ansible.builtin.command without creates, removes or changed_when`},
+		{"two modules", "      ansible.builtin.package:\n", "      ansible.builtin.apt:\n        name: chrony\n      ansible.builtin.package:\n", `"Install chrony" holds more than one module: ansible.builtin.apt, ansible.builtin.package`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -252,6 +269,12 @@ func TestChecksCatchMistakes(t *testing.T) {
 				t.Errorf("problems = %q, want [%q]", got, tt.want)
 			}
 		})
+	}
+
+	// Keywords such as with_items, async and remote_user are not modules.
+	more := strings.Replace(src, "      check_mode: false\n", "      check_mode: false\n      with_items: [1]\n      async: 60\n      poll: 5\n      remote_user: admin\n", 1)
+	if got := problems([]byte(more)); len(got) != 0 {
+		t.Errorf("a task with more keywords gives problems %q, want none", got)
 	}
 
 	// creates, in the module arguments or under args:, makes a command honest.

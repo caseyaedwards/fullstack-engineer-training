@@ -4,8 +4,15 @@
 # when that configuration changes. It targets Ubuntu 24.04, where the
 # package and the service are both named chrony.
 #
-#   ansible-playbook -i inventory.ini playbook.yml --check --diff
+# On a fresh server, run it for real:
+#
 #   ansible-playbook -i inventory.ini playbook.yml
+#
+# Before each later change, preview it with check mode and read the diff.
+# Check mode skips validate, and on a fresh server the service task fails,
+# because the package task only pretends to install chrony:
+#
+#   ansible-playbook -i inventory.ini playbook.yml --check --diff
 
 # region: play
 - name: Keep the clock in sync with chrony
@@ -43,7 +50,7 @@
     - name: Read the time sources
       ansible.builtin.command: chronyc -n sources
       changed_when: false
-      register: chrony_sources
+      check_mode: false
   # endregion: tasks
 
   # region: handlers
