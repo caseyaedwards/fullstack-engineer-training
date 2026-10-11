@@ -1,0 +1,16 @@
+# region: unit
+[Unit]
+Description=your-monitor uptime checks
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/your-monitor -file /etc/your-monitor/urls.txt -interval 30s
+User=your-monitor
+Group=your-monitor
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+# endregion: unit
