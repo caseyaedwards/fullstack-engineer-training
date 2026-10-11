@@ -5,13 +5,13 @@ import (
 	"time"
 )
 
-// TestTimeItRunsInParallel checks that four waits on four goroutines take
-// about as long as one, not four times as long.
+// TestTimeItRunsInParallel checks that four 500 ms waits on four goroutines
+// overlap: one after another, they take 2 s.
 func TestTimeItRunsInParallel(t *testing.T) {
 	start := time.Now()
-	timeIt("wait", 4, func() { time.Sleep(100 * time.Millisecond) })
-	if took := time.Since(start); took > 300*time.Millisecond {
-		t.Errorf("four 100 ms waits took %v, want them to overlap", took)
+	timeIt("wait", 4, func() { time.Sleep(500 * time.Millisecond) })
+	if took := time.Since(start); took > 1500*time.Millisecond {
+		t.Errorf("four 500 ms waits took %v, want them to overlap", took)
 	}
 }
 

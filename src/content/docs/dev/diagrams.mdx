@@ -44,3 +44,23 @@ browser -> server: ACK
 | Apex | example.com | A | 300 | 93.184.216.34 | Points the bare domain at the web server, so a browser typing example.com lands here |
 | WWW | www.example.com | CNAME | 3600 | example.com | Alias to the apex record, which keeps both names in step when the address changes |
 | Mail | example.com | MX | 3600 | 10 mail.example.com | Mail exchanger with priority 10, lowest number tried first by sending servers |
+
+## Asides
+
+The contrast spec measures each aside's title, text and link in both themes.
+
+:::note
+A note aside with [a link to the wide table](#wide-table).
+:::
+
+:::tip
+A tip aside with [a link to the wide table](#wide-table).
+:::
+
+:::caution
+A caution aside with [a link to the wide table](#wide-table).
+:::
+
+:::danger
+A danger aside with [a link to the wide table](#wide-table).
+:::

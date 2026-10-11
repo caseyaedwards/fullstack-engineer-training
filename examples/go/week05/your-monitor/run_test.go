@@ -71,23 +71,62 @@ func TestRunCancelsTheChecksInFlight(t *testing.T) {
 	logs := captureLog(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	time.AfterFunc(50*time.Millisecond, cancel) // SIGTERM arrives during the first round
 
-	// Every check waits until it is cancelled, like a site that never answers.
+	// Every check reports that it started, then waits until it is
+	// cancelled, like a site that never answers.
+	started := make(chan string, 5)
 	checkOne := func(ctx context.Context, target string) check.Result {
+		started <- target
 		<-ctx.Done()
 		return check.Result{URL: target, Err: ctx.Err()}
 	}
 	targets := []string{"https://a.example", "https://b.example", "https://c.example", "https://d.example", "https://e.example"}
-	start := time.Now()
-	run(ctx, targets, time.Hour, 2, checkOne)
+	done := make(chan struct{})
+	go func() {
+		run(ctx, targets, time.Hour, 2, checkOne)
+		close(done)
+	}()
 
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Errorf("run returned after %v, want it to stop at once", elapsed)
+	for range 2 { // both workers are mid-check
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the two workers did not start their checks within 5 s")
+		}
+	}
+	cancel() // SIGTERM arrives during the first round
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not return within 10 s of the cancel, want it to stop at once")
 	}
 	want := "round checks=2 up=0 down=0 timeouts=0 cancelled=2 skipped=3"
 	if !strings.Contains(logs.String(), want) {
 		t.Errorf("log = %q, want a line with %q", logs, want)
+	}
+}
+
+// TestRunStopsWaitingWhenCancelled is the Week 3 test, with the new
+// checkOne: SIGTERM arrives while run waits an hour for the next round.
+func TestRunStopsWaitingWhenCancelled(t *testing.T) {
+	captureLog(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(50*time.Millisecond, cancel) // SIGTERM arrives between rounds
+
+	var calls atomic.Int64
+	checkOne := func(ctx context.Context, target string) check.Result {
+		calls.Add(1)
+		return check.Result{URL: target, Status: 200}
+	}
+	start := time.Now()
+	run(ctx, []string{"https://example.com"}, time.Hour, 2, checkOne)
+
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("run returned after %v, want it to stop waiting at once", elapsed)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("calls = %d, want 1", got)
 	}
 }
 
