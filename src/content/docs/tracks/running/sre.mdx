@@ -1,36 +1,233 @@
 ---
 title: "SRE and Incident Response"
+description: How to state reliability as an SLO, spend an error budget, page on burn rate with multi-window alerts, run an incident with clear roles, and learn from it with a blameless postmortem.
 track: sre
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+Site reliability engineering (SRE) treats operations as a software problem: you state how reliable a service must be as a number, measure it, and let the gap between the number and perfection decide when you ship features and when you fix things. Incident response is the other half: what the team does in the minutes after something breaks, and what it writes down afterwards. A full-stack engineer who owns a service end to end carries a pager for it, and these are the tools that keep the pager quiet and honest.
+
 ## What It Is
 
-This section is not written yet.
+### SLI, SLO and SLA
+
+A **service level indicator** (SLI) measures how well the service works for its users, as a ratio of **good events** to **valid events**. A valid event is one you count at all: a `GET` of the status page api. A good event is a valid event that went well: one answered without a server error. The ratio runs from 0 to 1, and higher is better. Common kinds:
+
+- **Availability**: the share of requests answered without a server error.
+- **Latency**: the share of requests answered faster than a threshold, such as 300 ms. A share, not an average: an average hides the slow tail that users feel.
+- **Freshness**: the share of time in which the data is newer than a threshold, such as checks that ran on schedule.
+- **Correctness**: the share of answers that are right, measured by a probe that knows the answer.
+
+Measure as close to the user as you can. A counter inside the api misses every request that dies at the load balancer, the certificate or DNS. A **probe**, a program outside the service that sends real requests on a schedule, sees those too.
+
+A **service level objective** (SLO) is a target for an SLI over a window: 99.5% of status page requests succeed, measured over the last 30 days. A **rolling window** moves every minute, and the oldest minute drops out. A **calendar window**, such as a month, resets at the start of each month: the window forgets a bad 30th on the 1st, which makes the rolling window the honest choice for alerts.
+
+A **service level agreement** (SLA) is a contract with customers that names a target and a consequence, such as a credit on the bill when availability drops below 99.9% in a month. Lawyers and sales own it. Engineers own the SLO, and set it tighter than any SLA, which turns a missed SLO into a warning before the contract costs money.
+
+Each extra nine shrinks the budget tenfold:
+
+| SLO | Error budget in 30 days |
+| --- | --- |
+| 99% | 7 hours 12 minutes |
+| 99.5% | 3 hours 36 minutes |
+| 99.9% | 43 minutes 12 seconds |
+| 99.95% | 21 minutes 36 seconds |
+| 99.99% | 4 minutes 19.2 seconds |
+
+A service cannot beat the dependencies it needs for every request. Two hard dependencies at 99.9% each give at best 0.999 × 0.999 = 99.8%.
+
+<Diagram
+  id="sli-slo-sla"
+  title="An SLI measures, an SLO sets the target, the error budget is the gap, an SLA is the contract"
+  code={`direction: right
+events: "valid events\\n345,600 requests"
+sli: "SLI\\ngood ÷ valid\\nmeasured 99.7%"
+slo: "SLO\\ntarget 99.5%\\nover 30 days"
+budget: "error budget\\n0.5% = 1,728 requests\\nor 3h36m"
+sla: "SLA\\ncontract 99%\\ncredit when missed"
+events -> sli: "count good"
+sli -> slo: "compared with"
+slo -> budget: "100% minus"
+sla -> slo: "set looser than"
+`}
+/>
+
+### Error Budgets and the Budget Policy
+
+The **error budget** is what the SLO allows to fail: 100% minus the target. A 99.5% SLO over 30 days allows 0.5% of requests to fail, or 3.6 hours of total outage at steady traffic. The budget turns reliability into a shared currency. Deploys, migrations and experiments spend it. Every failure spends it, whatever the cause. While budget is left, the team ships. When it runs out, reliability work comes first.
+
+That rule needs writing down before anyone argues about it, in a **budget policy**: what stops when the budget is spent, who decides the exceptions, and when normal work resumes. The example policy in the Google SRE workbook freezes every change except urgent fixes and security fixes until the service is back within its SLO. A target of 100% leaves no budget: every deploy and every reboot breaks it, and a team with no budget never ships.
+
+### Burn Rate and Multi-Window Multi-Burn-Rate Alerts
+
+The **burn rate** says how fast the service spends its budget, compared with the rate that spends it in exactly one SLO window. At a burn rate of 1, a 30-day budget lasts 30 days. At 14.4, it lasts 50 hours. The formula: burn rate = error ratio ÷ budget.
+
+The alert design comes from the workbook chapter Alerting on SLOs. It judges an alert on four properties: **precision**, the share of alerts that point at a real problem; **recall**, the share of real problems that fire an alert; **detection time**; and **reset time**, how long the alert keeps firing after the fix. A threshold on the error ratio over 5 minutes has good recall and terrible precision. A threshold over 3 days has good precision, detects a partial failure late, and keeps firing for days after the fix. The answer combines three ideas:
+
+1. **Alert on the burn rate**, at a level that spends a share of the budget worth an interruption.
+2. **Read a long window** to measure the size of the problem.
+3. **Require a short window too**, 1/12 of the long one, to confirm that the problem still runs. The short window drops back within minutes of a fix, which resets the alert.
+
+| Severity | Long window | Short window | Burn rate | Budget spent when it fires |
+| --- | --- | --- | --- | --- |
+| Page | 1 hour | 5 minutes | 14.4 | 2% |
+| Page | 6 hours | 30 minutes | 6 | 5% |
+| Ticket | 3 days | 6 hours | 1 | 10% |
+
+Budget spent = burn rate × long window ÷ SLO window: 14.4 × 1 hour ÷ 720 hours = 2%. These parameters depend on the share of budget spent, not on the target, which makes them fit any SLO with a 30-day window. A **page** interrupts a person now. A **ticket** waits for working hours. The <TrackLink slug="observability">Observability track</TrackLink> covers the metrics underneath and PromQL, the query language of Prometheus, the metrics server of the monitor.
+
+A service with little traffic breaks this arithmetic: at ten requests an hour, one failure is a 10% error ratio and a burn rate of 20 against a 0.5% budget. Probes add a steady floor of valid events, which is why Week 18 sends eight a minute.
+
+### Incidents and Roles
+
+An **incident** is an event that hurts users, or threatens to, badly enough to need a coordinated response. The first decision is to **declare** it: say out loud that this is an incident, in the channel where responders gather. Declaring early costs little. Five people debugging the same outage in silence, each changing production, make it longer.
+
+The Google SRE book, in its chapter Managing Incidents, borrows its roles from the Incident Command System that fire services use. Each role belongs to one person at a time:
+
+- **Incident commander** (IC): holds the overall picture, assigns the other roles, decides, and keeps every role not yet handed out. The IC stays out of the debugging.
+- **Operations**: the only people who change production during the incident. They mitigate and investigate, and report to the IC.
+- **Communications**: the voice of the incident. They post updates to stakeholders and on the public status page on a fixed schedule, such as every 30 minutes, even when the update is that nothing changed.
+- **Planning**: supports operations with the work beyond the next minutes: filing bugs, arranging the handoff to the next shift, tracking what changed.
+
+The responders keep a **live incident document**: a timeline in UTC of what they saw, what they tried and what happened. It becomes the backbone of the postmortem. A handoff of any role is explicit: the outgoing person says who now holds it, and the incoming person confirms.
+
+**Mitigate before you understand.** A rollback, a restart, more replicas or a feature flag turned off restore the service in minutes. The root cause can wait until users stop hurting. Three durations measure the response: **time to detect**, from the start to the first page; **time to mitigate**, until users stop hurting; and **time to resolve**, until the team fixes the cause.
+
+### Blameless Postmortems
+
+A **postmortem** is the written record of an incident: impact, timeline, causes and actions. **Blameless** means it asks which conditions made the failure possible, never who to blame. A person who expects blame hides what they did, and the organization loses the facts it needs to stop a repeat. Human error is never a root cause: a system where one typed command takes production down has a missing guardrail, and the guardrail is the finding.
+
+The SRE book names triggers for a postmortem: user-visible downtime past a threshold, any data loss, an on-call engineer stepping in with a rollback or a traffic change, a resolution time past a threshold, and a monitoring failure that a human found instead of an alert. Most outages have several **contributing factors** rather than one root cause. Each action has an owner and a due date, and falls into one of three kinds: **prevent** the cause, **detect** it sooner, **mitigate** it faster.
+
+### On Call and Toil
+
+**On call** means holding the pager for a shift. The SRE book caps the load at two incidents per 12-hour shift: more than that leaves no time to follow up, and the same incidents return. Every page names a runbook: a page with nothing to do teaches people to ignore pages.
+
+**Toil** is operational work that is manual, repetitive, automatable, tactical, without lasting value, and that grows linearly with the service. Restarting a stuck worker by hand every morning is toil. Writing the health check that restarts it is engineering. Google SRE keeps toil under 50% of the time of each engineer, and spends the rest on work that removes toil for good.
 
 ## Diagrams
 
-This section is not written yet.
+The walkthrough follows one incident from the page to the postmortem, with every role filled. Alertmanager, the Prometheus program that routes firing alerts to people, sends the page:
+
+<Diagram
+  id="incident-flow"
+  title="An incident from the first page to the postmortem"
+  code={`shape: sequence_diagram
+am: Alertmanager
+ic: "incident commander"
+ops: operations
+comms: communications
+users: "status page"
+doc: "incident document"
+
+am -> ic: "page: ErrorBudgetFastBurn"
+ic -> doc: "declare, open timeline"
+ic -> ops: "mitigate from the runbook"
+ic -> comms: "post an update"
+comms -> users: "investigating, next update 30 min"
+ops -> doc: "rollback at 12:58"
+am -> ic: "resolved"
+comms -> users: "resolved"
+ic -> doc: "postmortem: causes, actions"
+`}
+  steps={[
+    { hl: ['am', 'ic', 'am->ic'], caption: 'The fast-burn alert pages the on-call engineer: the 1-hour burn rate and the 5-minute burn rate are both above 14.4. Detection time ends here.' },
+    { hl: ['ic', 'doc', 'ic->doc'], caption: 'The on-call engineer declares an incident, becomes incident commander, and opens the incident document with the first timeline entry in UTC.' },
+    { hl: ['ic', 'ops', 'comms', 'ic->ops', 'ic->comms'], caption: 'The commander hands out roles. Operations alone changes production. Communications owns every message to people outside the response.' },
+    { hl: ['comms', 'users', 'comms->users'], caption: 'Communications posts on the status page: what users see, that the team is on it, and when the next update comes.' },
+    { hl: ['ops', 'doc', 'ops->doc'], caption: 'Operations follows the runbook and mitigates first: a rollback of the last deploy. Each action goes into the timeline with its time. Users stop hurting here, which ends time to mitigate.' },
+    { hl: ['am', 'ic', 'comms', 'users', 'am->ic#1', 'comms->users#1'], caption: 'Within minutes of the rollback, the short window drops below 14.4, and the page resolves. Communications posts the all-clear.' },
+    { hl: ['ic', 'doc', 'ic->doc#1'], caption: 'Within days, the team writes the blameless postmortem from the timeline: impact, contributing factors, and prevent, detect and mitigate actions with owners.' },
+  ]}
+/>
+
+How the two windows of the fast-burn page behave over a total outage and its fix:
+
+<Diagram
+  id="two-windows"
+  title="The fast-burn page for the 99.5% availability SLO fires only while both windows read above 14.4"
+  code={`direction: right
+outage: "outage starts"
+short: "5-minute window\\nabove 14.4 within 1 minute"
+long: "1-hour window\\nabove 14.4 after 4.3 minutes"
+page: "page fires"
+fix: "fix deployed"
+reset: "5-minute window drops\\npage resolves"
+outage -> short
+outage -> long
+short -> page: "and"
+long -> page: "and"
+page -> fix
+fix -> reset: "within 5 minutes"
+`}
+/>
 
 ## Example
 
-This section is not written yet.
+The example holds the arithmetic behind the tables above. Durations use `time.Duration`, a count of nanoseconds. `math.Round` keeps a budget such as `4m19.2s` from coming out as `4m19.199999999s`:
+
+<CodeFrom file="go/tracks/sre/sre.go" region="budget" lang="go" title="sre.go" />
+
+`BurnRate` divides the error ratio by the budget. A target of 1 has no budget, and any failure burns at an infinite rate:
+
+<CodeFrom file="go/tracks/sre/sre.go" region="burn" lang="go" title="sre.go" />
+
+`BudgetLeft` turns counts into the share of budget still unspent. With no valid events, nothing is spent:
+
+<CodeFrom file="go/tracks/sre/sre.go" region="left" lang="go" title="sre.go" />
+
+`BudgetSpent` is the formula behind the last column of the alert table:
+
+<CodeFrom file="go/tracks/sre/sre.go" region="spent" lang="go" title="sre.go" />
+
+The tests carry the numbers from this page and from Week 18. In `float64`, `1 - 0.999` is `0.0010000000000000009`, not `0.001`, and the ratio tests compare within `1e-9` instead of with `==`:
+
+<CodeFrom file="go/tracks/sre/sre_test.go" region="tests" lang="go" title="sre_test.go" />
+
+Divide by `good` instead of `total` in `BudgetLeft`, and the 99,950-of-100,000 case reads `0.49974987493746925`. Drop `math.Round`, and the 99.99% budget reads `4m19.199999999s`. The alert table becomes a test of its own:
+
+<CodeFrom file="go/tracks/sre/sre_test.go" region="spent-test" lang="go" title="sre_test.go" />
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={18} anchor="slis-slos-and-error-budgets">Week 18</WeekLink> builds everything on this page into the monitor, with tests for each alert in `promtool`, the rule checker that ships with Prometheus. <WeekLink n={18} anchor="two-slos-for-your-monitor">Two SLOs for Your Monitor</WeekLink> picks the SLIs: status page availability at 99.5%, counted in requests, and check freshness at 99%, counted in 30-second steps. Blackbox exporter, a small Prometheus program that sends probes, loads the status page every 15 seconds through two paths, which covers what the api counter cannot see. <WeekLink n={18} anchor="burn-rate-alerts-on-two-windows">Burn-Rate Alerts on Two Windows</WeekLink> turns the alert table into recording rules, which store the result of a PromQL expression as a new series on a schedule, and alert rules, and <WeekLink n={18} anchor="step-4-unit-test-the-alerts">Step 4</WeekLink> proves with `promtool test rules` that a total outage pages within 5 minutes and a two-minute blip does not page.
+
+The incident side follows. <WeekLink n={18} anchor="step-8-on-call-and-the-runbook">Step 8</WeekLink> writes the on-call hours for one person and a runbook section for every alert, mitigation first. <WeekLink n={18} anchor="step-9-run-the-incident-drill">Step 9</WeekLink> runs a drill: you stop Postgres on the live box and play every role at once, commander, operations and communications, with a timeline written as you go. <WeekLink n={18} anchor="step-10-write-the-postmortem">Step 10</WeekLink> writes the blameless postmortem from the template, with prevent, detect and mitigate actions. A test keeps every postmortem on the sections of the template.
+
+The functions of the example reproduce the numbers of Week 18. `ErrorBudget(0.995, 30*24*time.Hour)` gives the `3h36m0s` of the availability budget, and `BurnRate(0.995, 1)` gives 200, the highest burn rate a total outage reaches.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **An SLO of 100%, or more nines than the setup holds.** One virtual private server (VPS), one Postgres and one person who sleeps do not deliver 99.99%: a single reboot spends the month. Pick a target the architecture meets, and raise it when the architecture changes.
+- **An SLI that measures the server, not the user.** Processor load and pod restarts say nothing about whether users got an answer. Count requests, or probe from outside.
+- **Averaging ratios.** The mean of the error ratios of three api pods weighs an idle pod the same as a busy one. Sum the errors, sum the requests, then divide: `sum(rate(errors[5m])) / sum(rate(requests[5m]))`.
+- **One window per alert.** A 5-minute threshold pages for every blip, and a long one pages late and keeps paging long after the fix. Use a long and a short window together.
+- **A page with no runbook.** The on-call engineer spends the first 20 minutes deciding what the alert means. Every alert links to its runbook section, and Week 18 tests that link.
+- **Debugging before mitigating.** The root cause found in 40 minutes costs 38 minutes more of outage than a two-minute rollback. Restore service first.
+- **Human error as the root cause.** The postmortem ends with an action to be more careful, and the next person makes the same mistake. Ask what made the mistake possible and what stops it next time.
+- **A budget without a policy.** The budget runs out, and the next feature ships anyway because nothing written says otherwise. Agree on the policy while the budget is healthy.
 
 ## Going Deeper
 
-This section is not written yet.
+- **Latency SLOs from histograms.** A Prometheus histogram counts requests per latency bucket, and the share under a bucket boundary is a latency SLI with the same burn-rate alerts.
+- **SLO tooling.** Sloth and Pyrra generate the recording rules and multi-window alerts from a short SLO definition, which removes hand-written rule files.
+- **Graceful degradation.** Load shedding and serving stale data keep part of the service up when a dependency fails, which spends less budget than a full outage.
+- **Game days and chaos engineering.** Breaking production on purpose, on a schedule, tests runbooks and alerts the way the Week 18 drill does, at the scale of a team.
+- **Incident Command System.** The emergency services model that the SRE roles come from, with its rules for span of control and handoffs.
+- **On-call health.** Pages per shift, pages outside working hours and time to acknowledge show whether a rotation is sustainable.
 
 ## Further Reading
 
-This section is not written yet.
+- [The Site Reliability Workbook: Alerting on SLOs](https://sre.google/workbook/alerting-on-slos/): six alert designs compared by precision, recall, detection and reset time, ending with multi-window, multi-burn-rate alerts.
+- [The Site Reliability Workbook: Implementing SLOs](https://sre.google/workbook/implementing-slos/): choosing SLIs, setting targets and writing the documents that go with them, with a worked example.
+- [Site Reliability Engineering: Service Level Objectives](https://sre.google/sre-book/service-level-objectives/): the definitions of SLI, SLO and SLA and why the targets stay below 100%.
+- [Site Reliability Engineering: Managing Incidents](https://sre.google/sre-book/managing-incidents/): the incident roles, the live document and a worked incident, handled badly and then well.
+- [Site Reliability Engineering: Postmortem Culture](https://sre.google/sre-book/postmortem-culture/): blameless postmortems, their triggers and how Google reviews them.
+- [Site Reliability Engineering: Eliminating Toil](https://sre.google/sre-book/eliminating-toil/): the definition of toil and the 50% limit.
