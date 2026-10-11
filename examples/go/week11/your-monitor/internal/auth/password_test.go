@@ -17,8 +17,8 @@ func TestHashPasswordRules(t *testing.T) {
 		password string
 		want     error
 	}{
-		{"11 characters", "abcdefghijk", ErrPasswordTooShort},
-		{"12 characters", "abcdefghijkl", nil},
+		{"14 characters", "abcdefghijklmn", ErrPasswordTooShort},
+		{"15 characters", "abcdefghijklmno", nil},
 		{"72 bytes", strings.Repeat("a", 72), nil},
 		{"73 bytes", strings.Repeat("a", 73), ErrPasswordTooLong},
 		{"36 two-byte characters, 72 bytes", strings.Repeat("é", 36), nil},

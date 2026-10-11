@@ -25,7 +25,7 @@ func TestCreateUserReadsThePasswordFromStdin(t *testing.T) {
 		{"Windows line end", "correct horse battery\r\n", "created user id=1 email=you@example.com\n", ""},
 		{"no line end", "correct horse battery", "created user id=1 email=you@example.com\n", ""},
 		{"empty stdin", "", "", "no password on stdin"},
-		{"short password", "hunter2\n", "", "password must have at least 12 characters"},
+		{"short password", "hunter2\n", "", "password must have at least 15 characters"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

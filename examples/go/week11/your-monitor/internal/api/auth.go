@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -62,6 +63,10 @@ func (h *handler) login(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Email == "" || req.Password == "" {
 		writeError(w, http.StatusBadRequest, "email and password are required")
+		return
+	}
+	if len(req.Email) > auth.MaxEmailBytes {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("email must be at most %d bytes", auth.MaxEmailBytes))
 		return
 	}
 

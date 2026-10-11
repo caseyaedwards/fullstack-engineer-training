@@ -1,3 +1,4 @@
+// region: tests
 import { describe, expect, test } from 'vitest'
 import { AuthError, currentUser, login, logout } from './auth'
 
@@ -14,7 +15,6 @@ function fakeFetch(status: number, body: string | null, headers: Record<string, 
 
 const you = { id: 1, email: 'you@example.com', created_at: '2026-10-11T09:00:00Z' }
 
-// region: tests
 describe('login', () => {
   test('POSTs the email and password as JSON and returns the user', async () => {
     const { fn, calls } = fakeFetch(200, JSON.stringify(you))

@@ -58,7 +58,9 @@ test('week 11 shows the guarded routes, the cookie attributes and the bcrypt cod
   assert.match(go, /bcrypt\.GenerateFromPassword/);
   assert.match(go, /const Cost = 12/);
   assert.match(go, /MaxPasswordBytes = 72/);
-  assert.match(go, /CheckPassword\(dummyHash, password\)/);
+  assert.match(go, /s\.Check\(dummyHash, password\)/);
+  assert.match(go, /return sameOrigin\(jsonFallback\(mux\)\)/);
+  assert.match(go, /case "same-origin", "none":/);
   assert.match(go, /rand\.Text\(\)/);
   const sql = blocks('sql').join('\n');
   assert.match(sql, /CREATE TABLE users/);
@@ -79,11 +81,17 @@ test('the security numbers on the page match the code', () => {
   assert.match(service, /SessionTTL = 24 \* time\.Hour/);
   assert.match(service, /MaxAttempts\s+= 5/);
   assert.match(service, /AttemptWindow = 15 \* time\.Minute/);
-  assert.match(read('internal/auth/password.go'), /MinPasswordChars = 12/);
+  assert.match(read('internal/auth/password.go'), /MinPasswordChars = 15/);
+  assert.match(service, /MaxEmailBytes = 254/);
+  assert.match(read('internal/auth/limit.go'), /const maxKeys = 10_000/);
+  assert.match(text, /minimum of 15 characters/);
+  assert.match(text, /email over 254 bytes/);
+  assert.match(text, /cap of 10,000 keys/);
+  assert.match(text, /http\.NewCrossOriginProtection\(\)/);
   assert.match(text, /five login attempts per email address every 15 minutes/);
   assert.match(text, /Max-Age=86400/);
   assert.match(text, /bcrypt at cost 12/);
-  for (const name of ['A01:2025 Broken Access Control', 'A04:2025 Cryptographic Failures', 'A05:2025 Injection', 'A07:2025 Authentication Failures', 'A09:2025 Security Logging and Alerting Failures']) {
+  for (const name of ['A01:2025 Broken Access Control', 'A04:2025 Cryptographic Failures', 'A05:2025 Injection', 'A07:2025 Authentication Failures', 'A09:2025 Security Logging and Alerting Failures', 'A10:2025 Mishandling of Exceptional Conditions']) {
     assert.ok(text.includes(name), `OWASP category ${name} missing`);
   }
 });
@@ -94,5 +102,6 @@ test('the migration, the routes and the OpenAPI file agree on the auth routes', 
   assert.match(migration, /REFERENCES users\(id\) ON DELETE CASCADE/);
   const openapi = read('api/openapi.yaml');
   for (const path of ['/api/login:', '/api/logout:', '/api/me:']) assert.ok(openapi.includes(`  ${path}`), `openapi.yaml lacks ${path}`);
+  assert.equal(openapi.match(/\$ref: "#\/components\/responses\/CrossOrigin"/g)?.length, 4, 'every write documents the 403');
   assert.match(openapi, /sessionCookie:\n\s+type: apiKey\n\s+in: cookie\n\s+name: session/);
 });

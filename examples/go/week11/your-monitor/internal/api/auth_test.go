@@ -119,6 +119,7 @@ func TestLoginErrors(t *testing.T) {
 		{"no such user", "application/json", `{"email":"who@example.com","password":"correct horse battery"}`, 401, "wrong email or password"},
 		{"rate limited", "application/json", `{"email":"locked@example.com","password":"anything"}`, 429, "too many login attempts; try again in 90 seconds"},
 		{"no password", "application/json", `{"email":"you@example.com"}`, 400, "email and password are required"},
+		{"long email", "application/json", `{"email":"` + strings.Repeat("a", 243) + `@example.com","password":"x"}`, 400, "email must be at most 254 bytes"},
 		{"form post", "application/x-www-form-urlencoded", "email=you@example.com&password=x", 415, "Content-Type must be application/json"},
 	}
 	for _, tt := range tests {

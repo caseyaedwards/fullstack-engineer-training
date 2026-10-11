@@ -74,6 +74,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/LoginRequired"
+        "403":
+          $ref: "#/components/responses/CrossOrigin"
         "409":
           description: A monitor for this URL exists.
           content:
@@ -131,6 +133,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/LoginRequired"
+        "403":
+          $ref: "#/components/responses/CrossOrigin"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -235,6 +239,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "403":
+          $ref: "#/components/responses/CrossOrigin"
         "415":
           description: The Content-Type header is not application/json.
           content:
@@ -261,6 +267,8 @@ paths:
       responses:
         "204":
           description: Logged out, or there was no session. The response has no body.
+        "403":
+          $ref: "#/components/responses/CrossOrigin"
         "500":
           $ref: "#/components/responses/InternalError"
   /api/me:
@@ -390,6 +398,12 @@ components:
             $ref: "#/components/schemas/Error"
     LoginRequired:
       description: No session cookie, or its session ended. Log in with POST /api/login.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    CrossOrigin:
+      description: A page on another origin sent this write. The api refuses it.
       content:
         application/json:
           schema:

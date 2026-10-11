@@ -54,14 +54,14 @@ func (h *handler) routes() map[string]http.HandlerFunc {
 
 // NewHandler returns the API: every route, with JSON error bodies, served
 // from the stores. Week 8 adds results, Week 9 incidents and Week 11 the
-// auth service.
+// auth service, and sameOrigin in front of everything.
 func NewHandler(store monitor.Store, results monitor.ResultStore, incidents Incidents, auth Auth) http.Handler {
 	h := &handler{store: store, results: results, incidents: incidents, auth: auth}
 	mux := http.NewServeMux()
 	for pattern, fn := range h.routes() {
 		mux.HandleFunc(pattern, fn)
 	}
-	return jsonFallback(mux)
+	return sameOrigin(jsonFallback(mux))
 }
 
 // endregion: auth-routes
