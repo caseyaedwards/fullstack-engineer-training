@@ -33,7 +33,7 @@ Tests come in levels, by how much of the system each one runs:
 - An **integration test** runs your code against a real dependency: Postgres, an HTTP server on `127.0.0.1`, the file system. It runs in milliseconds to seconds, and it catches what a unit test cannot, such as a typo in a SQL column name.
 - An **end-to-end test** runs the whole app the way a user does, in a real browser. It runs in seconds, it breaks for many reasons, and it proves that the parts fit.
 
-The **test pyramid** says to write many unit tests, fewer integration tests and a handful of end-to-end tests, because cost and flakiness grow toward the top. The [first diagram](#test-pyramid) shows the shape with the tests of the uptime monitor. Some teams draw a **testing trophy** instead, with the widest band at integration, because modern tools make integration tests nearly as fast as unit tests. Both shapes agree on the top: keep end-to-end tests for the flows a user cannot live without.
+The **test pyramid** says to write many unit tests, fewer integration tests and a handful of end-to-end tests, because cost and flakiness grow toward the top. The [first diagram](#test-pyramid) shows the shape with the tests of the uptime monitor. Some teams draw a **testing trophy** instead, with the widest band at integration, because integration tests catch more real bugs per test for a modest cost. Both shapes agree on the top: keep end-to-end tests for the flows a user cannot live without.
 
 ### Test Doubles: Fakes, Stubs, Spies and Mocks
 
@@ -61,7 +61,7 @@ A **table-driven test** lists cases as rows, and one loop runs the same checks o
 2. **Green**: write the least code that makes it pass.
 3. **Refactor**: improve the code and the tests while every test stays green.
 
-Seeing the test fail first proves that it can fail, which answers the first question about any test. The loop also keeps each step small enough that a red test points straight at the change you just made. The [second diagram](#red-green-refactor) walks the loop through two rows of the example.
+Seeing the test fail first proves that it can fail, which answers the first question about any test. The loop also keeps each step small enough that a red test points straight at the change you just made. The [second diagram](#red-green-refactor) walks the loop through three rows of the example.
 
 ### Tests Against Real Dependencies
 
@@ -89,7 +89,7 @@ The first diagram shows the test pyramid with the tests the uptime monitor has b
   id="test-pyramid"
   title="The test pyramid, filled with the tests of the uptime monitor"
   code={`direction: down
-e2e: "end-to-end\\n2 Playwright tests: a site goes down,\\nthe api goes down\\nseconds each"
+e2e: "end-to-end\\ntwo Playwright tests: a site goes down,\\nthe api goes down\\nseconds each"
 integ: "integration\\nPostgres stores and queue, httptest servers,\\ncomponent tests in jsdom\\nmilliseconds to seconds"
 unit: "unit\\nResult, ParseList, Validate,\\ncurrentStatus, plot\\nmicroseconds to milliseconds"
 e2e -> integ: "more tests, faster, narrower"
@@ -97,11 +97,11 @@ integ -> unit: "more tests, faster, narrower"
 `}
 />
 
-The second diagram walks the red, green, refactor loop through two rows of the example table. Each turn of the loop adds one row, watches it fail, and changes the least code that makes it pass.
+The second diagram walks the red, green, refactor loop through three rows of the example table. It starts with the first five rows green under the simplest formula, `up / results.length * 100`. Each turn of the loop adds rows, watches them fail, and changes the least code that makes them pass.
 
 <Diagram
   id="red-green-refactor"
-  title="Red, green, refactor, with two rows of the uptimePercent table"
+  title="Red, green, refactor, with three rows of the uptimePercent table"
   code={`direction: right
 red: "red\\nwrite one failing row"
 green: "green\\nthe least code that passes"
@@ -111,8 +111,8 @@ green -> refactor: "run: passes"
 refactor -> red: "next row"
 `}
   steps={[
-    { hl: ['red'], caption: 'Red: add the row 29 of 100 checks up gives 29. The code divides first and multiplies by 100 after, and the run fails with 28.999999999999996. The failure is the one you expect.' },
-    { hl: ['red', 'green', 'red->green'], caption: 'Green: multiply first, then divide. Floating-point division rounds once, and 2900 divided by 100 gives exactly 29. Every row passes.' },
+    { hl: ['red'], caption: 'Red: add the rows 2 of 3 and 29 of 100. The code divides first and multiplies by 100 after, and both rows fail: 66.66666666666666 instead of 66.66666666666667, and 28.999999999999996 instead of 29. The failures are the ones you expect.' },
+    { hl: ['red', 'green', 'red->green'], caption: 'Green: multiply first, then divide. Floating-point division rounds once: 2900 divided by 100 gives exactly 29, and 200 divided by 3 gives the double nearest to two thirds of 100. Every row passes.' },
     { hl: ['green', 'refactor', 'green->refactor'], caption: 'Refactor: move the reason into a comment next to the formula, and run the whole table again. Nothing turns red.' },
     { hl: ['refactor', 'red', 'refactor->red'], caption: 'Next row, red again: 99,999 of 100,000 shows 100.00%, a perfect record that does not exist. The test fails with Received 100.00%.' },
     { hl: ['red', 'green', 'red->green'], caption: 'Green: when the text reads 100.00 for a value under 100, show 99.99 instead. The new row passes, and the seven rows before it still pass.' },
