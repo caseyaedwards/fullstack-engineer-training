@@ -1,0 +1,23 @@
+# region: prod-kustomization
+# The VPS: the base manifests, plus the way in from the internet. Two
+# Secrets are not here, because they never enter Git: postgres, with
+# the database password, and ghcr-pull, with a token that can read your
+# images. You create both on the cluster by hand.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: your-monitor
+resources:
+  - ../../base
+  - ingress.yaml
+  - redirect-https.yaml
+# GHCR packages start out private. Every Deployment pulls its image from
+# GHCR with the credentials in the ghcr-pull Secret.
+patches:
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/imagePullSecrets
+        value:
+          - name: ghcr-pull
+# endregion: prod-kustomization

@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -171,7 +172,8 @@ func TestBackupUploadsOnlyCiphertext(t *testing.T) {
 // region: drill-test
 
 // TestRestoreDrill takes a real backup, then runs the drill on copies of
-// the remote: as it is, and broken seven ways. Each way fails with its own
+// the remote: as it is, with a copy dated 2 minutes ahead, which the clock
+// skew allows, and broken seven ways. Each way fails with its own
 // message, which is what the reader sees in the drill log. The live
 // database holds two monitors, which LIVE_MONITORS=2 tells the drill.
 func TestRestoreDrill(t *testing.T) {
@@ -188,6 +190,14 @@ func TestRestoreDrill(t *testing.T) {
 	emptied := t.TempDir()
 	backup(t, append(env, "PGDATABASE=empty"), identity, emptied)
 	stem := strings.TrimSuffix(dump, ".dump.age")
+	// plant copies the good backup under the name of a backup taken at.
+	plant := func(remote string, at time.Time) {
+		name := at.UTC().Format("monitor-20060102-150405")
+		for _, ext := range []string{".dump.age", ".counts"} {
+			b, _ := os.ReadFile(filepath.Join(remote, stem+ext))
+			os.WriteFile(filepath.Join(remote, name+ext), b, 0o644)
+		}
+	}
 
 	tests := []struct {
 		name  string
@@ -198,12 +208,12 @@ func TestRestoreDrill(t *testing.T) {
 		{"a good backup", nil, func(string) {}, "restore drill: ok, restore "},
 		{"no backup at all", nil, func(r string) { os.RemoveAll(r); os.Mkdir(r, 0o755) }, "FAILED: no dump"},
 		{"the newest backup is too old", []string{"MAX_AGE_HOURS=0"}, func(string) {}, "hours old"},
-		{"the newest backup is dated in the future", nil, func(r string) {
-			for _, ext := range []string{".dump.age", ".counts"} {
-				b, _ := os.ReadFile(filepath.Join(r, stem+ext))
-				os.WriteFile(filepath.Join(r, "monitor-20991231-235959"+ext), b, 0o644)
-			}
-		}, "FAILED: the newest dump, monitor-20991231-235959, is dated in the future"},
+		{"the newest backup is 2 minutes ahead, inside the clock skew", nil, func(r string) {
+			plant(r, time.Now().Add(2*time.Minute))
+		}, "restore drill: ok, restore "},
+		{"the newest backup is 10 minutes ahead", nil, func(r string) {
+			plant(r, time.Now().Add(10*time.Minute))
+		}, "is dated more than 5 minutes in the future"},
 		{"the dump is cut short", nil, func(r string) { os.Truncate(filepath.Join(r, dump), 2000) }, "FAILED: age could not decrypt"},
 		{"another key encrypted it", []string{"AGE_IDENTITY=" + key(t)}, func(string) {}, "FAILED: age could not decrypt"},
 		{"the counts differ", nil, func(r string) {
@@ -224,7 +234,7 @@ func TestRestoreDrill(t *testing.T) {
 			drill := append(env, "BACKUP_REMOTE=offsite:"+remote, "AGE_IDENTITY="+identity,
 				"LIVE_MONITORS=2", "BACKUP_DIR="+t.TempDir(), "DRILL_DIR="+shortDir(t))
 			out, err := script(append(drill, tt.env...), "sh", filepath.Join(scripts, "restore-drill.sh"))
-			if ok := tt.want == "restore drill: ok, restore "; ok != (err == nil) || !strings.Contains(out, tt.want) {
+			if ok := strings.HasPrefix(tt.want, "restore drill: ok"); ok != (err == nil) || !strings.Contains(out, tt.want) {
 				t.Errorf("err %v, output:\n%s\nwant it to contain %q", err, out, tt.want)
 			}
 		})

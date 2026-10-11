@@ -1,0 +1,38 @@
+# region: golangci
+# golangci-lint configuration, format version 2. Run it with: make lint
+version: "2"
+
+linters:
+  # standard: errcheck, govet, ineffassign, staticcheck and unused.
+  default: standard
+  enable:
+    - bodyclose # an HTTP response body left open holds its connection
+    - errorlint # err == ErrNotFound misses an error that wraps ErrNotFound
+    - gosec # security checks, such as servers without timeouts
+    - misspell # common English misspellings in comments and strings
+  settings:
+    errcheck:
+      exclude-functions:
+        # pgx documents defer tx.Rollback(ctx) as safe after Commit: the
+        # call then returns ErrTxClosed, and a failed rollback closes the
+        # connection.
+        - (github.com/jackc/pgx/v5.Tx).Rollback
+    gosec:
+      excludes:
+        - G104 # unhandled errors: errcheck reports them, with the rules above
+  exclusions:
+    presets:
+      # Unchecked Close, Flush and fmt.Print* calls. A failed Close of a
+      # response body or a connection leaves nothing to handle.
+      - std-error-handling
+    rules:
+      # Tests ignore errors on purpose, build test servers and run
+      # subprocesses: errcheck, gosec and bodyclose report those by design.
+      - path: _test\.go
+        linters: [errcheck, gosec, bodyclose]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+# endregion: golangci

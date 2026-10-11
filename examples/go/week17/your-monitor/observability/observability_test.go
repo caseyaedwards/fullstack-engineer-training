@@ -140,7 +140,7 @@ func TestScrapeTargetsMatchCompose(t *testing.T) {
 	for _, c := range []struct{ target, command string }{
 		{`"api:2112"`, `command: ["-metrics-addr", ":2112"]`},
 		{`"scheduler:2112"`, `command: ["-metrics-addr", ":2112"]`},
-		{`port: 6060`, `"-debug-addr", ":6060"]`},
+		{`"worker:6060"`, `"-debug-addr", ":6060"]`},
 		{`"otel-collector:8888"`, ``},
 	} {
 		if !strings.Contains(prom, c.target) {

@@ -114,15 +114,15 @@
     {
       "id": 3,
       "type": "timeseries",
-      "title": "Queue",
-      "description": "Jobs waiting, and how long the oldest one has waited, as the scheduler saw them at its last round.",
+      "title": "Jobs queued",
+      "description": "Jobs waiting for a worker, as the scheduler saw them at its last round.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 6,
         "x": 0,
         "y": 8
       },
@@ -152,15 +152,50 @@
           },
           "expr": "monitor_jobs_queued",
           "legendFormat": "jobs queued"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Oldest queued job",
+      "description": "How long the oldest waiting job has waited, as the scheduler saw it at its last round. Alert on this, not on the count.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
         },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
         {
-          "refId": "B",
+          "refId": "A",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
           "expr": "monitor_jobs_oldest_seconds",
-          "legendFormat": "oldest job, seconds"
+          "legendFormat": "oldest job"
         }
       ]
     },

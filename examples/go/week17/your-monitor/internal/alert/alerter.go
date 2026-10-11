@@ -63,7 +63,7 @@ func (a *Alerter) Round(ctx context.Context) error {
 			// The incident starts at the first of the failed checks.
 			err = a.open(ctx, t, recent[a.Threshold-1].CheckedAt, Cause(recent[0]))
 		case Resolve:
-			err = a.resolve(ctx, t, recent[0].CheckedAt)
+			err = a.resolve(ctx, t, FirstUp(recent).CheckedAt)
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("monitor %d: %w", t.monitorID, err))

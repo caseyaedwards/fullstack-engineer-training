@@ -17,7 +17,9 @@ import (
 // while the loop beats, 503 once it stops for longer than maxAge, and ok
 // again after the next beat.
 func TestHealthGoesStaleWithoutBeats(t *testing.T) {
-	h := obs.NewHealth(100 * time.Millisecond)
+	// maxAge is a full second: a slow runner can pause a test for a
+	// good part of 100 ms, and the fresh probe must not see a stale beat.
+	h := obs.NewHealth(time.Second)
 	probe := func() (int, string) {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -27,7 +29,7 @@ func TestHealthGoesStaleWithoutBeats(t *testing.T) {
 	if code, body := probe(); code != http.StatusOK || body != "{\"status\":\"ok\"}\n" {
 		t.Fatalf("fresh: %d %q, want 200 {\"status\":\"ok\"}", code, body)
 	}
-	time.Sleep(300 * time.Millisecond) // no Beat: the loop is stuck
+	time.Sleep(1200 * time.Millisecond) // no Beat: the loop is stuck
 	if code, body := probe(); code != http.StatusServiceUnavailable || !strings.Contains(body, `"status":"stuck"`) {
 		t.Fatalf("stale: %d %q, want 503 with status stuck", code, body)
 	}
@@ -56,7 +58,17 @@ func TestOpsMuxServesHealthAndMetrics(t *testing.T) {
 			t.Errorf("GET %s: %d, body without %q", path, resp.StatusCode, want)
 		}
 	}
-	resp, err := http.Post(srv.URL+"/healthz", "text/plain", nil)
+	// pprof stays on its own loopback-only -pprof-addr: the ops port,
+	// which the cluster can reach, must not serve it.
+	resp, err := http.Get(srv.URL + "/debug/pprof/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("GET /debug/pprof/: %d, want 404", resp.StatusCode)
+	}
+	resp, err = http.Post(srv.URL+"/healthz", "text/plain", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

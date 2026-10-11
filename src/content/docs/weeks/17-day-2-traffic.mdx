@@ -147,7 +147,7 @@ your-monitor/
     ├── k8s/cluster/ci-deployer.yaml  grants CI the new kinds
     ├── k8s/manifests_test.go         the Role test learns the new kinds
     ├── k8s/load/load.yaml            new: the pod for the load drill
-    └── k8s/overlays/prod/            hpa, rollout, singletons, prestop, api, ratelimit,
+    └── k8s/overlays/prod/            hpa, rollout, prestop, api, ratelimit,
                                       ingress-middleware, backup
 ```
 
@@ -274,9 +274,7 @@ Each entry reads `<namespace>-<name>@kubernetescrd`. When one names a Middleware
 
 <CodeFrom file="go/week17/your-monitor/deploy/k8s/overlays/prod/rollout.yaml" region="rollout" lang="yaml" title="deploy/k8s/overlays/prod/rollout.yaml" />
 
-The scheduler and the alerter are different. Two schedulers side by side race to queue the same jobs, and two alerters can send one alert twice. Stop the old pod before the new one starts:
-
-<CodeFrom file="go/week17/your-monitor/deploy/k8s/overlays/prod/singletons.yaml" region="singletons" lang="yaml" title="deploy/k8s/overlays/prod/singletons.yaml" />
+The overlay applies it to api, worker and web. The scheduler and the alerter are different: two schedulers side by side race to queue the same jobs, and two alerters can send one alert twice. They keep the `strategy: type: Recreate` of Week 15, which stops the old pod before the new one starts.
 
 web and api, the two Deployments that requests reach, get the preStop pause from one JSON patch:
 
@@ -371,7 +369,7 @@ docker run --rm -i --env-file ~/.config/your-monitor/offsite-read.env -e AGE_IDE
 
 <CodeFrom file="go/week17/your-monitor/deploy/backup/restore-drill.sh" region="drill-script" lang="sh" title="deploy/backup/restore-drill.sh" />
 
-A new server, rather than a new database on the live one, proves more: the dump restores with no roles, no extensions and no settings from production. `MAX_AGE_HOURS` of 26 turns a backup CronJob that silently stopped into a failed drill. The counts of the `.counts` file catch a dump that restores only in part. They cannot catch a backup of the wrong database, whose dump and counts agree with each other; `LIVE_MONITORS` does: a restore with no monitors fails while the live database has some. A backup dated in the future fails too. Against an S3-compatible server on the machine that built this page, holding a backup of three monitors and 280,240 results, the drill printed:
+A new server, rather than a new database on the live one, proves more: the dump restores with no roles, no extensions and no settings from production. `MAX_AGE_HOURS` of 26 turns a backup CronJob that silently stopped into a failed drill. The counts of the `.counts` file catch a dump that restores only in part. They cannot catch a backup of the wrong database, whose dump and counts agree with each other; `LIVE_MONITORS` does: a restore with no monitors fails while the live database has some. A backup dated more than 5 minutes in the future fails too; the 5 minutes allow for skew between the clocks of the server and the laptop. Against an S3-compatible server on the machine that built this page, holding a backup of three monitors and 280,240 results, the drill printed:
 
 ```txt
 dump:     monitor-20261011-095512.dump.age, 728 KiB, 0 hours old
@@ -514,7 +512,7 @@ kubectl patch cronjob pg-backup -p '{"spec":{"suspend":false}}'
 | The drill fails with `no dump` or `hours old` | No backup reached the bucket lately: the log of the last backup job says why |
 | The drill fails with `age could not decrypt` | The object is cut short, or `AGE_RECIPIENT` is not your public key |
 | The drill fails with `no monitors` or `counts differ` | A backup of the wrong database, or a dump that restores only in part |
-| The drill fails with `dated in the future` | An upload that is not yours, or a wrong clock: restore an older backup by name |
+| The drill fails with `minutes in the future` | An upload that is not yours, or a wrong clock: restore an older backup by name |
 
 </OperateIt>
 

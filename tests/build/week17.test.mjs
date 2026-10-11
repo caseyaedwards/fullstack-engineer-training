@@ -57,7 +57,7 @@ test('week 17 shows the HPA, the rollout settings, the Middleware and the backup
   const yaml = blocks('yaml').join('\n');
   assert.match(yaml, /apiVersion: autoscaling\/v2\s+kind: HorizontalPodAutoscaler/);
   assert.match(yaml, /maxUnavailable: 0/);
-  assert.match(yaml, /type: Recreate/);
+  assert.match(text, /keep the\s+strategy: type: Recreate\s+of Week 15/);
   assert.match(yaml, /preStop:\s+sleep:\s+seconds: 5/);
   assert.match(yaml, /apiVersion: traefik\.io\/v1alpha1\s+kind: Middleware/);
   assert.match(yaml, /router\.middlewares: your-monitor-redirect-https@kubernetescrd,your-monitor-ratelimit@kubernetescrd/);
@@ -82,7 +82,8 @@ test('week 17 encrypts each backup, sends it off the box and drills a restore th
     'the restore runbook must restore in one transaction');
   assert.match(sh, /-e LIVE_MONITORS="\$live"/, 'the drill needs the live monitor count');
   assert.match(sh, /\[ "\$live" = 0 \] \|\|\s+fail "the restored database has no monitors, the live one has/);
-  assert.match(sh, /\[ "\$secs" -ge 0 \] \|\| fail "the newest dump, \$name, is dated in the future"/);
+  assert.match(sh, /\[ "\$secs" -ge -300 \] \|\| fail "the newest dump, \$name, is dated more than 5 minutes in the future"/,
+    'the drill allows 5 minutes of clock skew and no more');
   assert.match(sh, /b2 key create --bucket your-monitor-backups backup-upload writeFiles/);
   assert.match(sh, /"daysFromHidingToDeleting": 30/);
   assert.match(blocks('json').join('\n'), /"Action": "s3:PutObject",\s+"Resource": "arn:aws:s3:::your-monitor-backups\/\*"/);
@@ -95,7 +96,8 @@ test('week 17 encrypts each backup, sends it off the box and drills a restore th
   assert.match(go, /func TestNewPodsPassRestricted/);
   assert.match(go, /func TestRestoreDrill/);
   assert.match(go, /"FAILED: the restored database has no monitors, the live one has 2"/);
-  assert.match(go, /"the newest backup is dated in the future"/);
+  assert.match(go, /"the newest backup is 2 minutes ahead, inside the clock skew"/);
+  assert.match(go, /"the newest backup is 10 minutes ahead"/);
   assert.match(text, /RPO is now the interval between uploads/);
 });
 

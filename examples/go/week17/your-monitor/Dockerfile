@@ -44,9 +44,8 @@ ENTRYPOINT ["/alerter"]
 # endregion: targets
 
 # region: web
-# contract stub: week 10. Stage web-build: Node builds the page into static
-# files. The package files come first, in a layer of their own, as go.mod
-# does above.
+# Week 10. Stage web-build: Node builds the page into static files. The
+# package files come first, in a layer of their own, as go.mod does above.
 FROM node:22-alpine AS web-build
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,6 +14,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace/noop"
+	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	"google.golang.org/protobuf/proto"
 
 	"fsp/examples/week17/your-monitor/internal/obs"
 	"fsp/examples/week17/your-monitor/internal/obstest"
@@ -92,6 +95,11 @@ func TestStartTracingIsOffWithoutAnEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, span := otel.Tracer("test").Start(context.Background(), "job")
+	defer span.End()
+	if span.IsRecording() {
+		t.Error("with no endpoint, spans must not record")
+	}
 	if err := shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -102,8 +110,22 @@ func TestStartTracingIsOffWithoutAnEndpoint(t *testing.T) {
 // span there as an OTLP/HTTP request.
 func TestStartTracingSendsOTLP(t *testing.T) {
 	got := make(chan string, 10)
+	services := make(chan string, 10)
 	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got <- r.Method + " " + r.URL.Path + " " + r.Header.Get("Content-Type")
+		body, _ := io.ReadAll(r.Body)
+		var req collectortrace.ExportTraceServiceRequest
+		if err := proto.Unmarshal(body, &req); err != nil {
+			services <- "unreadable: " + err.Error()
+			return
+		}
+		for _, rs := range req.ResourceSpans {
+			for _, kv := range rs.Resource.Attributes {
+				if kv.Key == "service.name" {
+					services <- kv.Value.GetStringValue()
+				}
+			}
+		}
 	}))
 	defer collector.Close()
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", collector.URL)
@@ -125,5 +147,13 @@ func TestStartTracingSendsOTLP(t *testing.T) {
 		}
 	default:
 		t.Error("the collector got nothing")
+	}
+	select {
+	case name := <-services:
+		if name != "api" {
+			t.Errorf("service.name %q, want api", name)
+		}
+	default:
+		t.Error("the spans carry no service.name")
 	}
 }

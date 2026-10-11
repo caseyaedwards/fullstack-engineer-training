@@ -1,9 +1,9 @@
 // Command scheduler adds a check job to the queue in Postgres for every
 // monitor that is due, every -interval, until SIGINT or SIGTERM arrives.
-// It reads the Postgres connection string from DATABASE_URL. Run it from
-// the examples/go directory:
+// Run it from the examples/go directory:
 //
-//	DATABASE_URL=postgres://... go run ./week17/your-monitor/cmd/scheduler
+//	DATABASE_URL=postgres://monitor:changeme@127.0.0.1:5432/monitor?sslmode=disable \
+//	    go run ./week17/your-monitor/cmd/scheduler
 
 // region: main
 package main
@@ -27,9 +27,14 @@ import (
 )
 
 func main() {
+	databaseURL := flag.String("database-url", os.Getenv("DATABASE_URL"), "Postgres connection string; defaults to $DATABASE_URL")
 	interval := flag.Duration("interval", 5*time.Second, "how often to look for monitors that are due")
 	metricsAddr := flag.String("metrics-addr", "", "address for /metrics and /healthz, for example 127.0.0.1:2113; empty turns it off")
 	flag.Parse()
+	if *databaseURL == "" {
+		fmt.Fprintln(os.Stderr, "missing -database-url or DATABASE_URL")
+		os.Exit(2)
+	}
 	if *interval <= 0 {
 		fmt.Fprintln(os.Stderr, "-interval must be more than 0")
 		os.Exit(2)
@@ -50,7 +55,7 @@ func main() {
 	}
 	// endregion: health
 
-	pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
+	pool, err := db.Connect(ctx, *databaseURL)
 	if err != nil {
 		obs.Fatal(err)
 	}

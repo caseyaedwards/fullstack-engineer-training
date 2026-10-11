@@ -24,8 +24,9 @@ name=${name%.counts}
 taken=$(echo "$name" | sed -E 's/monitor-(....)(..)(..)-(..)(..)(..)/\1-\2-\3 \4:\5:\6/')
 secs=$((start - $(date -u -d "$taken" +%s)))
 # A name from the future is no backup of this database: only someone
-# else's upload, or a clock that is wrong, makes one.
-[ "$secs" -ge 0 ] || fail "the newest dump, $name, is dated in the future"
+# else's upload, or a clock that is wrong, makes one. Five minutes of
+# skew between the clocks of the server and the laptop pass.
+[ "$secs" -ge -300 ] || fail "the newest dump, $name, is dated more than 5 minutes in the future"
 age=$((secs / 3600))
 [ "$age" -lt "$max_age" ] || fail "the newest dump, $name, is $age hours old"
 

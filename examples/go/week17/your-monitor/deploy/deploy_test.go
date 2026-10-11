@@ -143,7 +143,8 @@ func TestHPAsScaleDeploymentsWithoutReplicas(t *testing.T) {
 // endregion: hpa-test
 
 // TestRolloutSettings: the rolling Deployments never drop below their
-// count, and the two singletons never run twice.
+// count, and the two singletons keep the Recreate strategy of Week 15,
+// which keeps them from running twice.
 func TestRolloutSettings(t *testing.T) {
 	roll := load(t, filepath.Join(prod, "rollout.yaml"))[0]
 	if get(roll, "spec", "strategy", "rollingUpdate", "maxUnavailable") != 0 ||
@@ -154,9 +155,11 @@ func TestRolloutSettings(t *testing.T) {
 	if deadline <= ready {
 		t.Errorf("progressDeadlineSeconds %d must be greater than minReadySeconds %d", deadline, ready)
 	}
-	single := load(t, filepath.Join(prod, "singletons.yaml"))[0]
-	if get(single, "spec", "strategy", "type") != "Recreate" {
-		t.Errorf("singletons.yaml: strategy %v, want Recreate", get(single, "spec", "strategy"))
+	for _, name := range []string{"scheduler", "alerter"} {
+		d := find(t, load(t, filepath.Join(base, name+".yaml")), "Deployment", name)
+		if get(d, "spec", "strategy", "type") != "Recreate" {
+			t.Errorf("base/%s.yaml: strategy %v, want Recreate", name, get(d, "spec", "strategy"))
+		}
 	}
 }
 

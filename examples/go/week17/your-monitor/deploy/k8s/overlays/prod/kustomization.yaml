@@ -33,10 +33,6 @@ patches:
     target:
       kind: Deployment
       name: api|worker|web
-  - path: singletons.yaml
-    target:
-      kind: Deployment
-      name: scheduler|alerter
   - path: prestop.yaml
     target:
       kind: Deployment
