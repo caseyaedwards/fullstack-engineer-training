@@ -30,7 +30,7 @@ That split explains three behaviors you meet in practice:
 
 - **Rename is cheap.** `mv` inside one filesystem changes only directory entries: no data moves, whatever the size of the file.
 - **A deleted file can still fill the disk.** Deleting removes the directory entry, but the inode and its blocks stay until the last process closes the file. A log file deleted while a program writes to it keeps growing. `lsof +L1` lists open files with no name left.
-- **A disk can run out of inodes.** Each filesystem has a fixed number of inodes. Millions of tiny files use them up, and creating a file fails with `No space left on device` while `df -h` shows free space. `df -i` shows the inodes.
+- **A disk can run out of inodes.** ext4 fixes the number of inodes when it formats the disk, and XFS allocates them as it needs them, up to a share of the space. Millions of tiny files use them up, and creating a file fails with `No space left on device` while `df -h` shows free space. `df -i` shows the inodes.
 
 ext4 and XFS keep a **journal**: before they change their own structures, such as an inode or a directory, they write the change to a log on the disk. After a crash, the filesystem replays the journal and comes back consistent. The journal protects the structure of the filesystem, not the content of your files.
 
@@ -164,7 +164,8 @@ The <TrackLink slug="databases">Databases track</TrackLink> continues with how P
 
 ## Further Reading
 
+- [The Linux fsync man page](https://man7.org/linux/man-pages/man2/fsync.2.html): what `fsync` and `fdatasync` guarantee on Linux, including the note that a directory needs its own `fsync`.
+- [The Linux rename man page](https://man7.org/linux/man-pages/man2/rename.2.html): the atomic replacement guarantee and the `EXDEV` error for a rename across filesystems.
+- [Reliability and the Write-Ahead Log](https://www.postgresql.org/docs/17/wal-reliability.html): how Postgres 17 depends on `fsync`, drive caches and power-loss protection for durable commits.
+- [Fsync Errors on the PostgreSQL wiki](https://wiki.postgresql.org/wiki/Fsync_Errors): the 2018 discovery that a failed `fsync` can lose data, and how Postgres changed in response.
 - [The os package](https://pkg.go.dev/os): the reference for `File.Sync`, `CreateTemp`, `Rename` and `Chmod`, and the platform notes on each.
-- [The io/fs package](https://pkg.go.dev/io/fs): `FileMode` and its permission bits, and the `ErrNotExist` error the tests check for.
-- [The renameio package](https://pkg.go.dev/github.com/google/renameio/v2): a maintained library from Google that implements the same temp file, `fsync` and rename pattern, with notes on its edge cases.
-- [The golang.org/x/sys/unix package](https://pkg.go.dev/golang.org/x/sys/unix): `Fsync`, `Fdatasync` and `Statfs`, the system calls behind durable writes and free space checks.

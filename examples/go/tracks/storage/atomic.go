@@ -12,8 +12,10 @@ import (
 
 // WriteFileAtomic replaces the file at path with data and sets its mode
 // to perm. It writes a temp file in the same directory, flushes it to
-// disk, and renames it over path. On any error, it removes the temp file
-// and leaves path as it was.
+// disk, and renames it over path. On an error before the rename, it
+// removes the temp file and leaves path as it was. An error after the
+// rename, from opening or syncing the directory, means path already holds
+// the new data, but its directory entry is not yet durable.
 func WriteFileAtomic(path string, data []byte, perm fs.FileMode) (err error) {
 	dir := filepath.Dir(path)
 	// The same directory keeps the rename on one filesystem, where
