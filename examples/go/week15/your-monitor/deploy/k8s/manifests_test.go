@@ -405,8 +405,13 @@ func TestManifests(t *testing.T) {
 		var secret string
 		for _, o := range objs {
 			if o.Kind == "Namespace" {
-				if o.Metadata.Labels["pod-security.kubernetes.io/enforce"] != "restricted" {
-					t.Error("the namespace does not enforce the restricted standard")
+				// enforce refuses a pod; warn shows the breach in the
+				// output of kubectl apply, at the Deployment.
+				for _, mode := range []string{"enforce", "warn"} {
+					l := o.Metadata.Labels
+					if l["pod-security.kubernetes.io/"+mode] != "restricted" || l["pod-security.kubernetes.io/"+mode+"-version"] != "v1.36" {
+						t.Errorf("the namespace must %s the restricted standard of v1.36", mode)
+					}
 				}
 				continue
 			}
@@ -493,8 +498,8 @@ func TestKindConfig(t *testing.T) {
 		t.Fatal("want one control-plane node")
 	}
 	n := c.Nodes[0]
-	if !strings.HasPrefix(n.Image, "kindest/node:v1.33.") || !strings.Contains(n.Image, "@sha256:") {
-		t.Errorf("node image %q: want kindest/node:v1.33.x pinned by digest", n.Image)
+	if !strings.HasPrefix(n.Image, "kindest/node:v1.36.") || !strings.Contains(n.Image, "@sha256:") {
+		t.Errorf("node image %q: want kindest/node:v1.36.x pinned by digest", n.Image)
 	}
 	if len(n.ExtraPortMappings) != 1 {
 		t.Fatal("want one port mapping, for the status page")

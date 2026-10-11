@@ -16,7 +16,8 @@ on:
 permissions:
   contents: read
 
-# One deploy at a time. A second run waits for the first to finish.
+# One deploy at a time. A second run waits for the first to finish. A
+# third run cancels the waiting second one: the newest request wins.
 concurrency:
   group: deploy-production
   cancel-in-progress: false
@@ -35,7 +36,7 @@ jobs:
           persist-credentials: false
       - uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
         with:
-          version: v1.33.13
+          version: v1.36.5 # Kubernetes 1.36, the version of the cluster
 
       # kubectl reads KUBECONFIG as a path to a file, not as the file itself.
       # umask 077: only the runner user can read the file.
@@ -71,10 +72,12 @@ jobs:
           } > "$dir/kustomization.yaml"
           cat "$dir/kustomization.yaml"
 
+      # apply -k puts every object in the namespace that the base names.
+      # rollout status names it too, instead of trusting the kubeconfig.
       - name: Apply and wait
         run: |
           kubectl apply -k deploy/k8s/release
           for d in api worker scheduler alerter web; do
-            kubectl rollout status "deployment/$d" --timeout=5m
+            kubectl rollout status "deployment/$d" --namespace your-monitor --timeout=5m
           done
 # endregion: deploy-job

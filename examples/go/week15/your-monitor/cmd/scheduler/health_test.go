@@ -15,8 +15,10 @@ import (
 )
 
 // TestHealthzAnswersForTheKubelet builds the scheduler and starts it the way
-// its Deployment does, with -metrics-addr. The kubelet probes GET /healthz on
-// that address: it must answer 200 while the loop runs.
+// its Deployment does, with -metrics-addr, and with a round every 200ms. The
+// kubelet probes GET /healthz on that address. It must answer 200 at once,
+// and still answer 200 after more than one maxAge: only a loop that beats
+// keeps it there.
 func TestHealthzAnswersForTheKubelet(t *testing.T) {
 	_, url := dbtest.NewWithURL(t)
 	bin := filepath.Join(t.TempDir(), "scheduler")
@@ -36,19 +38,31 @@ func TestHealthzAnswersForTheKubelet(t *testing.T) {
 		_ = cmd.Wait()
 	}()
 
-	var last string
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+	get := func() (int, string, error) {
 		resp, err := http.Get("http://" + addr + "/healthz")
 		if err != nil {
-			last = err.Error()
-			continue
+			return 0, "", err
 		}
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		last = resp.Status + " " + string(body)
-		if resp.StatusCode == http.StatusOK && string(body) == "{\"status\":\"ok\"}\n" {
-			return
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body), err
+	}
+	const ok = "{\"status\":\"ok\"}\n"
+	up := false
+	for deadline := time.Now().Add(10 * time.Second); !up && time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		code, body, err := get()
+		up = err == nil && code == http.StatusOK && body == ok
+	}
+	if !up {
+		t.Fatalf("GET /healthz on %s never answered 200 ok", addr)
+	}
+	// NewHealth beats once at the start, so the first 200 proves only the
+	// route. For 1.5s, longer than maxAge (3 intervals, 600ms), every answer
+	// must still be 200: without Beat in the loop, /healthz turns 503.
+	for end := time.Now().Add(1500 * time.Millisecond); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
+		code, body, err := get()
+		if err != nil || code != http.StatusOK || body != ok {
+			t.Fatalf("GET /healthz after the start: %d %q %v; want 200 ok while the loop runs", code, body, err)
 		}
 	}
-	t.Fatalf("GET /healthz on %s never answered 200 ok; last answer: %s", addr, last)
 }

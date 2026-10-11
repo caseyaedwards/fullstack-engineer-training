@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -54,3 +55,41 @@ func TestNewServerDropsSlowClients(t *testing.T) {
 }
 
 // endregion: serve-test
+
+// region: pprof-test
+
+// TestNewPprofServerWantsLoopback checks that pprof never listens on an
+// address that other machines reach.
+func TestNewPprofServerWantsLoopback(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:6061", "[::1]:6061", "localhost:6061"} {
+		if _, err := obs.NewPprofServer(addr); err != nil {
+			t.Errorf("NewPprofServer(%q): %v, want a server", addr, err)
+		}
+	}
+	for _, addr := range []string{":6061", "0.0.0.0:6061", "[::]:6061", "10.0.0.5:6061", "worker:6061", "127.0.0.1"} {
+		if _, err := obs.NewPprofServer(addr); err == nil {
+			t.Errorf("NewPprofServer(%q) returned a server, want an error", addr)
+		}
+	}
+}
+
+// TestNewPprofServerServesProfiles checks that the pages answer on the
+// pprof server, from a mux of its own.
+func TestNewPprofServerServesProfiles(t *testing.T) {
+	srv, err := obs.NewPprofServer("127.0.0.1:6061")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/debug/pprof/", "/debug/pprof/goroutine?debug=1", "/debug/pprof/cmdline"} {
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s: status %d, want 200", path, rec.Code)
+		}
+	}
+	if srv.Handler == http.DefaultServeMux {
+		t.Error("the pprof server serves http.DefaultServeMux, want a mux of its own")
+	}
+}
+
+// endregion: pprof-test

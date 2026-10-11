@@ -64,8 +64,8 @@ jobs:
       - name: Install kubectl
         working-directory: ${{ runner.temp }}
         run: |
-          curl -fsSLO https://dl.k8s.io/release/v1.33.13/bin/linux/amd64/kubectl
-          curl -fsSLO https://dl.k8s.io/release/v1.33.13/bin/linux/amd64/kubectl.sha256
+          curl -fsSLO https://dl.k8s.io/release/v1.36.5/bin/linux/amd64/kubectl
+          curl -fsSLO https://dl.k8s.io/release/v1.36.5/bin/linux/amd64/kubectl.sha256
           echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
           sudo install -m 0755 kubectl /usr/local/bin/kubectl
           kubectl version --client

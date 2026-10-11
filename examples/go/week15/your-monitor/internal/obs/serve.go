@@ -1,7 +1,10 @@
 package obs
 
 import (
+	"fmt"
+	"net"
 	"net/http"
+	"net/http/pprof"
 	"time"
 )
 
@@ -22,3 +25,32 @@ func NewServer(addr string, h http.Handler) *http.Server {
 }
 
 // endregion: serve
+
+// region: pprof
+
+// NewPprofServer returns a server for the pprof profiling pages, on a
+// mux of its own. The pages show the heap, every goroutine and the
+// command line, and /debug/pprof/profile keeps a CPU busy for 30 seconds:
+// no one outside the machine gets to read them. addr must name a loopback
+// host, such as 127.0.0.1:6061, or NewPprofServer returns an error.
+//
+// Importing net/http/pprof also adds the pages to http.DefaultServeMux.
+// No program here serves that mux: each one builds its own.
+func NewPprofServer(addr string) (*http.Server, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return nil, fmt.Errorf("pprof address %q: want a loopback host, such as 127.0.0.1", addr)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	return NewServer(addr, mux), nil
+}
+
+// endregion: pprof

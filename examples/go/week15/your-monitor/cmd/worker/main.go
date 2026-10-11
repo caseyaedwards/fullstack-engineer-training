@@ -6,10 +6,11 @@
 //
 //	DATABASE_URL=postgres://... go run ./week15/your-monitor/cmd/worker
 //
-// With -debug-addr, it serves pprof, its Prometheus metrics on /metrics,
-// and its health on /healthz, on that address. With
-// OTEL_EXPORTER_OTLP_ENDPOINT set, it sends a trace for each job to that
-// OpenTelemetry collector.
+// With -debug-addr, it serves its Prometheus metrics on /metrics and its
+// health on /healthz, on that address. With -pprof-addr, a loopback
+// address, it serves pprof there.
+// With OTEL_EXPORTER_OTLP_ENDPOINT set, it sends a trace for each job to
+// that OpenTelemetry collector.
 
 // region: imports
 package main
@@ -21,7 +22,6 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	_ "net/http/pprof" //nolint:gosec // G108: pprof answers only on -debug-addr, which you bind to 127.0.0.1
 	"os"
 	"os/signal"
 	"sync"
@@ -50,7 +50,8 @@ func main() {
 	timeout := flag.Duration("timeout", 5*time.Second, "how long to wait for each check")
 	workers := flag.Int("workers", 10, "how many checks run at the same time")
 	poll := flag.Duration("poll", time.Second, "how long a worker waits before it looks again when the queue is empty")
-	debugAddr := flag.String("debug-addr", "", "address for pprof, /metrics and /healthz, for example 127.0.0.1:6060; empty turns it off")
+	debugAddr := flag.String("debug-addr", "", "address for /metrics and /healthz, for example 127.0.0.1:6060; empty turns it off")
+	pprofAddr := flag.String("pprof-addr", "", "loopback address for the pprof server, for example 127.0.0.1:6061; empty turns it off")
 	flag.Parse()
 	if *timeout <= 0 || *poll <= 0 || *workers < 1 {
 		fmt.Fprintln(os.Stderr, "-timeout and -poll must be more than 0, and -workers at least 1")
@@ -72,16 +73,28 @@ func main() {
 			slog.Error("tracing shutdown", "err", err)
 		}
 	}()
+	// region: health
 	// A job takes up to -timeout, and an idle goroutine looks again after
 	// -poll. Three of those in a row with no beat means every goroutine is stuck.
 	health := obs.NewHealth(3 * (*timeout + *poll))
 	if *debugAddr != "" {
-		// pprof registers its pages on http.DefaultServeMux; /metrics and
-		// /healthz join them.
-		http.Handle("/metrics", promhttp.Handler())
-		http.Handle("GET /healthz", health)
+		// Prometheus scrapes /metrics on this address from another
+		// container, and the kubelet probes /healthz. pprof stays off it.
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.Handler())
+		mux.Handle("GET /healthz", health)
 		go func() {
-			slog.Error("debug server stopped", "err", obs.NewServer(*debugAddr, http.DefaultServeMux).ListenAndServe())
+			slog.Error("debug server stopped", "err", obs.NewServer(*debugAddr, mux).ListenAndServe())
+		}()
+	}
+	// endregion: health
+	if *pprofAddr != "" {
+		srv, err := obs.NewPprofServer(*pprofAddr)
+		if err != nil {
+			obs.Fatal(err)
+		}
+		go func() {
+			slog.Error("pprof server stopped", "err", srv.ListenAndServe())
 		}()
 	}
 	// endregion: setup

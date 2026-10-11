@@ -55,11 +55,29 @@ test('week 15 shows the api probes and resources exactly as the tested api.yaml 
 });
 
 test('the kind node image on the page is the one kind-config.yaml pins, from the kind release the page installs', () => {
-  const image = /image: (kindest\/node:v1\.33\.\d+@sha256:[0-9a-f]{64})/.exec(file('deploy/k8s/kind-config.yaml'))?.[1];
-  assert.ok(image, 'kind-config.yaml must pin a kindest/node v1.33 image by digest');
+  const image = /image: (kindest\/node:v1\.\d+\.\d+@sha256:[0-9a-f]{64})/.exec(file('deploy/k8s/kind-config.yaml'))?.[1];
+  assert.ok(image, 'kind-config.yaml must pin a kindest/node image by digest');
   assert.ok(blocks('yaml').some((b) => b.includes(image)), 'the page must show the pinned node image');
-  assert.ok(blocks('sh').some((b) => b.includes('go install sigs.k8s.io/kind@v0.32.0')), 'the page must install kind v0.32.0, which built that image');
-  assert.ok(blocks('sh').some((b) => b.includes('stable-1.33.txt')), 'the page must install a 1.33 kubectl');
+  assert.ok(blocks('sh').some((b) => b.includes('go install sigs.k8s.io/kind@v0.33.0')), 'the page must install kind v0.33.0, whose release notes list that image');
+});
+
+// Kubernetes 1.36 for Weeks 15 to 18: the node image, the Pod Security
+// labels, the kubeconform schemas, the kubectl of CI and of deploy.yml, and
+// the kubectl the page installs must all name the same minor version.
+test('every Kubernetes version names the same minor, 1.36', () => {
+  const minors = {
+    'kind-config.yaml node image': /kindest\/node:v1\.(\d+)\./.exec(file('deploy/k8s/kind-config.yaml'))?.[1],
+    'namespace.yaml enforce-version': /enforce-version: v1\.(\d+)/.exec(file('deploy/k8s/overlays/kind/namespace.yaml'))?.[1],
+    'namespace.yaml warn-version': /warn-version: v1\.(\d+)/.exec(file('deploy/k8s/overlays/kind/namespace.yaml'))?.[1],
+    'Makefile kubeconform': /-kubernetes-version 1\.(\d+)\.0/.exec(file('Makefile'))?.[1],
+    'deploy.yml kubectl': /version: v1\.(\d+)\.\d+/.exec(file('.github/workflows/deploy.yml'))?.[1],
+    'site.yml kubectl': /dl\.k8s\.io\/release\/v1\.(\d+)\.\d+\/bin\/linux\/amd64\/kubectl/.exec(readFileSync(join(root, '.github/workflows/site.yml'), 'utf8'))?.[1],
+    'page kubectl install': blocks('sh').join('\n').match(/stable-1\.(\d+)\.txt/)?.[1],
+    'page kubeconform output': blocks('txt').join('\n').match(/-kubernetes-version 1\.(\d+)\.0/)?.[1],
+  };
+  for (const [where, minor] of Object.entries(minors)) {
+    assert.equal(minor, '36', `${where} names Kubernetes 1.${minor}, want 1.36`);
+  }
 });
 
 test('week 15 marks every kubectl and kind output as an example', () => {
@@ -68,7 +86,7 @@ test('week 15 marks every kubectl and kind output as an example', () => {
 
 test('CI installs kubectl for the manifest test', () => {
   const workflow = readFileSync(join(root, '.github/workflows/site.yml'), 'utf8');
-  assert.match(workflow, /dl\.k8s\.io\/release\/v1\.33\.\d+\/bin\/linux\/amd64\/kubectl/);
+  assert.match(workflow, /dl\.k8s\.io\/release\/v1\.\d+\.\d+\/bin\/linux\/amd64\/kubectl/);
   assert.match(workflow, /sha256sum --check/);
 });
 

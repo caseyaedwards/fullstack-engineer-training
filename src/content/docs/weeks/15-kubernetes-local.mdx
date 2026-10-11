@@ -1,6 +1,6 @@
 ---
 title: "Week 15: Kubernetes on the Laptop"
-description: Run the whole uptime monitor on a Kubernetes 1.33 cluster on your laptop with kind, from manifests you write, check and apply with Kustomize.
+description: Run the whole uptime monitor on a Kubernetes 1.36 cluster on your laptop with kind, from manifests you write, check and apply with Kustomize.
 week: 15
 phase: run
 hours: [6, 8]
@@ -10,7 +10,7 @@ done:
   - id: stack-on-kind
     text: kubectl get pods lists api, worker, scheduler, alerter, web and postgres-0 as Running and 1/1 ready, and the status page on 127.0.0.1:3000 shows a monitor you added through the cluster.
   - id: manifests-checked
-    text: make k8s-check reports every object valid against Kubernetes 1.33, and the manifest tests in deploy/k8s pass under go test -race with kubectl on your PATH.
+    text: make k8s-check reports every object valid against Kubernetes 1.36, and the manifest tests in deploy/k8s pass under go test -race with kubectl on your PATH.
   - id: probes-seen
     text: You have broken the readiness probe of the api and the liveness probe of web on purpose, and you can say what each probe did from kubectl get pods and the events.
   - id: data-survives
@@ -39,7 +39,7 @@ At the end of <a href={weekHref(14)}>Week 14</a>, CI tests every change and push
 - Explain what the API server, the scheduler, the controllers and the kubelet each do when you apply a manifest.
 - Describe the monitor as Kubernetes objects: a Deployment and a Service per program, a StatefulSet with a volume for Postgres, a ConfigMap and a Secret.
 - Give every container readiness and liveness probes on `/healthz`, CPU and memory requests and limits, a non-root user and a read-only root filesystem.
-- Check the manifests before any cluster sees them, then run the monitor on kind with Kubernetes 1.33.
+- Check the manifests before any cluster sees them, then run the monitor on kind with Kubernetes 1.36.
 - Tell a pod that cannot pull its image, cannot be placed or keeps crashing apart, from `kubectl` output alone.
 
 ## Concepts
@@ -143,7 +143,7 @@ browser -> node.websvc: "port mapping"
 
 ### Probes: Ready, and Alive
 
-The kubelet runs two probes against every container, by default every 10 seconds with a timeout of one second. An HTTP probe passes on any status from `200` to `399`.
+For each probe a container defines, the kubelet runs it every 10 seconds by default, with a timeout of one second. A container without probes is never probed. An HTTP probe passes on any status from `200` to `399`.
 
 - **Readiness** asks: can this pod take requests now? While it fails, the pod stays out of its Service, and a rolling update waits for it. The container keeps running.
 - **Liveness** asks: is this container stuck for good? After `failureThreshold` failures in a row, three by default, the kubelet restarts the container.
@@ -156,7 +156,7 @@ Keep liveness cheap and narrow. A liveness probe that checks Postgres restarts e
 
 Each container states **requests** and **limits** for CPU and memory. The scheduler places a pod only on a node with the requested amount unreserved. A limit is a ceiling the kernel enforces: above its CPU limit, a container is slowed down, and above its memory limit, the kernel stops it and the container shows `OOMKilled`. CPU counts in millicores: `100m` is a tenth of one core. Memory counts in bytes with binary suffixes: `64Mi` is 64 mebibytes. Write `Mi`, not `M`, and never `m`, which means millibytes.
 
-A **security context** sets who the container runs as. The Go images from <a href={weekHref(6)}>Week 6</a> run as user `65532` and write no files, which makes four settings free: refuse root, mount the image read-only, forbid privilege escalation, and drop every Linux capability. The `restricted` Pod Security Standard demands exactly these. A label on the namespace makes the API server refuse any pod that breaks them.
+A **security context** sets who the container runs as. The Go images from <a href={weekHref(6)}>Week 6</a> run as user `65532` and write no files, which makes five settings free: refuse root, forbid privilege escalation, drop every Linux capability, apply the default **seccomp** profile of the container runtime, which blocks rare and risky system calls, and mount the image read-only. The `restricted` Pod Security Standard demands the first four. A label on the namespace makes the API server refuse any pod that breaks them. The read-only image is a rule of this repository, on top of the standard, and the manifest tests of Step 9 enforce it.
 
 ### State: StatefulSet, Volumes, ConfigMap and Secret
 
@@ -190,22 +190,22 @@ The snippets come from the example code that this site tests, under `examples/go
 
 You need three programs: kind, `kubectl`, and `kubeconform`, which checks manifests against the Kubernetes schemas. The Docker you installed in <a href={weekHref(0)}>Week 0</a> runs the node.
 
-The node image this page pins, Kubernetes 1.33, comes from kind `v0.32.0`. kind builds node images for each release, and newer releases no longer build 1.33. Install that release with Go:
+The node image this page pins, Kubernetes 1.36, comes from the release notes of kind `v0.33.0`, which list one image for each supported minor version, pinned by digest. kind itself defaults to a newer Kubernetes. Install that release with Go:
 
 ```sh
-go install sigs.k8s.io/kind@v0.32.0
+go install sigs.k8s.io/kind@v0.33.0
 go install github.com/yannh/kubeconform/cmd/kubeconform@latest
 kind version
 ```
 
-`kind version` prints a line such as `kind v0.32.0 go1.27.2 darwin/arm64`.
+`kind version` prints a line such as `kind v0.33.0 go1.27.2 darwin/arm64`. When a newer kind exists, its release notes list the 1.36 image to pin instead.
 
-`kubectl` talks to clusters at most one minor version away from its own. A Homebrew `kubectl` is the newest release, too new for 1.33. Download the newest 1.33 release from the Kubernetes release server instead, check its checksum, and install it:
+`kubectl` talks to clusters at most one minor version away from its own. Homebrew installs the newest release, 1.37 at the time of writing, which still fits a 1.36 cluster. Homebrew moves on to 1.38 when it ships, and that `kubectl` no longer fits. Download the newest 1.36 release from the Kubernetes release server instead, check its checksum, and install it:
 
 ```sh
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 arch=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
-version=$(curl -fsSL https://dl.k8s.io/release/stable-1.33.txt)
+version=$(curl -fsSL https://dl.k8s.io/release/stable-1.36.txt)
 curl -fsSLO "https://dl.k8s.io/release/$version/bin/$os/$arch/kubectl"
 curl -fsSLO "https://dl.k8s.io/release/$version/bin/$os/$arch/kubectl.sha256"
 echo "$(cat kubectl.sha256)  kubectl" | shasum -a 256 --check
@@ -214,7 +214,7 @@ rm kubectl kubectl.sha256
 kubectl version --client
 ```
 
-`shasum` prints `kubectl: OK`, and the last command prints `Client Version: v1.33` followed by the patch number. When it names another version, an older `kubectl` comes first on your `PATH`: `which -a kubectl` lists every copy.
+`shasum` prints `kubectl: OK`, and the last command prints `Client Version: v1.36` followed by the patch number. When it names another version, an older `kubectl` comes first on your `PATH`: `which -a kubectl` lists every copy.
 
 ### Step 2: Give Every Program a Health Endpoint
 
@@ -226,20 +226,22 @@ Create `internal/obs/health.go`. The loop of a program calls `Beat` on every pas
 
 <CodeFrom file="go/week15/your-monitor/internal/obs/health.go" region="ops-mux" lang="go" title="internal/obs/health.go" />
 
-In `cmd/scheduler/main.go`, create the `Health` before the metrics server, serve `OpsMux` on `-metrics-addr`, and call `health.Beat()` after `round` in the function you pass to `every`:
+In `cmd/scheduler/main.go`, create the `Health` before the metrics server and serve `OpsMux` on `-metrics-addr`:
 
 <CodeFrom file="go/week15/your-monitor/cmd/scheduler/main.go" region="health" lang="go" title="cmd/scheduler/main.go" />
 
+In the function you pass to `every`, give `round` a context with a deadline of two intervals, from `context.WithTimeout`, and call `health.Beat()` after it. A query that hangs then ends as a failed round, and the loop still beats.
+
 Do the same in the other two programs:
 
-- **alerter**: add the Go command-line flag `-metrics-addr`, start the same server, and beat after each `Round`, failed or not. `maxAge` is three times `-interval`: 30 seconds.
-- **worker**: register `http.Handle("GET /healthz", health)` on `http.DefaultServeMux` next to `/metrics`, and call `health.Beat()` at the top of the function you pass to `run`. `maxAge` is `3 * (*timeout + *poll)`, 18 seconds: no beat for that long means every worker goroutine is stuck.
+- **alerter**: add the Go command-line flag `-metrics-addr`, start the same server, give each `Round` the same deadline, and beat after it, failed or not. `maxAge` is three times `-interval`: 30 seconds.
+- **worker**: add `mux.Handle("GET /healthz", health)` to the mux of its `-debug-addr` server, next to `/metrics`, and call `health.Beat()` at the top of the function you pass to `run`. pprof stays on its own loopback server, `-pprof-addr`. `maxAge` is `3 * (*timeout + *poll)`, 18 seconds: no beat for that long means every worker goroutine is stuck.
 
 The test sleeps past `maxAge` and expects `503`, then beats and expects `200`:
 
 <CodeFrom file="go/week15/your-monitor/internal/obs/health_test.go" region="health-test" lang="go" title="internal/obs/health_test.go" />
 
-The example code also builds each program, starts it with its ops address, and polls `/healthz` until it answers `{"status":"ok"}`. For web, nginx answers the probe itself. Add this location to `web/nginx.conf`, above `location /assets/`:
+The example code also builds each program, starts it with its ops address and an interval of 200 milliseconds, and expects `{"status":"ok"}` from `/healthz` for longer than one `maxAge`. A loop without `Beat` fails it. For web, nginx answers the probe itself. Add this location to `web/nginx.conf`, above `location /assets/`:
 
 <CodeFrom file="go/week15/your-monitor/web/nginx.conf" region="healthz" lang="nginx" title="web/nginx.conf" />
 
@@ -253,23 +255,23 @@ Add the kind targets to the Makefile, and `kind-up kind-load k8s-check kind-depl
 
 <CodeFrom file="go/week15/your-monitor/Makefile" region="kind" lang="makefile" title="Makefile" />
 
-`KUBECTL` names the context, the cluster entry in `~/.kube/config`, on every call. When Week 16 adds a second cluster, no target here reaches it by mistake. Stop Compose first with `make down`, because both want port `3000`. Then create the cluster:
+`KUBECTL` names the context on every call. A **context** is an entry in `~/.kube/config` that joins a cluster, a user and a default namespace. When Week 16 adds a second cluster, no target here reaches it by mistake. Stop Compose first with `make down`, because both want port `3000`. Then create the cluster:
 
 ```sh
 make kind-up
 kubectl get nodes
 ```
 
-kind sets your current context to `kind-your-monitor`. The node is ready when the output looks like this example:
+kind sets your current context to `kind-your-monitor`, and `make kind-up` sets `your-monitor` as the namespace of that context. That is why a bare `kubectl get pods`, as in Step 10, lists the pods of the monitor. The node is ready when the output looks like this example:
 
 ```txt
 NAME                         STATUS   ROLES           AGE   VERSION
-your-monitor-control-plane   Ready    control-plane   48s   v1.33.12
+your-monitor-control-plane   Ready    control-plane   48s   v1.36.4
 ```
 
 ### Step 4: Build and Load the Images
 
-Run `make kind-load`. It builds the five images as `make up` does, named `your-monitor-api` to `your-monitor-web`, tags each one `dev`, and copies it into the node. The tag matters: by default, Kubernetes pulls an image with no tag, or the tag `latest`, from a registry on every start, and Docker Hub has no `your-monitor-api`.
+Run `make kind-load`. It builds the five images as `make up` does, named `your-monitor-api` to `your-monitor-web`, tags each one `dev`, and copies it into the node. The `dev` tag gives the image a fixed name that the kind overlay can point at. What keeps the node from pulling it from a registry is the overlay setting `imagePullPolicy: Never`, which Step 8 shows: Docker Hub has no `your-monitor-api`.
 
 After a code change, run `make kind-load` again, then `kubectl rollout restart deployment`. The tag stays `dev`, which leaves the manifests unchanged: without the restart, the running pods keep the old image.
 
@@ -295,11 +297,9 @@ The Service follows in the same file:
 
 Create `worker.yaml`, `scheduler.yaml`, `alerter.yaml` and `web.yaml` in `deploy/k8s/base/` on the pattern of `api.yaml`. Each one differs in a few lines:
 
-- **worker**: two replicas, which the `SKIP LOCKED` queue of Week 9 keeps from taking the same job. `args: ["-workers", "$(WORKERS)", "-debug-addr", ":6060"]`, a port named `debug`, and probes on it. No Service, because nothing calls the worker. The address `:6060` means every interface of the pod, because the kubelet probes the pod IP, not `127.0.0.1`. Any pod in the cluster can now reach pprof on that port, the same exposure as on the Compose network.
-- **scheduler** and **alerter**: one replica, `args: ["-metrics-addr", ":2112"]`, a port named `metrics`, and `strategy: type: Recreate`. With the default rolling update, the new pod starts before the old one stops, and for a few seconds two schedulers queue jobs and two alerters send notifications. `Recreate` stops the old pod first.
+- **worker**: two replicas, which the `SKIP LOCKED` queue of Week 9 keeps from taking the same job. `args: ["-workers", "$(WORKERS)", "-debug-addr", ":6060"]`, a port named `debug`, and probes on it. No Service, because nothing calls the worker. The address `:6060` means every interface of the pod, because the kubelet probes the pod IP, not `127.0.0.1`. That server holds `/metrics` and `/healthz` only. pprof stays off, and Observe It turns it on, on the loopback address of the pod.
+- **scheduler** and **alerter**: one replica, `args: ["-metrics-addr", ":2112"]`, a port named `metrics`, and `strategy: type: Recreate`. With the default rolling update, the new pod starts before the old one stops, and for a few seconds two schedulers queue jobs and two alerters send notifications. `Recreate` stops the old pod first. The alerter gets no `ALERT_WEBHOOK_URL` and writes alerts to its log, as in Compose without one.
 - **web**: one replica, no environment, and a Service named `web` on port `8080`. nginx writes its PID file and buffers under `/tmp`, which the read-only root filesystem forbids. An `emptyDir` volume, an empty folder that lives as long as the pod, mounted at `/tmp`, fixes that.
-
-None of them sets `ALERT_WEBHOOK_URL`: the alerter writes alerts to its log, as in Compose without one.
 
 ### Step 7: Run Postgres as a StatefulSet
 
@@ -343,19 +343,19 @@ The same file ends with two patches. A patch is a list of edits in JSON Patch fo
 
 ### Step 9: Check the Manifests Before the Cluster Does
 
-`kubectl apply` refuses an object with an unknown field, such as a misspelled `readinesProbe`. It finds out only when a cluster answers, and it still applies every other object, which leaves the cluster half changed. Catch the error on your laptop and in CI, with no cluster. `make k8s-check` renders the overlay and validates every object against the schemas of Kubernetes 1.33. `-strict` rejects unknown fields:
+`kubectl apply` refuses an object with an unknown field, such as a misspelled `readinesProbe`. It finds out only when a cluster answers, and it still applies every other object, which leaves the cluster half changed. Catch the error on your laptop and in CI, with no cluster. `make k8s-check` renders the overlay and validates every object against the schemas of Kubernetes 1.36. `-strict` rejects unknown fields:
 
 ```txt
 $ make k8s-check
 umask 077; printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 16)" > deploy/k8s/overlays/kind/postgres.env
-kubectl kustomize deploy/k8s/overlays/kind | kubeconform -strict -kubernetes-version 1.33.0 -summary
+kubectl kustomize deploy/k8s/overlays/kind | kubeconform -strict -kubernetes-version 1.36.0 -summary
 Summary: 12 resources found parsing stdin - Valid: 12, Invalid: 0, Errors: 0, Skipped: 0
 ```
 
 The first line runs only while `postgres.env` is missing. With `readinessProbe` misspelled in `api.yaml`, the same check fails:
 
 ```txt wrap
-stdin - Deployment api is invalid: problem validating schema. Check JSON formatting: jsonschema validation failed with 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.33.0-standalone-strict/deployment-apps-v1.json#' - at '/spec/template/spec/containers/0': additional properties 'readinesProbe' not allowed
+stdin - Deployment api is invalid: problem validating schema. Check JSON formatting: jsonschema validation failed with 'https://raw.githubusercontent.com/yannh/kubernetes-json-schema/master/v1.36.0-standalone-strict/deployment-apps-v1.json#' - at '/spec/template/spec/containers/0': additional properties 'readinesProbe' not allowed
 Summary: 12 resources found parsing stdin - Valid: 11, Invalid: 1, Errors: 0, Skipped: 0
 ```
 
@@ -451,6 +451,16 @@ curl -s 127.0.0.1:2112/metrics | grep '^monitor_jobs'
 
 Run `curl` in a second terminal, and press Ctrl-C in the first when you are done. `monitor_jobs_queued` stays at or near `0` while two workers keep up.
 
+**pprof, on the loopback of one pod.** The worker serves no pprof by default, and no Service, probe or port of the manifests exposes it. To profile in the cluster, add the Go command-line flag `-pprof-addr 127.0.0.1:6061` to the worker, then open a tunnel. `kubectl port-forward` connects to the loopback address inside the pod, which nothing else in the cluster reaches:
+
+```sh
+kubectl patch deployment worker --type json -p '[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "-pprof-addr"}, {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "127.0.0.1:6061"}]'
+kubectl port-forward deploy/worker 6061:6061
+curl -s '127.0.0.1:6061/debug/pprof/goroutine?debug=1' | head -1
+```
+
+In the second terminal, `curl` prints `goroutine profile: total` and a count. `go tool pprof http://127.0.0.1:6061/debug/pprof/profile?seconds=10` takes a CPU profile, as in <a href={weekHref(12)}>Week 12</a>. Press Ctrl-C in the first terminal, and run `make kind-deploy` to remove `-pprof-addr` again.
+
 **What the node has promised.** `kubectl describe node your-monitor-control-plane` ends with **Allocated resources**: the sums of the requests and limits of every pod on the node, the system pods included. The monitor alone requests 475 millicores and 608 MiB. Compare that with the CPUs and memory you give Docker.
 
 </ObserveIt>
@@ -470,13 +480,13 @@ kubectl get pods -l app.kubernetes.io/name=api
 
 The patch changes the pod template, which starts a rolling update. The new pod runs but stays `0/1` ready, and `kubectl describe` shows `Readiness probe failed: HTTP probe failed with statuscode: 404`. With two replicas, the rolling update takes no ready pod away before a new one is ready: the two old pods keep serving, and the status page keeps working. Readiness has just stopped a broken release.
 
-**A liveness probe that fails.** Run the same patch against `deployment web`, with `livenessProbe` in the path. The new pod turns ready, the old one goes, and every 30 seconds the events show `Liveness probe failed: HTTP probe failed with statuscode: 404`, then `Container web failed liveness probe, will be restarted`. The `RESTARTS` column climbs. The restarts change nothing, because the probe is wrong, not nginx.
+**A liveness probe that fails.** Run the same patch against `deployment web`, with `livenessProbe` in the path. The new pod turns ready, the old one goes, and the events show `Liveness probe failed: HTTP probe failed with statuscode: 404` for every failed probe, every 10 seconds. After three failures in a row, about every 30 seconds, `Container web failed liveness probe, will be restarted` follows. The `RESTARTS` column climbs. The restarts change nothing, because the probe is wrong, not nginx.
 
 **ErrImageNeverPull.** `kubectl set image deployment/worker worker=your-monitor-worker:v2` names an image the node does not have. The new pod shows `ErrImageNeverPull` at once, because the kind overlay sets `imagePullPolicy: Never`. Without that setting, the kubelet tries Docker Hub, fails, and shows `ErrImagePull`, then `ImagePullBackOff`.
 
 **Pending.** `kubectl set resources deployment/worker --requests=cpu=64 --limits=cpu=64` asks for 64 cores. The new pod stays `Pending`, and `kubectl describe` shows a `FailedScheduling` event that starts with `0/1 nodes are available: 1 Insufficient cpu.` No node can take it, and nothing starts.
 
-**Data that outlives its pod.** Run `kubectl delete pod postgres-0`. The StatefulSet creates a new `postgres-0` within seconds. For those seconds, the api answers reads with `500`, and the workers log `job failed`. Once it is ready, reload the status page: your monitors and their history are there, on the claim `data-postgres-0`, which `kubectl get pvc` lists as `Bound`. `kubectl delete -k deploy/k8s/overlays/kind` keeps the claim too. Only `make kind-down`, which deletes the node container, deletes the data.
+**Data that outlives its pod.** Run `kubectl delete pod postgres-0`. The StatefulSet creates a new `postgres-0` within seconds. For those seconds, the api answers reads with `500`, and the workers log `job failed`. Once it is ready, reload the status page: your monitors and their history are there, on the claim `data-postgres-0`, which `kubectl get pvc` lists as `Bound`. `kubectl delete -k deploy/k8s/overlays/kind` deletes the data: the overlay holds the Namespace, and deleting a namespace deletes every claim in it, and kind deletes the volume of each claim. To remove the monitor and keep the data, run `kubectl delete -k deploy/k8s/base`: the base names the namespace but holds neither the Namespace nor the claim. `make kind-down`, which deletes the node container, deletes the data too.
 
 | What you see | What it points to |
 | --- | --- |
@@ -488,7 +498,7 @@ The patch changes the pod template, which starts a rolling update. The new pod r
 | `Pending`, `Insufficient cpu` or `Insufficient memory` | The requests exceed what the node has unreserved |
 | `OOMKilled` in `Last State`, exit code `137` | The container used more memory than its limit, and the kernel stopped it |
 | `CreateContainerConfigError` | A ConfigMap or Secret the pod names does not exist, such as one you deleted by hand |
-| `kubectl apply` warns `would violate PodSecurity "restricted:v1.33"`, and the Deployment gets no pods | The pod template breaks the restricted standard. `kubectl describe replicaset` shows the `FailedCreate` event |
+| `kubectl apply` warns `would violate PodSecurity "restricted:v1.36"`, and the Deployment gets no pods | The pod template breaks the restricted standard. `kubectl describe replicaset` shows the `FailedCreate` event |
 
 </OperateIt>
 
