@@ -1,17 +1,22 @@
 ---
 title: "Week 5: Concurrency"
+description: Check 100 URLs at once on a fixed pool of goroutines, with a timeout on every check, cancellation on SIGTERM, a timeout count in every round, and tests that prove the pool neither overruns nor leaks.
 week: 5
 phase: foundations
-hours: [5, 8]
+hours: [6, 8]
 aiStage: 1
 tracks: [programming, operating-systems]
 done:
-  - id: item-1
-    text: "Placeholder item 1: this week is not written yet"
-  - id: item-2
-    text: "Placeholder item 2: this week is not written yet"
-  - id: item-3
-    text: "Placeholder item 3: this week is not written yet"
+  - id: pool-runs-rounds
+    text: Your monitor checks each round on a pool of -workers goroutines, logs one round line with the checks, timeouts and skipped counts, and exits with 0 within a second of SIGTERM, even with checks in flight.
+  - id: pool-tests-pass
+    text: go test -race -count=20 ./... passes in your-monitor, including the 100-URL pool tests for one result per URL, at most N checks at once, the timeout count, and a prompt stop with no leaked goroutines.
+  - id: explain-channels
+    text: Without notes, you can explain what an unbuffered send waits for, what close does to a range loop, and why the pool closes results only after wg.Wait returns.
+  - id: find-a-leak
+    text: You have planted a goroutine leak, watched goroutines= climb in the round lines, and found the blocked line in a dump from /debug/pprof/goroutine.
+  - id: explain-bounds
+    text: With numbers from your own run, you can explain why one goroutine per URL fails at 1,000 URLs, and what it does to the site on the other end.
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -21,43 +26,533 @@ import AiThisWeek from '../../../components/AiThisWeek.astro';
 import SideLab from '../../../components/SideLab.astro';
 import ReadWith from '../../../components/ReadWith.astro';
 import DoneWhen from '../../../components/DoneWhen.astro';
+import Diagram from '../../../components/Diagram.astro';
+import CodeFrom from '../../../components/CodeFrom.astro';
+import { weekHref, trackHref } from '../../../lib/links';
 
 <WeekHeader />
 
+At the end of <a href={weekHref(4)}>Week 4</a>, `your-monitor` times every check, but it checks one URL after another. <a href={weekHref(2)}>Week 2</a> measured the cost: one silent site holds up every URL behind it for the full timeout. With 100 URLs, a 5-second timeout and ten silent sites, every round waits 50 seconds for nothing.
+
+This week, you run the checks at the same time on a fixed number of **workers**, with a timeout on each check and a clean stop on SIGTERM. You learn goroutines, channels, `select`, `sync.WaitGroup` and `context`, and how to find the two bugs that concurrency brings: data races and goroutine leaks. The <a href={trackHref('programming')}>Core Programming Concepts track</a> goes deeper on each idea.
+
 ## Goals
 
-This section is not written yet.
+- Explain goroutines, the Go scheduler, and the difference between concurrency and parallelism.
+- Pass work between goroutines with unbuffered and buffered channels, `select` and `sync.WaitGroup`.
+- Build a worker pool that checks 100 URLs on N goroutines, with a deadline per check and cancellation from SIGTERM.
+- Prove with tests under `-race` that the pool returns one result per URL, never runs more than N checks, counts timeouts and leaks nothing.
+- Find a goroutine leak with `runtime.NumGoroutine` and a goroutine dump from `net/http/pprof`.
 
 ## Concepts
 
-This section is not written yet.
+### Concurrency and Parallelism
+
+**Concurrency** means several tasks are in progress at once: each one starts before the last one ends. **Parallelism** means several tasks execute at the same instant, on different CPU cores. A cook with four pots on the stove works concurrently. Four cooks work in parallel.
+
+A check spends nearly all its time waiting: for DNS, for the handshakes, for the server. While one check waits, the CPU is free to start another. That is why concurrency speeds up your monitor even on a machine with one core: 100 checks that each wait 2 seconds take 2 seconds together, not 200, when they all wait at the same time.
+
+### Goroutines
+
+A **goroutine** is a function that runs concurrently with the rest of your program. The `go` keyword starts one:
+
+```go
+go check(url) // starts check in a new goroutine and moves on at once
+```
+
+The line returns before `check` does, and nothing waits for it. A goroutine starts with a stack of a few kilobytes that grows as needed, which makes it far cheaper than an operating system thread: a program can run tens of thousands of them. When `main` returns, the program exits and every goroutine stops with it, finished or not. A goroutine has no return value: to get a result back, or to know when it ends, you need a channel or a `sync.WaitGroup`, both below.
+
+### The Scheduler
+
+The Go **scheduler** is the part of the Go runtime that decides which goroutine runs where. It runs many goroutines on a few operating system threads. It keeps one **P**, short for processor, for each goroutine that can run in parallel. `GOMAXPROCS` sets how many Ps exist, and it defaults to the number of CPU cores. Each P runs one goroutine at a time on one thread. The <a href={trackHref('operating-systems')}>Operating Systems track</a> covers threads and the kernel scheduler underneath.
+
+<Diagram
+  id="scheduler"
+  title="The Go scheduler with GOMAXPROCS=2"
+  code={`direction: down
+queue: "ready goroutines\\nrun queue"
+p1: "P 1"
+p2: "P 2"
+m1: "OS thread 1"
+m2: "OS thread 2"
+np: "netpoller\\nwaiting goroutines"
+
+queue -> p1: next to run
+queue -> p2: next to run
+p1 -> m1: runs on
+p2 -> m2: runs on
+p2 -> np: waits on a socket
+np -> queue: data arrived
+`}
+  steps={[
+    { hl: ['queue', 'p1', 'p2', 'queue->p1', 'queue->p2'], caption: 'Goroutines that are ready to run wait in a run queue. Each P takes the next one. With GOMAXPROCS=2, two goroutines run at the same instant, however many exist.' },
+    { hl: ['p1', 'p2', 'm1', 'm2', 'p1->m1', 'p2->m2'], caption: 'A P runs its goroutine on an operating system thread. A goroutine that computes for more than 10 ms is paused and sent back to the queue, which gives every ready goroutine a turn.' },
+    { hl: ['p2', 'np', 'p2->np'], caption: 'A check that waits for the network does not hold the thread. Its goroutine parks in the netpoller, which watches every socket through one epoll instance on Linux, or kqueue on macOS. The P picks the next goroutine at once.' },
+    { hl: ['np', 'queue', 'np->queue'], caption: 'When a reply arrives on a socket, the netpoller moves its goroutine back to the run queue. The eventpoll file descriptor you saw in /proc in Week 3 belongs to the netpoller.' },
+  ]}
+/>
+
+For your monitor, the result is simple: 100 goroutines that wait on the network cost a few kilobytes of stack each and no CPU while they wait.
+
+### Channels
+
+A **channel** is a typed pipe between goroutines. `make(chan string)` creates one that carries strings. `ch <- v` sends a value, and `v := <-ch` receives one.
+
+An **unbuffered** channel, made with `make(chan string)`, has no room to hold a value. A send waits until another goroutine receives, and a receive waits until another goroutine sends. Every send is a handoff: when it returns, you know a receiver has the value.
+
+A **buffered** channel, made with `make(chan string, 10)`, holds up to ten values. A send waits only when the buffer is full, and a receive waits only when it is empty. A buffer absorbs a burst. It does not fix a receiver that is slower than the sender for good: the buffer fills, and the sender waits again.
+
+`close(ch)` tells the receivers that no more values come. A receive on a closed channel returns at once, with the zero value once the buffer is empty. `for v := range ch` receives until the channel is closed and empty, then ends the loop. Only the sender closes a channel. A send on a closed channel panics, and a second `close` panics too.
+
+### Select
+
+`select` waits on several channel operations and runs the first one that is ready. Week 3 used it to wait for either a tick or `ctx.Done()`. A case can send too: the pool pairs `case jobs <- target:` with `case <-ctx.Done():` to stop sending on cancellation. When several cases are ready at the same moment, `select` picks one at random. Code that depends on one case winning needs a second check, as the pool shows.
+
+### WaitGroup
+
+A `sync.WaitGroup` counts goroutines that have not finished yet. `wg.Add(1)` raises the count before you start a goroutine, `wg.Done()` lowers it when the goroutine ends, and `wg.Wait()` blocks until the count reaches zero. Call `Add` before the `go` statement, never inside the new goroutine: otherwise `Wait` can run first, see zero and return. Go 1.25 adds `wg.Go(f)`, which calls `Add`, runs `f` in a new goroutine and calls `Done` when `f` returns. This page uses `Add` and `Done`, which work in Go 1.24 or newer. The `errgroup` package in `golang.org/x/sync` adds error handling and a limit on top of the same idea. This course keeps to the standard library.
+
+### The Worker Pool
+
+A **worker pool** runs a fixed number of goroutines, the workers, that take jobs from one channel and send results to another. The number of workers caps the checks in flight, whatever the length of the list.
+
+<Diagram
+  id="worker-pool"
+  title="pool.Run with three workers"
+  code={`direction: down
+feed: feeder goroutine
+jobs: "jobs\\nchan string"
+w1: worker 1
+w2: worker 2
+w3: worker 3
+results: "results\\nchan check.Result"
+collect: "Run collects"
+closer: closer goroutine
+
+feed -> jobs: one URL per send
+jobs -> w1
+jobs -> w2
+jobs -> w3
+w1 -> results
+w2 -> results
+w3 -> results
+results -> collect
+closer -> results: "close after wg.Wait()"
+`}
+  steps={[
+    { hl: ['feed', 'jobs', 'feed->jobs'], caption: 'The feeder sends the URLs into jobs, one at a time. jobs is unbuffered, which means each send waits until a worker is free to take the URL.' },
+    { hl: ['jobs', 'w1', 'w2', 'w3', 'jobs->w1', 'jobs->w2', 'jobs->w3'], caption: 'Each worker loops: take a URL, check it, take the next. With three workers, at most three checks run at once, whether the list holds 3 URLs or 3,000.' },
+    { hl: ['w1', 'w2', 'w3', 'results', 'collect', 'w1->results', 'w2->results', 'w3->results', 'results->collect'], caption: 'Each worker sends its result into results, and Run appends it to a slice. Results arrive in the order the checks finish, not in the order of the list.' },
+    { hl: ['feed', 'jobs', 'w1', 'w2', 'w3'], caption: 'After the last URL, the feeder closes jobs. Each worker finishes its check, its range loop ends, and it calls wg.Done.' },
+    { hl: ['closer', 'results', 'collect', 'closer->results'], caption: 'The closer waits for all workers with wg.Wait, then closes results. That ends the range loop in Run, which returns the slice. Closing any earlier panics a worker that still sends.' },
+  ]}
+/>
+
+### Contexts Through the Pool
+
+Week 3 introduced the **context**: a value that carries a cancellation signal. Week 4 gave each check a deadline with `context.WithTimeout`. Contexts form a tree. Each one you derive from a parent ends when the parent ends, never the other way round.
+
+<Diagram
+  id="context-tree"
+  title="The contexts of one round"
+  code={`direction: down
+bg: "context.Background()"
+sig: "signal context\\nsignal.NotifyContext"
+c1: "check 1\\nWithTimeout 5s"
+c2: "check 2\\nWithTimeout 5s"
+c3: "check 3\\nWithTimeout 5s"
+bg -> sig
+sig -> c1
+sig -> c2
+sig -> c3
+`}
+  steps={[
+    { hl: ['bg', 'sig', 'bg->sig'], caption: 'main derives the signal context from the empty Background context. SIGTERM or SIGINT cancels it. pool.Run receives it and passes it to every check.' },
+    { hl: ['sig', 'c1', 'c2', 'c3', 'sig->c1', 'sig->c2', 'sig->c3'], caption: 'Each check derives its own context with a 5-second deadline and passes it to probe.Check, which stops the request when the context ends.' },
+    { hl: ['c2'], caption: 'Check 2 hits a silent site. Its deadline passes, and its context ends with context.DeadlineExceeded. Checks 1 and 3 and the signal context carry on: a child never cancels its parent.' },
+    { hl: ['sig', 'c1', 'c3'], caption: 'SIGTERM arrives. The signal context is cancelled, and every check derived from it ends at once with context.Canceled. The feeder sees ctx.Done() too and sends no more URLs.' },
+  ]}
+/>
+
+The two errors tell you what happened. `context.DeadlineExceeded` means the site ran out of time: a timeout to count. `context.Canceled` means your own program stopped the check, which is not the fault of the site. By convention, a Go function that takes a context takes it as its first parameter, named `ctx`.
+
+### Mutex or Channel
+
+Goroutines that share memory need **synchronization**: a rule that makes their reads and writes take turns. Go gives you two tools. A channel hands a value from one goroutine to another, and from then on only the receiver touches it. A `sync.Mutex`, from Week 4, is a lock around memory that several goroutines touch in place. Pick the one that matches the job. The pool passes URLs and results along, which is a channel job: no two goroutines ever hold the same `Result`. `probe.Check` has hooks that write into one `Timings` value from another goroutine, which is a mutex job. For one counter, the `sync/atomic` package is simpler still: `atomic.Int64` has `Add` and `Load` methods that are safe from any goroutine. The tests below use it.
+
+### Data Races and the Race Detector
+
+A **data race** happens when two goroutines touch the same memory at the same time, at least one of them writes, and nothing synchronizes them. Go makes no promise about the result: a counter loses increments, a slice loses entries, a map crashes the program. The race detector from Week 2, `go test -race`, reports a race only when a test makes it happen, which is why the pool tests run many checks at once, 20 times over.
+
+### Goroutine Leaks
+
+A **goroutine leak** is a goroutine that waits forever: on a channel nobody sends to or receives from, or on a lock nobody releases. Go never collects it. It holds its stack, and every value it points to, until the process exits. A monitor that leaks a few goroutines every round runs out of memory after weeks, the same slow failure as the file descriptor leak in <a href={weekHref(3)}>Week 3</a>. Every goroutine you start needs a clear way to end. In the pool, each worker ends when `jobs` closes, the feeder ends after the last URL or on `ctx.Done()`, and the closer ends when the workers have.
+
+### Why Bound the Pool
+
+Starting one goroutine per URL with `go` looks simpler, and for five URLs it works. With 1,000 URLs, it opens 1,000 connections at the same instant, and two things break:
+
+- **File descriptors.** Each connection holds one until it closes, as Week 3 showed. A process that reaches its `Max open files` limit gets `socket: too many open files` on the next connection, and the monitor reports sites as down that are fine.
+- **The site on the other end.** When many URLs share one host, that host receives a burst of requests from one address. Many sites answer a burst with status `429 Too Many Requests`, or a firewall blocks the address. Your monitor then reports an outage that it caused itself.
+
+A pool of N workers keeps both numbers at N, however long the list grows.
 
 ## Build
 
-This section is not written yet.
+By the end of this section, `your-monitor` runs each round through a pool of `-workers` goroutines, keeps the per-check timeout, logs one summary line per round with the timeout count, and stops on SIGTERM without waiting for the checks in flight. The code comes from the site examples, in `examples/go/week05/your-monitor`, which import Week 4 `probe` as `probe "fsp/examples/week04"`. In your code, the import paths are `github.com/your-user/your-monitor/check`, `.../pool` and `.../probe`.
+
+```txt
+your-monitor/
+├── main.go               -workers, -debug-addr, one round through the pool per tick
+├── run_test.go           tests for run, rewritten for the pool
+├── signal_test.go        the Week 3 test, plus a test of SIGTERM mid-round
+├── check/
+│   ├── check.go          Result gains TimedOut and Cancelled
+│   └── list.go           unchanged
+├── pool/
+│   ├── pool.go           Run: the worker pool
+│   └── pool_test.go      the 100-URL tests
+├── probe/                unchanged from Week 4
+└── cmd/
+    ├── check/            unchanged from Week 4
+    └── testsite/         a local site with slow and failing paths
+```
+
+Start a branch: `git switch main`, `git pull`, then `git switch -c week-05`.
+
+### Step 1: Start the Workers
+
+Create `pool/pool.go`. It starts with the type of the function the pool calls for each URL:
+
+<CodeFrom file="go/week05/your-monitor/pool/pool.go" region="types" lang="go" title="pool/pool.go" />
+
+In Week 4, `checkOne` took only the URL and read the signal context from `main` through its closure. Now the pool hands each check its context, and a test can pass in a context it controls. Steps 1 to 3 are consecutive parts of one function, `Run`: this step opens it, and Step 3 closes it with the final brace. `Run` makes the two channels and starts the workers:
+
+<CodeFrom file="go/week05/your-monitor/pool/pool.go" region="run" lang="go" title="pool/pool.go" />
+
+<CodeFrom file="go/week05/your-monitor/pool/pool.go" region="workers" lang="go" title="pool/pool.go" />
+
+`for range workers` starts `workers` goroutines. Each one runs `for target := range jobs`, which takes URLs until `jobs` is closed, one check at a time. That loop is the bound: a worker never starts a second check before the first returns. The `ctx.Err()` check skips the URLs a worker receives after cancellation, as Step 2 explains. `results <- checkOne(ctx, target)` waits until `Run` takes the result. `workers` below 1 is a bug in the caller, which is why `Run` panics: `main` checks the command-line flag before it calls `Run`.
+
+### Step 2: Feed the Jobs
+
+<CodeFrom file="go/week05/your-monitor/pool/pool.go" region="feed" lang="go" title="pool/pool.go" />
+
+The feeder runs in its own goroutine, because each send waits for a free worker, and `Run` has to collect results at the same time. On cancellation, the `select` takes the `ctx.Done()` case and returns, and `defer close(jobs)` ends every worker loop.
+
+When a worker is ready to receive at the same moment as the cancellation, both cases are ready, and `select` picks one at random. The `ctx.Err()` check in the worker catches the URL that slips through.
+
+### Step 3: Collect the Results
+
+<CodeFrom file="go/week05/your-monitor/pool/pool.go" region="collect" lang="go" title="pool/pool.go" />
+
+The closer goroutine waits for all workers, then closes `results`. The `range` in `Run` reads until that close. Each half needs the other. Close `results` in a worker, and the other workers panic on their next send. Never close it, and the `range` waits forever.
+
+### Step 4: Count Timeouts
+
+In `check/check.go`, add two methods to `Result`:
+
+<CodeFrom file="go/week05/your-monitor/check/check.go" region="timedout" lang="go" title="check/check.go" />
+
+`errors.Is` looks through every error that wraps another, the way `fmt.Errorf` with `%w` does. The HTTP client wraps the context error, for example in a `*url.Error`, and `errors.Is` sees through it. The example tests confirm that every way a check runs out of time gives `TimedOut() == true`: headers that never arrive, a body that stops halfway and a TLS handshake that stalls. A refused connection and a `500` status do not.
+
+### Step 5: Test the Pool with 100 URLs
+
+Create `pool/pool_test.go`. The helpers build the real check from `main`, count requests in flight, and start test servers:
+
+<CodeFrom file="go/week05/your-monitor/pool/pool_test.go" region="helpers" lang="go" title="pool/pool_test.go" />
+
+`gauge` counts requests inside the handlers with atomic operations, because the handlers run on many goroutines at once. `enter` raises the count and keeps the highest value in `peak`. `CompareAndSwap` writes the new peak only when no other goroutine changed it since the `Load`, and the loop retries otherwise.
+
+The first test checks 100 URLs on eight workers: 80 that answer, ten with status `500` and ten that never answer within the 250 ms timeout:
+
+<CodeFrom file="go/week05/your-monitor/pool/pool_test.go" region="hundred" lang="go" title="pool/pool_test.go" />
+
+It checks four things: each URL has exactly one result, the timeouts are exactly the slow URLs, the peak is between 2 and 8, and no goroutine from `Run` is left. A peak above 8 means the bound is broken. A peak of 1 means the checks run one after another. The slow handler stays out of the gauge because the server notices a timed-out client a moment after the client gives up: during that moment, the worker has started its next check, and the peak reads one too high.
+
+### Step 6: Test Cancellation and Leaks
+
+A leak test needs a list of the goroutines that are alive. `pprof.Lookup("goroutine")` writes the same dump that the debug server in Step 7 serves: every goroutine with its state and stack. `poolGoroutines` keeps the stacks that run code from `pool.Run`. Closures inside `Run` show up as `pool.Run.func1`, `pool.Run.func2` and on:
+
+<CodeFrom file="go/week05/your-monitor/pool/pool_test.go" region="leaks" lang="go" title="pool/pool_test.go" />
+
+The second test fills every worker with a check that never answers, then cancels the context, as SIGTERM does:
+
+<CodeFrom file="go/week05/your-monitor/pool/pool_test.go" region="cancel" lang="go" title="pool/pool_test.go" />
+
+The timeout is one minute, which means only the cancellation can end the checks in time. Exactly five results come back, one per check in flight, each with `context.Canceled`, and the other 95 URLs have none.
+
+Run the tests 20 times under the race detector. A concurrency bug that fails one run in ten fails at least once in 20 runs with an 88% chance:
+
+```sh
+go test -race -count=20 ./pool
+```
+
+Break the code to see the leak test work. Replace the `for r := range results` loop in `Run` with a `select` that also returns on `<-ctx.Done()`, a mistake that reads like a faster shutdown. `TestRunStopsPromptlyWhenCancelled` fails, and the dump shows why. This output is trimmed:
+
+```txt
+--- FAIL: TestRunStopsPromptlyWhenCancelled (1.01s)
+    pool_test.go:208: got 0 results, want 5: one per check in flight, none for the rest
+    pool_test.go:215: 6 goroutines from pool.Run are still running:
+
+        goroutine 661 [chan send]:
+        fsp/examples/week05/your-monitor/pool.Run.func1()
+        	.../week05/your-monitor/pool/pool.go:43 +0x188
+        created by fsp/examples/week05/your-monitor/pool.Run in goroutine 622
+```
+
+Five workers wait in `[chan send]` on `results <- checkOne(ctx, target)`, because nobody receives any more, and the closer waits for them in `wg.Wait`. Put the `range` loop back.
+
+### Step 7: Run Each Round Through the Pool
+
+Replace the imports of `main.go`. `net/http` comes back, and three are new: `runtime`, your `pool` package, and `net/http/pprof`. You import `net/http/pprof` for its side effect alone, which is what the `_` name says: it adds the debug pages to the default HTTP server, and you call nothing from it.
+
+<CodeFrom file="go/week05/your-monitor/main.go" region="imports" lang="go" title="main.go" />
+
+Then replace `main`:
+
+<CodeFrom file="go/week05/your-monitor/main.go" region="main" lang="go" title="main.go" />
+
+`-workers` sets the size of the pool, ten by default, and a value below 1 exits with `2`. `-timeout` must now be more than `0` too: with a context deadline, `-timeout 0` gives every check a deadline that has already passed. `-debug-addr` starts an HTTP server for `net/http/pprof` in its own goroutine. Leave it empty in normal runs, and when you set it, keep it on `127.0.0.1`: its pages show the inside of your program to anyone who can reach the port. `checkOne` is the Week 4 closure, with the context as a parameter.
+
+Replace `run`:
+
+<CodeFrom file="go/week05/your-monitor/main.go" region="run" lang="go" title="main.go" />
+
+`for ctx.Err() == nil` replaces the Week 3 loop. After a cancellation, `pool.Run` returns with the checks in flight cancelled, the round is logged, and the loop condition ends `run`. The round line counts what Week 3 logged as `shutting down, skipped N of M checks`. `runtime.NumGoroutine()` returns the number of goroutines alive right now, and [Observe It](#observe-it) reads it.
+
+Move your per-check `log.Printf` line from Week 4 into a function, `logCheck`:
+
+<CodeFrom file="go/week05/your-monitor/main.go" region="logcheck" lang="go" title="main.go" />
+
+Each check line now appears when its round ends, in the order the checks finished. A check that SIGTERM cancels still logs its line, with `context canceled` as the error, and the round line counts it apart from the sites that failed. Add the summary below `run`:
+
+<CodeFrom file="go/week05/your-monitor/main.go" region="summary" lang="go" title="main.go" />
+
+`summary` has a `String` method, like `Result` in Week 2, and `%v` in the round line calls it.
+
+### Step 8: Update the Tests of Run
+
+The Week 3 tests of `run` pass a fake of the old type. Replace them in `run_test.go`, and keep `captureLog`. The first test runs two rounds of three URLs on two workers:
+
+<CodeFrom file="go/week05/your-monitor/run_test.go" region="rounds" lang="go" title="run_test.go" />
+
+The Week 3 fake appended each URL to a slice. Under the pool, two workers call the fake at once. Replace the atomic counter with a plain `calls := 0`, `calls++` and `calls == 6`, and `go test -race .` fails with `WARNING: DATA RACE`: a read and a previous write on the `calls++` line, each in a goroutine created by `pool.Run`. Put the atomic counter back.
+
+The second test cancels during the first round, while every check waits:
+
+<CodeFrom file="go/week05/your-monitor/run_test.go" region="shutdown" lang="go" title="run_test.go" />
+
+Keep the Week 3 test in `signal_test.go`: it still passes. Add one that sends the signal while three checks wait on a site that never answers:
+
+<CodeFrom file="go/week05/your-monitor/signal_test.go" region="signals" lang="go" title="signal_test.go" />
+
+With `-timeout 1m`, only the cancellation through the pool gets the monitor out within 2 seconds. Run the whole suite:
+
+```sh
+go vet ./... && go test -race -count=20 ./...
+```
+
+### Step 9: Run It Against 100 URLs
+
+You need a site with slow and failing URLs that is yours to load. Create `cmd/testsite/main.go`. It answers `/slow/` paths after 10 seconds, `/fail/` paths with `500`, and every other path with `200`. Once a second, it logs the requests it got and the most it held at once:
+
+<CodeFrom file="go/week05/your-monitor/cmd/testsite/main.go" region="testsite" lang="go" title="cmd/testsite/main.go" />
+
+Start it in one terminal with `go run ./cmd/testsite`. In a second terminal, write 100 URLs, every tenth slow and every tenth failing:
+
+```sh
+for i in $(seq 1 100); do
+  case $((i % 10)) in
+    3) echo "http://127.0.0.1:8000/slow/$i" ;;
+    7) echo "http://127.0.0.1:8000/fail/$i" ;;
+    *) echo "http://127.0.0.1:8000/ok/$i" ;;
+  esac
+done > urls100.txt
+```
+
+Run the monitor with a 2-second timeout. This output comes from a test run for this page, trimmed to the round lines:
+
+```txt
+$ go run . -file urls100.txt -timeout 2s -interval 10s
+2026/10/11 05:47:22 started pid=16982 urls=100 interval=10s workers=10
+2026/10/11 05:47:25 round checks=100 up=80 down=20 timeouts=10 cancelled=0 skipped=0 duration_ms=2021 goroutines=3
+2026/10/11 05:47:35 round checks=100 up=80 down=20 timeouts=10 cancelled=0 skipped=0 duration_ms=2025 goroutines=3
+```
+
+The ten slow URLs time out in parallel, and the round takes one timeout: 2 seconds. The test site logs `requests=93 peak_in_flight=10`, then `requests=7 peak_in_flight=10`: never more than ten at once. Stop the monitor and run it again with `-workers 1`. The same round takes `duration_ms=20122`: ten timeouts, one after another.
+
+Now stop it in the middle of a round. Start it again and press **Ctrl+C** within two seconds of the `started` line, while the slow checks wait. SIGINT takes the same path as SIGTERM. In a test run that sent SIGTERM one second into the first round, the log ended:
+
+```txt
+2026/10/11 05:48:29 round checks=93 up=74 down=9 timeouts=0 cancelled=10 skipped=7 duration_ms=996 goroutines=2
+2026/10/11 05:48:29 stopped
+```
+
+The ten slow checks stop at once with `context canceled`, seven URLs never start, and the process exits with `0`.
+
+### Step 10: Commit and Open a Pull Request
+
+```sh
+git add main.go run_test.go signal_test.go check/check.go pool/ cmd/testsite/
+git commit -m "Check each round on a pool of workers, count timeouts, cancel on SIGTERM"
+git push -u origin week-05
+```
+
+Open a pull request from `week-05` into `main`, read the diff once more, and merge it. <a href={weekHref(6)}>Week 6</a> moves this code into a monorepo and runs it with Docker Compose.
 
 ## Observe It
 
 <ObserveIt>
-This section is not written yet.
+
+**Count timeouts.** The round line is your first metric. Under systemd, add up the timeouts of the last hour:
+
+```sh
+journalctl -u your-monitor --since "1 hour ago" | awk -F'timeouts=' '/ round /{split($2, a, " "); n += a[1]} END {print n}'
+```
+
+`-F'timeouts='` splits each round line at `timeouts=`, `split` takes the number after it, and `END` prints the total. Then list the sites that time out, with the most timeouts first:
+
+```sh
+journalctl -u your-monitor --since "1 hour ago" | grep 'context deadline exceeded' | grep -o 'url=[^ ]*' | sort | uniq -c | sort -rn | head
+```
+
+Read the round lines for these patterns:
+
+- **The same few URLs time out every round.** Those sites are down without refusing connections, or a firewall drops your packets: the black hole from Week 4.
+- **Every URL times out in the same round.** The problem is on your side: your network, your DNS resolver, or a machine too busy to run the checks.
+- **`duration_ms` is a multiple of `-timeout`.** Slow sites hold the workers. With S slow sites and W workers, a round takes at least S divided by W timeouts, rounded up, and the fast sites wait in the queue behind them.
+- **`duration_ms` is larger than `-interval`.** The rounds overrun, and the ticker drops the missed ticks, as in Week 3. Raise `-workers` or `-interval`, or lower `-timeout`.
+- **`goroutines` climbs every round.** A leak. In a healthy monitor, the number is the same at the end of every round. [Operate It](#operate-it) shows a leak.
+
 </ObserveIt>
 
 ## Operate It
 
 <OperateIt>
-This section is not written yet.
+
+**A leak that grows every round.** Plant a deadline on the round in `Run`. Replace the `for r := range results` loop with this, and import `time`:
+
+```go
+deadline := time.After(time.Second)
+for {
+	select {
+	case r, ok := <-results:
+		if !ok {
+			return out
+		}
+		out = append(out, r)
+	case <-deadline:
+		return out // give up on the stragglers
+	}
+}
+```
+
+Start the test site, then run the monitor with the debug server:
+
+```sh
+go run . -file urls100.txt -timeout 2s -interval 3s -debug-addr 127.0.0.1:6060
+```
+
+In a test run, every round line showed `skipped=17`: ten checks still in flight and seven URLs never sent. The goroutine count grew by 12 a round: `goroutines=36`, then `48`, `60` and `72`. In a second terminal, ask the debug server for the goroutine dump. `debug=1` groups identical stacks and counts them. This output is trimmed:
+
+```txt
+$ curl -s 'http://127.0.0.1:6060/debug/pprof/goroutine?debug=1'
+goroutine profile: total 72
+31 @ 0x475dce 0x40e265 0x40deb7 0x6a0d48 0x47d9c1
+#	0x6a0d47	fsp/examples/week05/your-monitor/pool.Run.func1+0x187	.../pool/pool.go:44
+
+4 @ 0x475dce 0x453a77 0x6a0af8 0x47d9c1
+#	0x6a0af7	fsp/examples/week05/your-monitor/pool.Run.func2+0x117	.../pool/pool.go:54
+
+4 @ 0x475dce 0x454b1d 0x454af4 0x477205 0x4860c8 0x6a09c5 0x47d9c1
+#	0x4860c7	sync.(*WaitGroup).Wait+0x47				.../sync/waitgroup.go:118
+#	0x6a09c4	fsp/examples/week05/your-monitor/pool.Run.func3+0x24	.../pool/pool.go:65
+```
+
+Read it from the top: 31 workers, `func1`, wait on line 44, the send to `results`. After one second, `Run` stops reading, and every worker still in a slow check blocks on its send for good. With no free worker, the feeder, `func2`, blocks on its send to `jobs`: one per round. The closer, `func3`, waits for all of them. `debug=2` prints every goroutine in full, with its state and, after the first minute, how long it has waited, such as `[chan send, 3 minutes]`. `go tool pprof -top http://127.0.0.1:6060/debug/pprof/goroutine` shows the counts per function as a table.
+
+The tests pass with this bug, because no test check runs longer than one second. Write one that fails: one URL that answers after 1.5 seconds, a 2-second timeout, then `checkNoLeaks`. Then put the `range` loop back. A round that needs a time limit gets one through its context: the context cancels the checks, and `Run` still collects every result.
+
+**One goroutine per URL.** Replace the body of `Run` after the `panic` check with the unbounded version, and delete the `sync` import:
+
+```go
+results := make(chan check.Result)
+for _, target := range targets {
+	go func() { results <- checkOne(ctx, target) }()
+}
+var out []check.Result
+for range targets {
+	out = append(out, <-results)
+}
+return out
+```
+
+Write 1,000 slow URLs with `for i in $(seq 1 1000); do echo "http://127.0.0.1:8000/slow/$i"; done > urls1000.txt`. A Go program raises its soft limit on open files to the hard limit when it starts, and `ulimit -n 256` lowers both for the shell and the programs it starts:
+
+```txt
+$ go build
+$ ulimit -n 256
+$ ./your-monitor -file urls1000.txt -timeout 5s -interval 1m
+2026/10/11 05:49:34 round checks=1000 up=0 down=1000 timeouts=251 cancelled=0 skipped=0 duration_ms=5049 goroutines=3
+```
+
+251 checks get a socket and time out as expected. The other 749 fail at once with `dial tcp 127.0.0.1:8000: socket: too many open files`: sites your monitor reports as down because of its own limit. Close that shell, and run the binary from a new one. The limit no longer stops it, and the test site logs `peak_in_flight=1000`: one monitor sends 1,000 requests at the same site within a second. Undo the change and run the tests.
+
+**A channel nobody closes.** Delete `defer close(jobs)` from the feeder and run `go test -timeout 10s ./pool`. No assertion fails: the test hangs for 10 seconds, then the test binary panics with `panic: test timed out after 10s` and dumps every goroutine. Search the dump for `pool.Run`: eight workers wait in `[chan receive]` on the `for target := range jobs` line, and `Run` waits on its own `range results`. A loop over a channel ends only when someone closes that channel. Put the line back.
+
 </OperateIt>
 
 ## AI This Week
 
 <AiThisWeek>
-This section is not written yet.
+
+Stage 1, explain only: ask an assistant to explain errors, concepts and documentation, and to give hints. Do not paste code it writes into your project.
+
+**Do:** paste a goroutine dump, such as the one from the leak above, or a `WARNING: DATA RACE` report, and ask which goroutine waits on what, and which line writes and which reads. Then find each line it names in your own code, and confirm that the channel or variable it blames is the one there.
+
+**Do not:** ask it to write the pool, the leak test or the gauge. Getting the close order wrong once, and watching the test hang or panic, is how the rules stick. When you are stuck, ask for a hint, such as who closes a channel that several goroutines send on, then read `go doc sync.WaitGroup`.
+
 </AiThisWeek>
 
 ## Side Lab
 
-<SideLab title="Optional lab: not written yet">
-This section is not written yet.
+<SideLab title="Watch the scheduler run waiting and computing goroutines">
+
+The pool speeds up checks because they wait. Work that computes needs a CPU core for each goroutine. This lab shows the difference and the run queue that fills. Put this program in a new folder, and run `go mod init spin` there:
+
+<CodeFrom file="go/week05/spin/main.go" region="spin" lang="go" title="spin/main.go" />
+
+`compute` keeps one core busy for a fixed number of steps. Run the program twice, the second time with one P. These numbers come from a test run on a 4-core machine that other programs shared:
+
+```txt
+$ go run .
+GOMAXPROCS=4 CPUs=4
+wait    goroutines=1 took 500ms
+wait    goroutines=4 took 500ms
+compute goroutines=1 took 420ms
+compute goroutines=4 took 600ms
+$ GOMAXPROCS=1 go run .
+GOMAXPROCS=1 CPUs=4
+wait    goroutines=1 took 500ms
+wait    goroutines=4 took 500ms
+compute goroutines=1 took 410ms
+compute goroutines=4 took 1.65s
+```
+
+Waiting takes the same time on one P or four: a sleeping goroutine holds no P. Computing on four goroutines takes four times as long with one P, because they take turns on it. With four Ps and four idle cores, it takes as long as one goroutine. On a busy machine, as here, it takes a little longer.
+
+Now watch the queues. `GODEBUG=schedtrace=200` makes the runtime print one line about the scheduler to stderr every 200 ms. Build the program first: `go run` is a Go program too, and prints its own lines. Two of the lines, from the waits and from the compute step:
+
+```txt
+$ go build
+$ GOMAXPROCS=1 GODEBUG=schedtrace=200 ./spin
+SCHED 411ms: gomaxprocs=1 idleprocs=1 threads=3 spinningthreads=0 needspinning=0 idlethreads=1 runqueue=0 [0]
+SCHED 1639ms: gomaxprocs=1 idleprocs=0 threads=3 spinningthreads=0 needspinning=1 idlethreads=1 runqueue=2 [1]
+```
+
+During the waits, `idleprocs=1`: the one P has nothing to run. During the compute step, `runqueue` is the global queue and the number in brackets is the local queue of the P. Together they hold three: three goroutines wait their turn while the fourth runs. Run it without `GOMAXPROCS=1` on a 4-core machine: during the compute step, the brackets hold four local queues, one per P, and every queue reads `0`, because each goroutine has a P of its own.
+
 </SideLab>
 
 ## Done When
