@@ -55,11 +55,15 @@ test('week 8 shows the migration exactly as the tested 001_init.sql holds it', (
   }
 });
 
-test('week 8 pins the pgx version that examples/go/go.mod requires', () => {
+test('week 8 names both pgx lines: latest for the reader, the go.mod version for Go 1.24', () => {
   const required = /^require github\.com\/jackc\/pgx\/v5 (v\S+)$/m.exec(example('go.mod'))?.[1];
   assert.ok(required, 'examples/go/go.mod does not require github.com/jackc/pgx/v5');
-  const shown = blocks('sh').join('\n').match(/go get github\.com\/jackc\/pgx\/v5@(v\S+)/)?.[1];
-  assert.equal(shown, required, 'the go get line on the page must name the version go.mod requires');
+  // The reader's go.mod says Go 1.27 since Week 0: the command block takes the newest pgx.
+  const shown = blocks('sh').join('\n').match(/go get github\.com\/jackc\/pgx\/v5@(\S+)/)?.[1];
+  assert.equal(shown, 'latest', 'the go get block on the page must take pgx@latest');
+  // The examples build with Go 1.24: the prose names the version go.mod pins, and why.
+  assert.ok(html.includes(`go get github.com/jackc/pgx/v5@${required}`), `the page must name pgx ${required}, the version go.mod requires`);
+  assert.match(html, /GHSA-j88v-2chj-qfwx/);
 });
 
 test('week 8 shows the migration lock, parameters and the error mapping', () => {

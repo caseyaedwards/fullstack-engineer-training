@@ -31,17 +31,19 @@ func (s *ResultStore) Insert(ctx context.Context, r monitor.Result) error {
 	return err
 }
 
-// Recent returns up to limit results of one monitor, newest first. The
-// index check_results_monitor_time answers it without reading the rest
-// of the table.
+// recentSQL asks for exactly what the index check_results_monitor_time
+// holds: one monitor, newest first, a limit. The index test explains this
+// same query.
+const recentSQL = `select monitor_id, checked_at, up, status_code,
+       dns_ms, connect_ms, tls_ms, first_byte_ms, total_ms, error
+  from check_results
+ where monitor_id = $1
+ order by checked_at desc
+ limit $2`
+
+// Recent returns up to limit results of one monitor, newest first.
 func (s *ResultStore) Recent(ctx context.Context, monitorID int64, limit int) ([]monitor.Result, error) {
-	rows, err := s.pool.Query(ctx,
-		`select monitor_id, checked_at, up, status_code,
-		        dns_ms, connect_ms, tls_ms, first_byte_ms, total_ms, error
-		   from check_results
-		  where monitor_id = $1
-		  order by checked_at desc
-		  limit $2`, monitorID, limit)
+	rows, err := s.pool.Query(ctx, recentSQL, monitorID, limit)
 	if err != nil {
 		return nil, err
 	}

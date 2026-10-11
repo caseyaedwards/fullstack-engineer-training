@@ -117,98 +117,111 @@ func TestProgramSignals(t *testing.T) {
 
 // TestWorkerStoresResults runs the worker against two sites, one up and
 // one that returns 500. Every finished check must be a row in
-// check_results. Then SIGTERM arrives while three
-// checks wait on a site that never answers: those three are cancelled
-// and leave no rows.
+// check_results. Then SIGTERM or SIGINT arrives while three checks wait on
+// a site that never answers: those three stop at once, are cancelled and
+// leave no rows.
 func TestWorkerStoresResults(t *testing.T) {
 	bin := build(t)
-	started := make(chan struct{}, 10)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/fail":
-			w.WriteHeader(http.StatusInternalServerError)
-		case "/hang":
-			started <- struct{}{}
-			<-r.Context().Done() // never answer; return once the client gives up
-		}
-	}))
-	t.Cleanup(srv.Close)
-	url := dbtest.URL(t)
-	addMonitors(t, url, srv.URL+"/ok", srv.URL+"/fail")
+	for _, sig := range []os.Signal{syscall.SIGTERM, syscall.SIGINT} {
+		t.Run(sig.String(), func(t *testing.T) {
+			started := make(chan struct{}, 10)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/fail":
+					w.WriteHeader(http.StatusInternalServerError)
+				case "/hang":
+					started <- struct{}{}
+					<-r.Context().Done() // never answer; return once the client gives up
+				}
+			}))
+			t.Cleanup(srv.Close)
+			url := dbtest.URL(t)
+			addMonitors(t, url, srv.URL+"/ok", srv.URL+"/fail")
 
-	ctx := context.Background()
-	pool, err := db.Connect(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
+			ctx := context.Background()
+			pool, err := db.Connect(ctx, url)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(pool.Close)
 
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(cmdCtx, bin, "-database-url", url, "-interval", "200ms", "-workers", "3", "-timeout", "1m")
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	var lines []string
-	scanner := bufio.NewScanner(stdout)
-	for rounds := 0; rounds < 2 && scanner.Scan(); {
-		lines = append(lines, scanner.Text())
-		if strings.Contains(scanner.Text(), " round checks=") {
-			rounds++
-		}
-	}
-	// The worker reads the monitors table each round: three new monitors
-	// that never answer join the next round.
-	addMonitors(t, url, srv.URL+"/hang?1", srv.URL+"/hang?2", srv.URL+"/hang?3")
-	for range 3 { // wait until all three workers wait on a site
-		select {
-		case <-started:
-		case <-time.After(10 * time.Second):
-			t.Fatal("the worker did not start three checks of the new monitors within 10 s")
-		}
-	}
-	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	cmd.Wait()
-	log := strings.Join(lines, "\n")
-	if code := cmd.ProcessState.ExitCode(); code != 0 {
-		t.Errorf("exit code = %d, want 0\n%s", code, log)
-	}
-	if !strings.Contains(log, "checks=5 up=1 down=1 timeouts=0 cancelled=3 skipped=0") {
-		t.Errorf("want a last round with 1 up, 1 down and 3 cancelled:\n%s", log)
-	}
+			cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(cmdCtx, bin, "-database-url", url, "-interval", "200ms", "-workers", "3", "-timeout", "1m")
+			stdout, err := cmd.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			var lines []string
+			scanner := bufio.NewScanner(stdout)
+			for rounds := 0; rounds < 2 && scanner.Scan(); {
+				lines = append(lines, scanner.Text())
+				if strings.Contains(scanner.Text(), " round checks=") {
+					rounds++
+				}
+			}
+			// The worker reads the monitors table each round: three new
+			// monitors that never answer join the next round. One insert
+			// adds all three at once, so no round lists only some of them.
+			_, err = pool.Exec(ctx, `insert into monitors (url, interval_seconds)
+				values ($1, 30), ($2, 30), ($3, 30)`, srv.URL+"/hang?1", srv.URL+"/hang?2", srv.URL+"/hang?3")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 3 { // wait until all three workers wait on a site
+				select {
+				case <-started:
+				case <-time.After(10 * time.Second):
+					t.Fatal("the worker did not start three checks of the new monitors within 10 s")
+				}
+			}
+			sent := time.Now()
+			if err := cmd.Process.Signal(sig); err != nil {
+				t.Fatal(err)
+			}
+			for scanner.Scan() {
+				lines = append(lines, scanner.Text())
+			}
+			cmd.Wait()
+			log := strings.Join(lines, "\n")
+			if code := cmd.ProcessState.ExitCode(); code != 0 {
+				t.Errorf("exit code = %d, want 0\n%s", code, log)
+			}
+			if elapsed := time.Since(sent); elapsed > 10*time.Second {
+				t.Errorf("exited %v after the signal, want it to cancel the checks at once", elapsed)
+			}
+			if !strings.Contains(log, "checks=5 up=1 down=1 timeouts=0 cancelled=3 skipped=0") {
+				t.Errorf("want a last round with 1 up, 1 down and 3 cancelled:\n%s", log)
+			}
 
-	// One row per round for each answering site; nothing for /hang.
-	rounds := strings.Count(log, " round checks=")
-	rows, err := pool.Query(ctx, `select m.url, r.up, r.status_code
-		from check_results r join monitors m on m.id = r.monitor_id`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	count := map[string]int{}
-	for rows.Next() {
-		var u string
-		var up bool
-		var status *int
-		if err := rows.Scan(&u, &up, &status); err != nil {
-			t.Fatal(err)
-		}
-		count[fmt.Sprintf("%s up=%v status=%d", strings.TrimPrefix(u, srv.URL), up, *status)]++
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	want := map[string]int{"/ok up=true status=200": rounds, "/fail up=false status=500": rounds}
-	if !maps.Equal(count, want) {
-		t.Errorf("check_results rows = %v, want %v", count, want)
+			// One row per round for each answering site; nothing for /hang.
+			rounds := strings.Count(log, " round checks=")
+			rows, err := pool.Query(ctx, `select m.url, r.up, r.status_code
+				from check_results r join monitors m on m.id = r.monitor_id`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			count := map[string]int{}
+			for rows.Next() {
+				var u string
+				var up bool
+				var status *int
+				if err := rows.Scan(&u, &up, &status); err != nil {
+					t.Fatal(err)
+				}
+				count[fmt.Sprintf("%s up=%v status=%d", strings.TrimPrefix(u, srv.URL), up, *status)]++
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]int{"/ok up=true status=200": rounds, "/fail up=false status=500": rounds}
+			if !maps.Equal(count, want) {
+				t.Errorf("check_results rows = %v, want %v", count, want)
+			}
+		})
 	}
 }
 

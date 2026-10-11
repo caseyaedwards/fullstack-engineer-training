@@ -236,8 +236,7 @@ func TestRecentUsesTheIndex(t *testing.T) {
 
 func explain(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `explain
-		select * from check_results where monitor_id = 7 order by checked_at desc limit 50`)
+	rows, err := pool.Query(context.Background(), "explain "+recentSQL, 7, 50)
 	if err != nil {
 		t.Fatal(err)
 	}

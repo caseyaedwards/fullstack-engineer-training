@@ -150,7 +150,7 @@ The schema changes over the life of the app: Week 9 adds a job queue, Week 11 ad
 
 Two rules keep this safe:
 
-- Each file runs in a transaction, together with its `schema_migrations` row. In Postgres, `create table` and the other schema statements are transactional too: a file that fails halfway leaves no trace, and the next start tries it again.
+- Each file runs in a transaction, together with its `schema_migrations` row. In Postgres, `create table` and the other schema statements are transactional too: a file that fails halfway leaves no trace, and the next start tries it again. A few statements refuse to run inside a transaction, such as `create index concurrently`, which builds an index without blocking writes: a migration that needs one needs a runner that can skip the transaction for that file.
 - A file that has run anywhere never changes. Postgres never sees the edit, because version 1 is already recorded. To change the schema, add the next file.
 
 The api and the worker both migrate at start, and Compose starts them at the same moment. An **advisory lock** keeps them in line: a lock on a number of your choosing, which `pg_advisory_lock` takes, waiting while another connection holds it. The second program waits for the first to finish.
@@ -218,19 +218,7 @@ Two rules decide whether a backup is worth anything. First, keep it on another d
 
 ## Build
 
-By the end of this section, the api and the worker keep everything in Postgres, and `make restore-check` proves your backup. The code comes from `examples/go/week08/your-monitor`, which mirrors your repository. Its imports start with `fsp/examples/week08/your-monitor`, and yours with `github.com/<user>/your-monitor`. You add these files:
-
-```txt
-your-monitor/
-├── migrations/
-│   ├── 001_init.sql        the schema
-│   └── migrations.go       embeds the .sql files
-└── internal/
-    ├── db/                 Connect, Migrate, MonitorStore, ResultStore and their tests
-    │   └── dbtest/         gives each test an empty schema
-    ├── monitor/result.go   the Result type and the ResultStore interface
-    └── api/results.go      GET /api/monitors/{id}/results
-```
+By the end of this section, the api and the worker keep everything in Postgres, and `make restore-check` proves your backup. The code comes from `examples/go/week08/your-monitor`, which mirrors your repository. Its imports start with `fsp/examples/week08/your-monitor`, and yours with `github.com/<user>/your-monitor`. You add a `migrations/` folder with the schema and the Go file that embeds it, `internal/db/` with `Connect`, `Migrate`, the two stores and their tests, `internal/db/dbtest/`, which gives each test an empty schema, the `Result` type in `internal/monitor/result.go`, and the new route in `internal/api/results.go`.
 
 ### Step 1: Start Postgres and Add the Driver
 
@@ -245,10 +233,10 @@ docker compose exec postgres psql -U monitor -d monitor -c 'select version()'
 `psql` is the Postgres command-line client. Inside the container, it connects through a local socket, without a password. Then add the driver:
 
 ```sh
-go get github.com/jackc/pgx/v5@v5.8.0
+go get github.com/jackc/pgx/v5@latest
 ```
 
-This page is tested with `v5.8.0`, the newest release that builds with Go 1.24. Pin the version: without `@v5.8.0`, `go get` picks the newest release, and from `v5.9.0` pgx needs Go 1.25: when your `go.mod` says less, `go get` raises its `go` line, and with it the `GO_VERSION` your Dockerfile needs. Until your code imports pgx, `go.mod` marks it `// indirect`; run `go mod tidy` after Step 4. `go get` also writes `go.sum`, the checksums of every module you depend on. Commit it: the go command refuses a download that does not match. The Dockerfile from <a href={weekHref(6)}>Week 6</a> already copies `go.*`, which includes it.
+Since <a href={weekHref(0)}>Week 0</a>, your `go.mod` says a Go such as `go 1.27.2`, and pgx from `v5.9.0` needs Go 1.25 or newer: take the newest release. The examples on this page stay on `v5.8.0`, the last release that builds with Go 1.24, which this site still uses. A module whose `go` line is older than 1.25 runs `go get github.com/jackc/pgx/v5@v5.8.0` instead: the newest release raises its `go` line to 1.25. That costs two later fixes: `v5.9.2` closes an SQL injection through dollar-quoted strings in the non-default simple protocol (GHSA-j88v-2chj-qfwx), which this code never uses, and `v5.10.0` hardens pgx against a malicious server. Until your code imports pgx, `go.mod` marks it `// indirect`; run `go mod tidy` after Step 4. `go get` also writes `go.sum`, the checksums of every module you depend on. Commit it: the go command refuses a download that does not match. The Dockerfile from <a href={weekHref(6)}>Week 6</a> already copies `go.*`, which includes it.
 
 ### Step 2: Write the First Migration
 
@@ -330,15 +318,21 @@ The handler checks that the monitor exists, reads `limit`, and returns the resul
 
 <CodeFrom file="go/week08/your-monitor/internal/api/api.go" region="routes" lang="go" title="internal/api/api.go" />
 
-Your Week 7 test compares the routes with `api/openapi.yaml`, and it fails until you document the new path and add a `Result` schema with the ten fields:
+Your Week 7 test compares the routes with the paths in `api/openapi.yaml` and fails until you document the new path. It never reads the schemas: add the `Result` schema with its ten fields yourself.
 
 <CodeFrom file="go/week08/your-monitor/api/openapi.yaml" region="results" lang="yaml" title="api/openapi.yaml" />
+
+<CodeFrom file="go/week08/your-monitor/api/openapi.yaml" region="result-schema" lang="yaml" title="api/openapi.yaml" />
 
 In `cmd/api/main.go`, a `-database-url` command-line flag defaults to `DATABASE_URL`, and `main` exits with status 2 when both are empty. `main` calls `openDB` before it listens, with `defer pool.Close()`, and serves `newHandler(pool)`:
 
 <CodeFrom file="go/week08/your-monitor/cmd/api/main.go" region="handler" lang="go" title="cmd/api/main.go" />
 
-The `cmd/api` tests that need no database keep a `MemStore`. `TestAPIOnPostgres` creates a monitor through the api, inserts three results, and reads them back newest first.
+Your Week 7 `cmd/api` tests call `newHandler()`, which now takes a pool, and they stop compiling. Give the tests that need no database a handler over a `MemStore` and a result store that holds nothing, and replace each `newHandler()` call with `memHandler()`:
+
+<CodeFrom file="go/week08/your-monitor/cmd/api/main_test.go" region="memhandler" lang="go" title="cmd/api/main_test.go" />
+
+`TestAPIOnPostgres` creates a monitor through the api, inserts three results, reads them back newest first, and checks the ten JSON keys by name.
 
 ### Step 9: Check the Monitors from the Database
 
@@ -350,7 +344,15 @@ The worker replaces `-file` with `-database-url`, connects and migrates the same
 
 <CodeFrom file="go/week08/your-monitor/cmd/worker/main.go" region="save" lang="go" title="cmd/worker/main.go" />
 
-The worker tests pass fakes for the two stores, and `TestWorkerStoresResults` runs the real binary against Postgres. It adds three monitors that never answer while the worker runs, sends SIGTERM, and checks that the database holds one row per finished check and none for the three cancelled ones.
+Your Week 7 worker tests stop compiling too: they call `run(ctx, []string{…}, …)` and start the binary with `-file`. In the `run` tests, replace the list of URLs with a fake lister, and pass a fake inserter that keeps the rows:
+
+<CodeFrom file="go/week08/your-monitor/cmd/worker/run_test.go" region="fakes" lang="go" title="cmd/worker/run_test.go" />
+
+`TestProgramSignals` swaps `-file` for `-database-url` with a `dbtest.URL` schema, and its `addMonitors` helper creates the monitor through `db.MonitorStore`. A new test pins the NULL rules of `toResult` above:
+
+<CodeFrom file="go/week08/your-monitor/cmd/worker/run_test.go" region="toresult" lang="go" title="cmd/worker/run_test.go" />
+
+`TestWorkerStoresResults` runs the real binary against Postgres. It adds three monitors that never answer while the worker runs, sends SIGTERM or SIGINT, and checks that the database holds one row per finished check and none for the three cancelled ones.
 
 In `compose.yaml`, the worker loses its `-file` argument and the `urls.txt` volume, and Postgres gains the slow-query log that [Observe It](#observe-it) reads:
 
@@ -358,18 +360,20 @@ In `compose.yaml`, the worker loses its `-file` argument and the `urls.txt` volu
 
 ### Step 10: Run It
 
-Rebuild and start the stack, then move the URLs from `urls.txt` into the database through the api. `grep -Ev` drops comments and blank lines:
+Rebuild and start the stack, then move the URLs from `urls.txt` into the database through the api. `grep -Ev` drops comments and blank lines. `make up` returns before the api listens: `--retry-connrefused` makes `curl` try again until it does, and `-f` turns an error answer, such as `409`, into a failure you see:
 
 ```sh
 make up
 grep -Ev '^(#|$)' urls.txt | while read -r url; do
-  curl -s -X POST 127.0.0.1:8080/api/monitors -H 'Content-Type: application/json' \
-    -d "{\"url\": \"$url\", \"interval_seconds\": 60}"; echo
+  curl -fsS --retry 10 --retry-connrefused -X POST 127.0.0.1:8080/api/monitors \
+    -H 'Content-Type: application/json' -d "{\"url\": \"$url\", \"interval_seconds\": 60}"; echo
 done
-git rm urls.txt
+curl -s 127.0.0.1:8080/api/monitors
 ```
 
-On the first start against an empty volume, the api or the worker, whichever takes the lock first, logs `migrated version=1 file=001_init.sql`. Within 30 seconds, the worker checks both sites. Ask for the newest result of monitor 1. The output is an example:
+Check that the list holds every URL of the file. Only then delete the file, the last copy of that list outside the database: `git rm urls.txt`.
+
+Your database has no `schema_migrations` table yet: Week 6 created the volume, but nothing has created a table in it. On this first start, the api or the worker, whichever takes the lock first, logs `migrated version=1 file=001_init.sql`: find it with `make logs`, and press Ctrl-C to stop following. Within 30 seconds, the worker checks both sites. Ask for the newest result of monitor 1. The output is an example:
 
 ```txt
 $ curl -s '127.0.0.1:8080/api/monitors/1/results?limit=1'
@@ -378,16 +382,7 @@ $ curl -s '127.0.0.1:8080/api/monitors/1/results?limit=1000'
 {"error":"limit must be an integer from 1 to 500, got \"1000\""}
 ```
 
-Look at the same rows in SQL. `make psql` opens a shell: `\d` lists the tables, `\d check_results` describes one, and `\q` quits. The output is an example:
-
-```txt
-monitor=# select monitor_id, checked_at, up, status_code, connect_ms, first_byte_ms, error
-monitor-#   from check_results order by checked_at desc limit 2;
- monitor_id |          checked_at           | up | status_code | connect_ms | first_byte_ms | error
-------------+-------------------------------+----+-------------+------------+---------------+-------
-          2 | 2026-10-11 07:05:08.916655+00 | t  |         200 |         12 |            49 |
-          1 | 2026-10-11 07:05:08.916631+00 | t  |         200 |         11 |            52 |
-```
+Look at the same rows in SQL. `make psql` opens a shell: `\d` lists the tables, `\d check_results` describes one, `select * from check_results order by checked_at desc limit 2;` shows the newest two rows, with an empty cell for each NULL, and `\q` quits.
 
 Run `make down` and `make up` again: the monitors and their history are still there, in the `pgdata` volume.
 
@@ -397,16 +392,17 @@ Add the backup targets to the Makefile, and add `backups/` to `.gitignore` and `
 
 <CodeFrom file="go/week08/your-monitor/Makefile" region="dbtargets" lang="makefile" title="Makefile" />
 
-`-T` turns off the terminal that `docker compose exec` opens by default. Without a terminal, the dump flows through the `>` redirect byte for byte. `make backup` writes a file such as `backups/monitor-20261011-070012.dump`. `make restore-check` restores the newest dump into `monitor_restore`, counts what came back and drops that database. The counts are an example:
+`-T` turns off the terminal that `docker compose exec` opens by default. Without a terminal, the dump flows through the `>` redirect byte for byte. `make backup` writes a file such as `backups/monitor-20261011-070012.dump`. `make restore-check` restores the newest dump into `monitor_restore`, counts what came back and drops that database. It prints each command before it runs it. Below are the last lines, and the counts are an example:
 
 ```txt
 $ make restore-check
  monitors | results | version
 ----------+---------+---------
         2 |      42 |       1
+(1 row)
 ```
 
-Compare the counts with `select count(*) from check_results` on the live database. The live number is a little higher, because the worker kept writing after the dump. A restore that fails stops at the first error, because of `--exit-on-error`. Copy the `backups/` folder to another machine. Week 17 runs this check on a schedule.
+Compare the counts with `select count(*) from check_results` on the live database. The live number is a little higher, because the worker kept writing after the dump. A restore that fails stops at the first error, because of `--exit-on-error`. Copy the `backups/` folder to another machine. Week 17 runs `pg_dump` on a schedule on the live server and times a restore drill into a fresh database.
 
 ### Step 12: Commit
 
@@ -448,7 +444,7 @@ select monitor_id, round(100 * avg(up::int), 2) as uptime_pct
  group by monitor_id order by uptime_pct limit 3;
 ```
 
-It reads every row of the week, and `docker compose logs postgres` shows it:
+It reads every row of the week, and `docker compose logs postgres` shows it. A fast laptop runs it in under 200 ms and logs nothing: then run `set log_min_duration_statement = 50;` first, which lowers the threshold for your session only. Only a superuser can change it, and the `monitor` user of the Compose Postgres is one.
 
 ```txt
 2026-10-11 06:58:46.524 UTC [10999] LOG:  duration: 234.842 ms  statement: select monitor_id, round(100 * avg(up::int), 2) as uptime_pct from check_results where checked_at > now() - interval '7 days' group by monitor_id order by uptime_pct limit 3
@@ -490,11 +486,11 @@ LOG:  startup process (PID 12010) exited with exit code 1
 LOG:  shutting down due to startup process failure
 ```
 
-A PANIC stops every backend. Postgres restarts, tries to recover, needs disk space for that too, and shuts down. From then on, every program gets `connection refused`, and the api answers 500 on every route. Postgres starts again once there is space. After the test gave the disk more room, recovery replayed the WAL, and all 100,000 rows of the last committed insert came back. The insert that hit the full disk never committed, and nothing of it remained. Do not delete files from `pg_wal` to make space: they hold committed data that is not in the table files yet. Free space elsewhere or grow the disk.
+A PANIC stops every backend. Postgres restarts, tries to recover, needs disk space for that too, and shuts down, and its container stays down, because `compose.yaml` sets no `restart:` for it. From then on, every `/api` route answers 500 while `/healthz` still says ok, and the worker logs `round error=` each round. Inside Compose, the programs fail to look up the name `postgres`, because no container answers to it. After you free space, `make db` starts Postgres again. After the test gave the disk more room, recovery replayed the WAL, and all 100,000 rows of the last committed insert came back. The insert that hit the full disk never committed, and nothing of it remained. Do not delete files from `pg_wal` to make space: they hold committed data that is not in the table files yet. Free space elsewhere or grow the disk.
 
-To see it coming, watch free space: `docker system df -v` shows the size of the `pgdata` volume, and `df -h` the free space on a server. Alert at 80% full. Week 13 adds the alert.
+To see it coming, watch free space: `docker system df -v` shows the size of the `pgdata` volume, and `df -h` the free space on a server. Nothing alerts you yet: check it by hand every week, and act at 80% full.
 
-**Old rows never leave by themselves.** Keep 30 days with `delete from check_results where checked_at < now() - interval '30 days'`. A DELETE does not return space to the disk: Postgres marks the rows dead, and **VACUUM** later makes their space reusable for new rows. In the lab, deleting 1,152,200 of 2,016,000 rows left the table and its indexes at 311 MB. `vacuum check_results` brought them to 209 MB, because it gives back only empty pages at the end of the table file. `vacuum full check_results` rewrote everything at 121 MB, but it locks the table against every read and write while it runs, and it needs room for a full copy. Postgres runs VACUUM on its own, as **autovacuum**. Delete old rows every day, and the freed space gets reused before the file grows. Week 9 runs that job.
+**Old rows never leave by themselves.** Keep 30 days with `delete from check_results where checked_at < now() - interval '30 days'`. A DELETE does not return space to the disk: Postgres marks the rows dead, and **VACUUM** later makes their space reusable for new rows. The lab holds only 7 days: try it there with `interval '3 days'`. That deleted 1,152,200 of 2,016,000 rows and left the table and its indexes at 311 MB. `vacuum check_results` brought them to 209 MB, because it gives back only empty pages at the end of the table file. `vacuum full check_results` rewrote everything at 121 MB, but it locks the table against every read and write while it runs, and it needs room for a full copy. Postgres runs VACUUM on its own, as **autovacuum**. Nothing deletes old rows for you: run the delete yourself in `make psql` once a week, and the freed space gets reused before the file grows.
 
 | What you see | What it points to |
 | --- | --- |
