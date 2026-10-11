@@ -1,36 +1,198 @@
 ---
 title: "System and Software Design"
+description: How to split an app into services with clear boundaries, shape the code and the API inside each one, and keep calls between them from failing together, with timeouts, retries and jitter.
 track: system-design
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+System design decides which programs an app runs, what data each one owns, and how they talk. Software design decides the shape of the code inside each program. A full-stack engineer makes both kinds of decisions every week, and most of them are trade-offs: each boundary you draw buys you something and costs you a network call that can fail.
+
 ## What It Is
 
-This section is not written yet.
+### Components and Boundaries
+
+A **component** is a part of the system with one job: the api serves HTTP, the worker checks sites, the alerter sends notifications. A **boundary** is the line between two components. Code on one side reaches the other side only through a narrow, named interface: an HTTP route, a table, a message.
+
+When a component runs as its own program and talks to the others over the network, it is a **service**. Splitting a program into services buys four things:
+
+- **Independent scaling.** Ten workers and one api is a setting, not a rewrite.
+- **Failure isolation.** A worker that crashes on a bad page leaves the api serving the status page.
+- **Different lifecycles.** The api answers in milliseconds, and the scheduler runs a loop every 5 seconds. Each one restarts and deploys on its own.
+- **Clear ownership.** A team or a person owns one service and its data.
+
+Every split also costs something. A function call that never fails becomes a network call that times out, arrives twice or arrives late. Each service needs its own build, deploy, logs and alerts. One program with clean packages inside, a **modular monolith**, keeps the boundaries without the network, and it is the right start for a new app with one team.
+
+Draw boundaries around **data ownership**: each piece of data has one service that writes it, and the others read it or ask that service. The [first diagram](#monitor-boundaries) shows which service writes each table. Two services share the job queue by design: the scheduler inserts, and the workers delete. When two services write the same rows for different reasons, a change to the schema or the rules needs both of them changed and deployed together, and the boundary between them exists only on paper. The monitor shares one Postgres database between its services, which keeps backups and transactions simple, at the price of one schema that every service depends on.
+
+### Layers and Interfaces Inside a Service
+
+Inside one service, **layers** separate concerns. The HTTP layer knows routes, JSON and status codes. The domain layer knows the rules, such as which intervals a monitor accepts. The storage layer knows SQL. Each layer calls only the one below it, and the domain layer knows nothing about HTTP or Postgres.
+
+The domain layer reaches storage through an **interface**: a list of methods that any type can satisfy. In Go, the consumer declares the interface, and `main` picks the type behind it and passes it in. The name for passing a dependency in, instead of creating it inside, is **dependency injection**, and it is how a test swaps in a fake store. Keep interfaces small: the four methods that the handlers use, not every method that the Postgres store happens to have.
+
+### API Contracts: Contract-First and Code-First
+
+An **API contract** is the written promise of what an API accepts and returns. OpenAPI is the standard format for an HTTP API. Teams produce the contract in one of two orders:
+
+| Approach | How it works | Strength | Weakness |
+| --- | --- | --- | --- |
+| Contract-first | Write the OpenAPI file, review it, then write or generate the server and the clients from it | Frontend and backend agree before anyone writes code, and both can start at once | The generated code shapes your handlers, and the file and the code drift unless a test compares them |
+| Code-first | Write the handlers, then write the contract by hand or generate it from annotations in the code | The contract matches the running code, and changes start where engineers work | The API grows one handler at a time, and nobody reviews its shape as a whole |
+
+The uptime monitor takes the code-first path with a guard: a test fails when the contract and the router list different routes. For a public API with outside clients, contract-first pays off, because a breaking change costs other people their time.
+
+### General APIs and Screen-Shaped APIs
+
+A **general API** exposes resources: `/api/monitors`, `/api/monitors/{id}/results`. Any client can combine them, and the server stays simple. A screen that shows 50 monitors then sends one request for the list and one for each monitor: the **N+1 pattern**. Each request costs a round trip and a database query.
+
+A **screen-shaped API** returns exactly what one screen shows, in one answer, such as the status of every monitor with its newest check. It is fast for that screen and useless for the next one, and it ties a backend route to a frontend layout. A **backend for frontend**, or BFF, takes the idea further: a small service per client that calls the general APIs and shapes the answers. Start general, measure the requests, and add a screen-shaped route when a real page needs it.
+
+### Synchronous and Asynchronous Work
+
+A **synchronous** call waits for its answer: the browser asks the api for monitors and shows them. An **asynchronous** design puts work into a queue and returns: the scheduler adds a check job, and a worker runs it later. Asynchronous work survives a slow or down consumer and smooths bursts, at the price of eventual results and duplicate deliveries. The <TrackLink slug="messaging" anchor="delivery-guarantees">Messaging and Streaming track</TrackLink> covers the guarantees.
+
+### Timeouts, Retries and Budgets
+
+Every call across a boundary needs a **timeout**: the longest the caller waits before it gives up. Without one, a server that never answers holds the caller, its goroutine and its connection until something else breaks.
+
+A failed call deserves a **retry** only when the failure is **transient**, such as a timeout, a refused connection or a `503 Service Unavailable`. A `400 Bad Request` or a `404 Not Found` fails the same way every time, and a retry only adds load. Retry only operations that are **idempotent**, safe to run twice: a `GET`, a `PUT` of a full value, or a `POST` that carries an ID the server deduplicates.
+
+Retries need two more parts:
+
+- **Exponential backoff**: wait longer after each failure, such as 100 ms, then 200 ms, then 400 ms, up to a cap. A struggling server gets room to recover.
+- **Jitter**: randomize each wait. When a server restarts, every client that failed at the same moment retries at the same moment, and with fixed waits they stay in step and hit it together on every round. **Full jitter** picks each wait at random between zero and the backoff ceiling, which spreads the clients out.
+
+A **timeout budget** is the total time a caller is willing to spend on an operation, retries included. In Go, the budget is a context with a deadline, from `context.WithTimeout`. Every attempt and every wait between attempts takes from the same budget, and when it runs out, the whole operation stops. Retries at several layers multiply into dozens of calls, and [Common Mistakes](#common-mistakes) counts them. Retry at one layer, the one closest to the failure.
 
 ## Diagrams
 
-This section is not written yet.
+The first diagram groups the uptime monitor at the end of the course by boundary, with an arrow from each service to the tables it writes. The dashed arrow writes a single column: the scheduler stamps `last_enqueued_at` on `monitors`, a column the api never touches. Week 11 adds `users` and `sessions`.
+
+<Diagram
+  id="monitor-boundaries"
+  title="Which service writes which table: a solid arrow writes rows, the dashed arrow one column"
+  code={`direction: right
+public: "public side" {
+  api
+}
+background: "background services" {
+  scheduler
+  worker
+  alerter
+}
+db: Postgres {
+  login: "users,\\nsessions"
+  monitors
+  jobs: check_jobs
+  results: check_results
+  incidents
+}
+public.api -> db.login
+public.api -> db.monitors
+background.scheduler -> db.monitors: {style.stroke-dash: 4}
+background.scheduler -> db.jobs
+background.worker -> db.jobs
+background.worker -> db.results
+background.alerter -> db.incidents
+`}
+/>
+
+The services read these tables:
+
+| Service | Reads |
+| --- | --- |
+| api | `monitors`, `check_results`, `incidents` |
+| scheduler | `monitors` |
+| worker | `monitors` |
+| alerter | `monitors`, `check_results` |
+
+The second diagram is a hypothetical: the monitor alerter does not call `Retry`, and [In the Uptime Monitor](#in-the-uptime-monitor) explains what it does instead. Suppose the alerter wraps its webhook send in the `Retry` function from the example, with a budget of 10 seconds, four attempts, a base of 500 ms and a cap of 4 seconds.
+
+<Diagram
+  id="retry-budget"
+  title="One webhook call through retries with backoff, inside a 10-second budget"
+  code={`shape: sequence_diagram
+alerter: alerter
+retry: Retry
+hook: webhook
+
+alerter -> retry: "Retry(ctx 10 s, 4, 500ms, 4s, send)"
+retry -> hook: "attempt 1: 503 after 200 ms"
+retry -> hook: "sleep 310 ms, attempt 2: 503"
+retry -> hook: "sleep 840 ms, attempt 3: 200 OK"
+retry -> alerter: nil
+`}
+  steps={[
+    { hl: ['alerter', 'retry', 'alerter->retry'], caption: 'In this hypothetical, the alerter creates a context with a 10-second deadline and calls Retry. Every attempt and every sleep below takes from those 10 seconds.' },
+    { hl: ['retry', 'hook', 'retry->hook'], caption: 'Attempt 1 gets a 503 after 200 ms: the receiver is restarting. A 503 is transient: send returns it as a plain error, and Retry tries again.' },
+    { hl: ['retry', 'hook', 'retry->hook#1'], caption: 'Before attempt 2, Retry sleeps a random time between zero and the ceiling of 500 ms, here 310 ms. Other alerters that failed at the same moment draw other times and spread out. Attempt 2 also gets a 503, and the ceiling doubles to 1 second.' },
+    { hl: ['retry', 'hook', 'retry->hook#2'], caption: 'Retry sleeps a random 840 ms, and attempt 3 gets a 200 OK. When the deadline falls inside a sleep, sleep returns context.DeadlineExceeded at the deadline, and Retry stops without another attempt.' },
+    { hl: ['retry', 'alerter', 'retry->alerter'], caption: 'Retry returns nil after about 1.75 seconds of the budget. A 404 at any point returns at once, wrapped in Permanent.' },
+  ]}
+/>
 
 ## Example
 
-This section is not written yet.
+The example is a retry function with exponential backoff and full jitter. `Permanent` marks an error that a retry cannot fix:
+
+<CodeFrom file="go/tracks/systemdesign/retry.go" region="permanent" lang="go" title="retry.go" />
+
+`Permanent` wraps the error in a private type, and `Unwrap` keeps `errors.Is` working through the wrapper. The caller decides what is permanent, because only the caller knows that a `404` from this server means the resource is gone. `Retry` itself:
+
+<CodeFrom file="go/tracks/systemdesign/retry.go" region="retry" lang="go" title="retry.go" />
+
+- `sleep` is a package variable holding a function. The real one waits on a timer or on the context, whichever comes first. The tests swap in a version that records each duration and returns at once, which keeps them fast and free of wall-clock timing.
+- The loop checks `ctx.Err()` before every attempt, and `sleep` returns the context error when the budget runs out mid-wait. A cancelled caller gets `context.Canceled` back, and no further attempt starts.
+- `backoff` doubles the ceiling from `base`, caps it at `max`, and draws a uniform random duration up to it with `rand.N` from `math/rand/v2`. The check for a ceiling of zero or less catches a doubling that overflows `time.Duration`, and a ceiling equal to the largest `time.Duration` draws without the `+ 1`, which overflows too.
+- After the last attempt, `Retry` wraps the last error with `%w`, which keeps `errors.Is(err, errUnavailable)` true for the caller.
+
+The tests pin each promise of the function:
+
+<CodeFrom file="go/tracks/systemdesign/retry_test.go" region="tests" lang="go" title="retry_test.go" />
+
+`TestBackoffIsFullJitter` draws 1,000 waits with a base of 100 ms doubled five times, a ceiling of 3.2 s, and checks their mean. Full jitter averages half the ceiling, 1.6 s. A version without jitter averages the full 3.2 s, and **equal jitter**, half the ceiling plus a random half, averages 2.4 s. The standard deviation of the mean of 1,000 uniform draws over 3.2 s is about 29 ms, which puts the bounds of 1.4 s and 1.8 s more than six deviations away: a correct version fails that check less than once in a billion runs. Return the ceiling instead of `rand.N(ceiling + 1)`, and the test fails with `mean backoff = 3.2s`.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={6} anchor="the-target-architecture">Week 6</WeekLink> lays out the target architecture: a web page, four Go services and Postgres with the job queue inside it. <WeekLink n={6} anchor="one-repository-for-every-program">One repository for every program</WeekLink> keeps them in one **monorepo**, a single repository for every program of the project, with one `cmd/` folder per service and shared packages under `internal/`.
+
+<WeekLink n={7} anchor="layers-and-the-store-interface">Week 7</WeekLink> splits the api into layers, with the handlers depending on the `Store` interface and `main` passing in the store. <WeekLink n={7} anchor="openapi-the-contract">OpenAPI: The Contract</WeekLink> takes the code-first approach from the table above, with a test that compares the routes in the contract with the router.
+
+<WeekLink n={9} anchor="background-jobs-and-queues">Week 9</WeekLink> moves the checks behind a queue, which turns a synchronous loop into asynchronous work between the scheduler, the workers and the alerter. Its <WeekLink n={9} anchor="step-4-retry-a-failing-job">retry of a failing job</WeekLink> moves `run_at` 30 seconds further out after each failure: linear backoff with no jitter, which works there because the scheduler already spreads jobs over time and one Postgres holds them all. The alerter retries by round instead of with backoff: its webhook client has a 5-second timeout, a failed webhook rolls back the incident insert, and the next round tries both again, as <WeekLink n={9} anchor="from-results-to-incidents">From Results to Incidents</WeekLink> describes.
+
+<WeekLink n={10} anchor="what-the-page-asks-the-api">Week 10</WeekLink> builds the status page on the general API and meets the N+1 pattern: one request for the list, then one per monitor. For tens of monitors, the general design is enough.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **Splitting into services too early.** Every boundary becomes a network call to deploy, monitor and debug. Start with packages inside one program, and split when a part needs to scale, fail or deploy on its own.
+- **Two services writing the same data.** A schema change needs both deployed together, and a bug in either corrupts the data of both. Give each column one writer, and let the others ask it. A queue table is the deliberate exception: producers insert, and consumers delete.
+- **No timeout on an outgoing call.** `http.DefaultClient` has no overall timeout, and a server that accepts the connection and never answers holds the goroutine forever. Pass a context with a deadline to every call.
+- **Retrying everything.** Retrying a `400` or a `404` adds load and never succeeds. Retry transient errors, and mark the rest with `Permanent`.
+- **Retrying without jitter.** Clients that fail together retry together, and a server that comes back gets the whole crowd at once and falls over again. Randomize every wait.
+- **Retrying a non-idempotent call.** A `POST` that creates an incident, retried after a timeout, creates two when the first one did reach the server. Send an ID that the server deduplicates, or do not retry.
+- **Retries at every layer.** Three attempts at each of three layers is 27 calls to the bottom service for one request, at exactly the moment it struggles. Retry at one layer.
+- **Leaking storage into the HTTP layer.** A handler that builds SQL or returns a Postgres error message to the client ties the API to the schema and leaks table names. Keep SQL in the store, and answer `500 internal error` with the cause in the log.
 
 ## Going Deeper
 
-This section is not written yet.
+- **Circuit breakers**: after a run of failures, a breaker stops calling a dependency for a while and fails at once, which gives the dependency time to recover.
+- **Retry budgets**: a cap on retries as a share of all calls, such as 10%, keeps a client from tripling its load during an outage.
+- **Deadline propagation**: gRPC, a framework for calls between services, sends the remaining budget with each call, as a Go context does inside one program, and each hop knows how long it has left.
+- **The CAP theorem**, for consistency, availability and partition tolerance: when the network splits a replicated system in two, each side chooses between answering and staying consistent with the other, and knowing that choice explains how a database behaves during an outage.
+- **Domain-driven design**: bounded contexts are a method for finding service boundaries in the language of the business instead of in the database schema.
+- **Load shedding and backpressure**: a server that refuses work it cannot finish in time keeps serving the work it accepts.
 
 ## Further Reading
 
-This section is not written yet.
+- [Go Concurrency Patterns: Context](https://go.dev/blog/context): the Go blog post that introduces contexts for deadlines and cancellation across API boundaries.
+- [Package context](https://pkg.go.dev/context): the reference for `WithTimeout`, `WithCancel` and the errors `Canceled` and `DeadlineExceeded`.
+- [gRPC Deadlines](https://grpc.io/docs/guides/deadlines/): why every call needs a deadline, and how a deadline travels from one service to the next.
+- [gRPC Retry](https://grpc.io/docs/guides/retry/): a production retry policy with exponential backoff, jitter and a list of retryable status codes.
+- [OpenAPI Specification 3.1.0](https://spec.openapis.org/oas/v3.1.0.html): the version of the contract format that the monitor api uses.

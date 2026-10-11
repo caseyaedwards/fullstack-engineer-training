@@ -1,36 +1,190 @@
 ---
 title: "Databases"
+description: How Postgres keeps related writes together with transactions, what isolation levels decide when two transactions touch one row, and how an index turns a scan of every row into a few page reads.
 track: databases
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+A database keeps the data of an app through restarts and crashes, and answers questions about it while many programs read and write at once. The uptime monitor keeps every monitor, every check and every incident in Postgres 17. This page covers the three ideas behind most database bugs in backend code: transactions, isolation between concurrent transactions, and indexes.
+
 ## What It Is
 
-This section is not written yet.
+### Tables, Keys and SQL
+
+Postgres is a **relational database**: it stores data in **tables** of **rows**, and every row has the same named, typed **columns**. A **primary key** names each row. A **foreign key** is a column whose value must exist as the primary key of another table: every check names a monitor that exists. You ask questions in SQL, a declarative language: you describe the rows you want, and the **planner** inside Postgres works out how to find them. <WeekLink n={8} anchor="tables-rows-and-constraints">Week 8</WeekLink> introduces the types and the four constraints of the monitor schema.
+
+Each program talks to Postgres over a network connection, and Postgres serves each connection with its own operating-system process. Go programs borrow connections from a **connection pool**, `pgxpool`, instead of opening one per query.
+
+### Transactions and ACID
+
+A **transaction** is a group of statements that Postgres treats as one unit. It starts with `BEGIN` and ends with `COMMIT`, which applies every change, or `ROLLBACK`, which discards every change. Any error inside the transaction makes the commit fail and turns it into a rollback. A statement outside `BEGIN` runs as a transaction of its own.
+
+Transactions give four promises, named ACID (atomicity, consistency, isolation, durability):
+
+- **Atomicity**: all the changes of a transaction land, or none of them does. A crash halfway through leaves nothing behind.
+- **Consistency**: every constraint holds after each transaction. A transaction that breaks a foreign key or a check constraint fails as a whole.
+- **Isolation**: concurrent transactions do not see the unfinished work of each other. The isolation level decides how much of the finished work of others they see, as the next section explains.
+- **Durability**: once `COMMIT` returns, the change survives a crash. Postgres appends the change to the **write-ahead log**, or WAL, and flushes that log to disk with `fsync` before it answers. The WAL lives in the `pg_wal` folder and records every change before the table files get it.
+
+Atomicity matters whenever one fact lives in two places. In the example on this page, a check result goes into the `checks` table, and the status of the monitor goes into `monitors.last_status`. Without a transaction, a failure between the two writes leaves a monitor that says `up` with no check to back it.
+
+### Concurrency: MVCC and Row Locks
+
+Postgres runs many transactions at once with **multiversion concurrency control**, or MVCC. An `UPDATE` does not overwrite a row: it writes a new version of the row and marks the old version as replaced. Each transaction reads from a **snapshot**, a view of the versions that have committed by one moment. Readers see the versions in their snapshot and never wait for writers. Writers never wait for readers. `VACUUM` later removes the old versions that no snapshot needs.
+
+Two writers to the same row do wait. `UPDATE`, `DELETE` and `SELECT ... FOR UPDATE` take a **row lock** that lasts until the transaction ends. A second transaction that wants to change the same row waits for the first to commit or roll back. Two transactions that each wait for a row the other holds form a **deadlock**: Postgres detects the cycle after one second, the default `deadlock_timeout`, and cancels one of them.
+
+### Isolation Levels
+
+The **isolation level** of a transaction decides when it takes its snapshot and what happens when a row it reads changes underneath it. Postgres 17 has three levels that behave differently:
+
+| Level | Snapshot | When another transaction changes a row you then update |
+| --- | --- | --- |
+| Read Committed, the default | A new one for each statement | Your `UPDATE` waits for the other to commit, then applies to the newest version |
+| Repeatable Read | One for the whole transaction, taken at its first query | Your `UPDATE` fails with `could not serialize access due to concurrent update` |
+| Serializable | As Repeatable Read, plus tracking of what each transaction reads | Postgres cancels one transaction when it detects reads and writes that no one-at-a-time order produces |
+
+Postgres accepts Read Uncommitted as a name and runs it as Read Committed: no level in Postgres ever shows uncommitted data. Both stricter levels report a conflict with the error code `40001`, a **serialization failure**. SQLSTATE is the name of these five-character codes, which the SQL standard defines. The fix for that error is to run the whole transaction again from `BEGIN`, which makes every transaction under those levels a candidate for a retry loop such as the one in the <TrackLink slug="system-design" anchor="example">System and Software Design track</TrackLink>.
+
+### Lost Updates
+
+Read Committed does not stop one bug: the **lost update**. Two transactions read the same value, each computes a new value in application code, and each writes it back. The second write replaces the first, and one change disappears without an error. The [lost update diagram](#lost-update) below shows it with a counter of consecutive failures.
+
+Four fixes exist, from the simplest:
+
+- **Compute in SQL.** `update monitors set failures = failures + 1 where id = $1` reads and writes in one statement. Under Read Committed, the second `UPDATE` waits for the row lock, then adds one to the committed value.
+- **Lock on read.** `SELECT ... FOR UPDATE` takes the row lock at the read. When both transactions read with `SELECT ... FOR UPDATE`, the second waits at its read until the first commits, then reads the new value. A plain `SELECT` in the other transaction still reads without waiting.
+- **Detect and retry.** Under Repeatable Read, the second write fails with `40001`, and the code retries the transaction.
+- **Check a version.** Add a `version` column and write `update ... set version = version + 1 where id = $1 and version = $2`. Zero rows affected means someone else got there first. This is **optimistic locking**: nothing holds a lock between the read and the write, which suits an edit form that stays open for minutes.
+
+### Indexes and the Planner
+
+Without help, Postgres answers `where monitor_id = 42` with a **sequential scan**: it reads every page of the table and keeps the matching rows. A **page** is the 8 kB block that Postgres reads and writes as a unit. The cost of a sequential scan grows with the table.
+
+An **index** is a separate structure, sorted by the columns you name, that points at rows in the table. The default kind is a **B-tree**, a balanced tree: the root page and the branch pages under it hold ranges of keys, and the leaf pages hold every key in order, each with the location of its row. Finding one key costs one page read per level. The Week 8 index over two million checks is three levels deep: a root, one level of branch pages and the leaves. From the first match, the scan walks forward through the leaves in order, which is why an index on `(monitor_id, checked_at desc)` also returns the newest checks first with no sort.
+
+The planner picks between the two plans from **statistics**, a summary of each column that `ANALYZE` collects. On a table of a few pages, it picks the sequential scan even when an index exists, because one page read beats a walk down a tree. `EXPLAIN` prints the chosen plan, and `EXPLAIN ANALYZE` runs the query and adds real times.
+
+Every index costs a write on each `INSERT` and disk space. Add an index for a query that runs, with the columns in the order the query filters and sorts.
 
 ## Diagrams
 
-This section is not written yet.
+The first diagram follows one query through both plans on a table of a week of checks for 100 monitors: 2,016,000 rows in 179 MB, or 22,910 pages.
+
+<Diagram
+  id="index-lookup"
+  title="A sequential scan and a B-tree index scan for the newest checks of monitor 42"
+  code={`direction: down
+q: "where monitor_id = 42\\norder by checked_at desc\\nlimit 50"
+root: "root page"
+br: "branch page\\nmonitors 40 to 49"
+leaf: "leaf page\\nmonitor 42, newest first"
+heap: "table pages\\n22,910 pages"
+
+q -> heap: "Seq Scan"
+q -> root: "Index Scan"
+root -> br
+br -> leaf
+heap <-> leaf: "fetch 50 rows" {
+  target-arrowhead.shape: circle
+}
+`}
+  steps={[
+    { hl: ['q', 'heap', 'q->heap'], caption: 'Without an index, a sequential scan reads all 22,910 table pages, keeps the 20,160 rows of monitor 42, sorts them by time and returns 50. Week 8 measures this plan at 74 ms.' },
+    { hl: ['q', 'root', 'q->root'], caption: 'With the index on monitor_id and checked_at, Postgres starts at the root page. The root holds key ranges and points at the branch page that covers monitor 42.' },
+    { hl: ['root', 'br', 'root->br'], caption: 'The branch page narrows the range again and points at the leaf page where the entries for monitor 42 begin.' },
+    { hl: ['br', 'leaf', 'br->leaf'], caption: 'The leaf page holds the entries for monitor 42 sorted newest first, each with the location of its row. The scan reads 50 entries in order and stops.' },
+    { hl: ['leaf', 'heap', 'heap<->leaf'], caption: 'For each entry, Postgres fetches the row from its table page. EXPLAIN with the BUFFERS option counts 56 pages for the whole plan instead of 22,910, and Week 8 measures it at 0.24 ms.' },
+  ]}
+/>
+
+The second diagram shows a lost update. Two workers record a failure for monitor 42 at the same moment, and each reads the counter of consecutive failures before it writes. Both run under Read Committed.
+
+<Diagram
+  id="lost-update"
+  title="Two transactions read, compute and write the same counter"
+  code={`shape: sequence_diagram
+a: worker A
+pg: Postgres
+b: worker B
+
+a -> pg: "BEGIN; SELECT failures WHERE id = 42"
+pg -> a: "1"
+b -> pg: "BEGIN; SELECT failures WHERE id = 42"
+pg -> b: "1"
+a -> pg: "UPDATE SET failures = 2; COMMIT"
+b -> pg: "UPDATE SET failures = 2; COMMIT"
+`}
+  steps={[
+    { hl: ['a', 'pg', 'a->pg', 'pg->a'], caption: 'Worker A records the second failure in a row. It starts a transaction and reads the counter: one failure so far.' },
+    { hl: ['b', 'pg', 'b->pg', 'pg->b'], caption: 'Worker B reads the same row before A commits. A plain SELECT takes no row lock, and B also reads one.' },
+    { hl: ['a', 'pg', 'a->pg#1'], caption: 'Worker A adds one in Go and writes 2. The UPDATE locks the row until A commits.' },
+    { hl: ['b', 'pg', 'b->pg#1'], caption: 'Worker B records the third failure and also writes 2, the value it computed from its stale read. The row holds 2 instead of 3, the third failure in a row goes unseen, and the alert rule of three failures never fires.' },
+  ]}
+/>
+
+With `set failures = failures + 1`, the read and the write happen inside one statement. Worker B waits for the row lock of worker A, then adds one to the committed 2, and the row holds 3.
 
 ## Example
 
-This section is not written yet.
+The example records one check: it inserts a row into `checks` and sets `monitors.last_status`, in one transaction. The schema is a trimmed version of the monitor schema, with a status column on `monitors` and a check constraint on the duration:
+
+<CodeFrom file="go/tracks/databases/databases.go" region="schema" lang="go" title="databases.go" />
+
+`RecordCheck` uses `pgx.BeginFunc`, which runs a function between `BEGIN` and `COMMIT` and sends `ROLLBACK` when the function returns an error or panics:
+
+<CodeFrom file="go/tracks/databases/databases.go" region="record" lang="go" title="databases.go" />
+
+Three details carry the design:
+
+- Every statement inside the function runs on `tx`, the connection that holds the transaction. A call on `db` inside the function borrows another connection from the pool and runs outside the transaction.
+- `RowsAffected` tells an unknown monitor from a known one. An `UPDATE` that matches no row is not an error in SQL, and the explicit check turns it into `ErrUnknownMonitor`, which a caller tests with `errors.Is`. The foreign key on `checks.monitor_id` refuses the insert anyway: the `RowsAffected` test gives the error a name.
+- The `UPDATE` comes first. It takes the row lock on the monitor, and two checks of the same monitor recorded at once take turns instead of interleaving.
+
+The tests run against a real Postgres. Each one creates an empty schema in the database that `DATABASE_URL` names, creates the two tables there and drops the schema at the end, as the Week 8 helper `dbtest.URL` does. Without `DATABASE_URL`, they skip on your machine and fail in continuous integration (CI), where `CI=true`:
+
+<CodeFrom file="go/tracks/databases/databases_test.go" region="tests" lang="go" title="databases_test.go" />
+
+The third test is the one that proves the transaction. The `UPDATE` succeeds and sets `last_status` to `up`, then the `INSERT` breaks the check constraint `ms >= 0`. Replace `BeginFunc` with two plain `db.Exec` calls, and that test fails with `last_status=up checks=0`: the status changes with no check behind it.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={8} anchor="tables-rows-and-constraints">Week 8</WeekLink> gives the monitor its database. The schema holds `monitors` and `check_results`, with a primary key, a unique URL, a check constraint on the interval and a foreign key from each result to its monitor. The section on <WeekLink n={8} anchor="transactions-and-the-write-ahead-log">transactions and the write-ahead log</WeekLink> explains how `COMMIT` survives a crash, and each migration runs in a transaction together with its row in `schema_migrations`.
+
+The <WeekLink n={8} anchor="indexes">indexes section of Week 8</WeekLink> adds `check_results_monitor_time` for the history query of the api, and reads both plans of the first diagram above with `EXPLAIN ANALYZE`. The database tests in <WeekLink n={8} anchor="step-7-test-against-a-real-database">Step 7 of Week 8</WeekLink> use the schema-per-test helper that the example on this page copies. The <WeekLink n={8} anchor="side-lab">Week 8 side lab</WeekLink> opens two `psql` sessions to watch a row lock wait and a deadlock.
+
+<WeekLink n={9} anchor="row-locks-and-skip-locked">Week 9</WeekLink> builds the job queue on row locks: with `SELECT ... FOR UPDATE SKIP LOCKED`, each worker claims a different job, and the insert of a result and the delete of its job commit in one transaction.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **Reading a value into Go, changing it and writing it back.** Two requests at once lose one of the changes, with no error. Compute the new value in the `UPDATE` itself, or lock the row with `SELECT ... FOR UPDATE` before the read.
+- **Calling the pool inside a transaction.** A `db.Exec` inside `BeginFunc` runs on a second connection: its write commits on its own, it does not see the uncommitted rows of the transaction, and a pool with every connection inside a transaction blocks forever waiting for a free one. Pass `tx` to every statement inside the transaction.
+- **Beginning a transaction by hand without a deferred rollback.** A path that returns early leaves the connection `idle in transaction`, holding its row locks until the connection closes. Use `pgx.BeginFunc`, or write `defer tx.Rollback(ctx)` on the line after `Begin`: after a successful `Commit`, the deferred rollback does nothing.
+- **Holding a transaction open across slow work.** An HTTP call inside a transaction holds every row lock it took for the length of the call, and other writers to those rows wait. Do the slow work first and open the transaction for the writes, unless the lock is the point, as in the Week 9 queue.
+- **Treating `40001` as a crash.** Under Repeatable Read and Serializable, a serialization failure is a normal outcome under contention. Retry the whole transaction a few times, from `BEGIN`.
+- **Trusting a plan from an empty table.** On a development database with ten rows, Postgres picks a sequential scan, and a missing index looks harmless. Check plans with `EXPLAIN ANALYZE` against realistic row counts.
+- **Putting index columns in the wrong order.** An index on `(checked_at, monitor_id)` sorts by time first and spreads one monitor across the whole tree. Lead with the column the query filters on with `=`, then the column it sorts or ranges on.
 
 ## Going Deeper
 
-This section is not written yet.
+- **VACUUM and table bloat**: MVCC leaves old row versions behind, and knowing how autovacuum reclaims them explains slow tables after mass deletes.
+- **Serializable Snapshot Isolation**: the algorithm behind the Serializable level in Postgres shows how it detects conflicts without locking every row it reads.
+- **Table partitioning**: splitting `check_results` by month turns deleting old checks into dropping a whole partition, which frees disk space at once.
+- **Replication and read replicas**: a streaming replica copies the write-ahead log to a second server, and its lag decides what a read from it can miss.
+- **Other index types**: a block range index, or BRIN, stores one summary per range of pages and suits an append-only time column such as `checked_at` at a fraction of the B-tree size.
+- **Connection poolers**: PgBouncer sits between many app processes and Postgres, and its transaction mode changes what session settings and prepared statements can do.
 
 ## Further Reading
 
-This section is not written yet.
+- [Transaction Isolation](https://www.postgresql.org/docs/17/transaction-iso.html): the Postgres 17 manual on each isolation level, with the exact anomalies each one allows.
+- [Explicit Locking](https://www.postgresql.org/docs/17/explicit-locking.html): every lock mode in Postgres, which statements take which locks, and how deadlock detection works.
+- [Using EXPLAIN](https://www.postgresql.org/docs/17/using-explain.html): how to read a plan, line by line, with the costs and the real times.
+- [pgx v5 documentation](https://pkg.go.dev/github.com/jackc/pgx/v5): the Go driver that the monitor uses, including `BeginFunc`, `Tx` and the pool.
+- [B-Tree Indexes](https://www.postgresql.org/docs/17/btree.html): how Postgres builds and searches its default index type, including deduplication of repeated keys.
