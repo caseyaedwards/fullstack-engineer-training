@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"fsp/examples/week13/your-monitor/internal/dbtest"
 	"fsp/examples/week13/your-monitor/internal/obs"
@@ -129,6 +130,9 @@ func TestJobTrace(t *testing.T) {
 	c := obstest.Find(t, got, "check")
 	if a := obstest.Attrs(c); a["check.result"].AsString() != "down" || a["http.response.status_code"].AsInt64() != 503 {
 		t.Errorf("check span attributes %v, want result down, status 503", c.Attributes)
+	}
+	if c.SpanKind != trace.SpanKindClient {
+		t.Errorf("check span kind %v, want client: it covers a call to another program", c.SpanKind)
 	}
 	if c.Status.Code == codes.Error {
 		t.Error("a site that answers 503 is a successful check: the check span must not be an error")

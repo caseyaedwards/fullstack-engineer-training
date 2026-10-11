@@ -32,6 +32,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"fsp/examples/week13/your-monitor/internal/db"
 	"fsp/examples/week13/your-monitor/internal/monitor"
@@ -117,7 +118,8 @@ func connect(ctx context.Context, workers int) (*pgxpool.Pool, error) {
 // its own deadline. It records the check in a span, in m and in the log.
 func newCheckFunc(timeout time.Duration, m *checkMetrics) queue.CheckFunc {
 	return func(ctx context.Context, job queue.Job) monitor.Result {
-		ctx, span := otel.Tracer("your-monitor/worker").Start(ctx, "check")
+		// SpanKindClient: the span covers a call this program makes to another.
+		ctx, span := otel.Tracer("your-monitor/worker").Start(ctx, "check", trace.WithSpanKind(trace.SpanKindClient))
 		defer span.End()
 		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
@@ -146,10 +148,10 @@ func newCheckFunc(timeout time.Duration, m *checkMetrics) queue.CheckFunc {
 
 // logCheck logs one check on one line, with the trace ID from ctx.
 func logCheck(ctx context.Context, job queue.Job, r monitor.Result) {
-	attrs := []any{"job", job.ID, "monitor", job.MonitorID, "url", job.URL,
+	attrs := []any{"job_id", job.ID, "monitor_id", job.MonitorID, "url", job.URL,
 		"up", r.Up, "status", r.StatusCode, "first_byte_ms", r.FirstByteMs}
 	if r.Error != "" {
-		attrs = append(attrs, "error", r.Error)
+		attrs = append(attrs, "err", r.Error)
 	}
 	slog.InfoContext(ctx, "check", attrs...)
 }

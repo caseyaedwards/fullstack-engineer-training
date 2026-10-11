@@ -31,9 +31,22 @@ func StartTracing(ctx context.Context, service string) (shutdown func(context.Co
 	if err != nil {
 		return nil, err
 	}
+	// The resource describes the program on every span: service.name, the
+	// SDK version, and OTEL_SERVICE_NAME or OTEL_RESOURCE_ATTRIBUTES, which
+	// come last and win.
+	res, err := resource.New(ctx,
+		resource.WithTelemetrySDK(),
+		resource.WithAttributes(attribute.String("service.name", service)),
+		resource.WithFromEnv(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	// Without WithSampler, the SDK reads OTEL_TRACES_SAMPLER and
+	// OTEL_TRACES_SAMPLER_ARG, and defaults to parentbased_always_on.
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
-		sdktrace.WithResource(resource.NewSchemaless(attribute.String("service.name", service))),
+		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)
 	// Spans that fail to send, for example while the collector is down,

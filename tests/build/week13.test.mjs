@@ -57,6 +57,16 @@ test('every metric name on the page is registered by the example code', () => {
   assert.match(src, /\[\]string\{"result"\}/);
 });
 
+test('the worker histogram has bounds at the timeout and above it, and the logs use one spelling of each field', () => {
+  const go = blocks('go').join('\n');
+  assert.match(go, /Buckets: \[\]float64\{[^}]*\b5, 6\}/, 'the check histogram needs bounds at 5 s (-timeout) and 6 s');
+  const txt = blocks('txt').join('\n');
+  for (const line of txt.split('\n').filter((l) => l.startsWith('{"time"'))) {
+    assert.doesNotMatch(line, /"(job|monitor|incident|error)":/, `log line uses an old field name: ${line}`);
+  }
+  assert.doesNotMatch(readFileSync(join(dir, 'observability/prometheus.yml'), 'utf8'), /dns_sd_configs/, 'the worker drill expects up{job="worker"} 0 from a static target');
+});
+
 test('week 13 tells the reader to go get the libraries at @latest', () => {
   const sh = blocks('sh').join('\n');
   assert.match(sh, /go get github\.com\/prometheus\/client_golang@latest/);

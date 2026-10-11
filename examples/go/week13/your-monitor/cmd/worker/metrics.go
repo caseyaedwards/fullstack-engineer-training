@@ -26,7 +26,10 @@ func newCheckMetrics(reg prometheus.Registerer) *checkMetrics {
 		duration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "monitor_check_duration_seconds",
 			Help:    "Time taken by one check, from the DNS lookup to the end of the body, or to the error.",
-			Buckets: prometheus.DefBuckets, // 5 ms to 10 s; the default -timeout is 5 s
+			// Bounds at 5 s, the default -timeout, and at 6 s: a check that
+			// times out takes just over 5 s and lands in (5, 6], which keeps
+			// a p95 of timeouts near 5 s instead of anywhere up to 10 s.
+			Buckets: []float64{.01, .025, .05, .1, .25, .5, 1, 2, 3, 4, 5, 6},
 		}),
 	}
 	reg.MustRegister(m.checks, m.duration)

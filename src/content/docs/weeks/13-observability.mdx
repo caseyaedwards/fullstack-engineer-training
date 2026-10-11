@@ -88,15 +88,15 @@ col -> jae: spans
 
 ### Structured Logs
 
-Up to now, your programs log lines such as `check job=12 monitor=3 up=false status=503`. A person reads that line well. A program that wants every check of monitor 3 has to parse it, and a URL with a space in it breaks the parser. A **structured log** writes each event as named fields in a format that machines read, here JSON:
+Up to now, your programs log lines such as `check job=12 monitor=3 url=https://example.com up=false status=503 first_byte_ms=41`. A person reads that line well. A program that wants every check of monitor 3 has to parse it, and a URL with a space in it breaks the parser. A **structured log** writes each event as named fields in a format that machines read, here JSON:
 
 ```txt wrap
-{"time":"2026-10-11T07:54:35.106583472Z","level":"INFO","msg":"check","service":"worker","job":1,"monitor":2,"url":"http://127.0.0.1:8080/api/monitors/999","up":false,"status":404,"first_byte_ms":2,"trace_id":"44b78e5e52b9b7581db6c578d60e5403","span_id":"04a7e984a0e25c32"}
+{"time":"2026-10-11T08:44:26.80721187Z","level":"INFO","msg":"check","service":"worker","job_id":139,"monitor_id":2,"url":"http://127.0.0.1:8080/api/monitors/999","up":false,"status":404,"first_byte_ms":4,"trace_id":"f6aeb106339dbfda9e1020130d9a639d","span_id":"881fe187b6f1098f"}
 ```
 
-The Go standard library has a structured logger, `log/slog`, since Go 1.21. Every line carries a **level**, which says how much the event matters: `DEBUG`, `INFO`, `WARN` or `ERROR`. Log aggregation tools, such as Grafana Loki or the log viewer of a cloud provider, filter on any field: `monitor == 2 and level == "ERROR"`. JSON also escapes a newline inside a value, which keeps an attacker from forging a whole second line through a crafted email address.
+The Go standard library has a structured logger, `log/slog`, since Go 1.21. Every line carries a **level**, which says how much the event matters: `DEBUG`, `INFO`, `WARN` or `ERROR`. Log aggregation tools, such as Grafana Loki or the log viewer of a cloud provider, filter on any field: `monitor_id == 2 and level == "ERROR"`. JSON also escapes a newline inside a value, which keeps an attacker from forging a whole second line through a crafted email address.
 
-The `trace_id` field ties a log line to a trace. One rule keeps the log useful and safe: log IDs, causes and durations, never passwords, session tokens or full request bodies.
+A filter works only when every program spells a field the same way. This week, while every line moves to `slog`, the field names get one spelling across all four programs: `err` for an error, and `job_id`, `monitor_id`, `incident_id` and `user_id` for IDs, where the text lines said `job=` and `monitor=`. The `trace_id` field ties a log line to a trace. One rule keeps the log useful and safe: log IDs, causes and durations, never passwords, session tokens or full request bodies.
 
 ### Metrics: Counters, Gauges and Histograms
 
@@ -106,7 +106,7 @@ A Prometheus metric has a name and a set of **labels**, key-value pairs that spl
 - A **gauge** goes up and down, and holds a current value: `monitor_jobs_queued`.
 - A **histogram** counts observations, such as request durations, into **buckets** by upper bound. The series `http_request_duration_seconds_bucket{le="0.1"}` counts every request that took 0.1 seconds or less; `le` stands for less than or equal. `_sum` and `_count` hold the total and the number of observations. From the buckets, `histogram_quantile` estimates a **percentile**: the 95th percentile, or p95, is the duration that 95% of requests stay under.
 
-An average hides the slow requests that users notice. One request in twenty taking 3 seconds barely moves the average, and it doubles the p95.
+An average hides the slow requests that users notice. Take twenty requests: nineteen take 10 ms, one takes 3 seconds. The average of 160 ms looks acceptable, yet it hides that one request in twenty takes 3 seconds. The p99 shows the 3 seconds.
 
 Every label value multiplies the number of series, and Prometheus keeps each series in memory. The number of series is the **cardinality** of a metric. A `route` label with eight routes is cheap. A `path` label makes one series per monitor ID, and one more for every path a scanner tries. Label only by values from a short, fixed list: route patterns, status codes, results.
 
@@ -116,7 +116,7 @@ A **trace** is a tree of **spans**. A span is one timed step: it has a name, a s
 
 In Go, the current span travels in the `context.Context` that every function already passes along. A child span starts from the context of its parent. That is why a log line written with `slog.InfoContext(ctx, ...)` finds the trace ID: it is in `ctx`.
 
-Between programs, the trace travels in the W3C `traceparent` HTTP header: `00-<trace ID>-<parent span ID>-01`, where the final `01` marks the trace as recorded. A program that reads the header joins the trace of the caller. This is called **propagation**.
+Between programs, the trace travels in the W3C `traceparent` HTTP header: `00-<trace ID>-<parent span ID>-01`, where the final `01` sets the **sampled** bit: the caller records this trace, and asks the next program to record its part too. A program that reads the header joins the trace of the caller. This is called **propagation**.
 
 The worker trace of one job looks like this:
 
@@ -170,7 +170,7 @@ your-monitor/
 └── observability/    new: prometheus.yml, otel-collector.yaml, grafana/
 ```
 
-Every output on this page comes from a real run of the example code, with the ports changed to the standard ones.
+Every output on this page comes from a real run of the example code, with the ports changed to the standard ones. Two lines in Operate It are marked as examples: they show the errors Compose prints, where the run printed its own addresses.
 
 ### Step 1: Add the Libraries
 
@@ -202,7 +202,7 @@ Then replace each `log.Printf` with a `slog` call that names its fields, and eac
 
 <CodeFrom file="go/week13/your-monitor/cmd/worker/main.go" region="check" lang="go" title="cmd/worker/main.go" />
 
-Ignore the span and metric lines in `newCheckFunc` for now: steps 5 and 7 explain them. `logCheck` takes `ctx` and calls `slog.InfoContext`, and that context is what carries the trace ID. In the api, `LogRequests` in `internal/api/log.go` changes the same way: it takes a `*slog.Logger`, logs with `logger.InfoContext(r.Context(), "request", ...)`, and adds a `route` field next to `path`. The login lines of <a href={weekHref(11)}>Week 11</a> become `slog.WarnContext(ctx, "login failed", "email", email, "reason", ...)`. Every test that read the old text lines now decodes JSON:
+Ignore the span and metric lines in `newCheckFunc` for now: steps 5 and 7 explain them. `logCheck` takes `ctx` and calls `slog.InfoContext`, and that context is what carries the trace ID. In the api, `LogRequests` in `internal/api/log.go` changes the same way: it takes a `*slog.Logger`, logs with `logger.InfoContext(r.Context(), "request", ...)`, and adds a `route` field next to `path`. The login lines of <a href={weekHref(11)}>Week 11</a> become `slog.WarnContext(ctx, "login failed", "email", email, "reason", ...)`. Name the fields as Concepts lists them: `err`, `job_id`, `monitor_id`, `incident_id`, `user_id`. Every test that read the old text lines now decodes JSON:
 
 <CodeFrom file="go/week13/your-monitor/internal/obs/obs_test.go" region="logger-test" lang="go" title="internal/obs/obs_test.go" />
 
@@ -226,6 +226,8 @@ Since Go 1.23, the `ServeMux` writes the pattern it matched into `r.Pattern`. `I
 
 <CodeFrom file="go/week13/your-monitor/cmd/api/main.go" region="handler" lang="go" title="cmd/api/main.go" />
 
+The order matters. `Trace`, from Step 6, passes on a copy of the request with the span in its context (`r.WithContext`), and the mux writes `r.Pattern` into that copy. `Instrument` and `LogRequests` sit inside `Trace` and see the pattern. Outside it, they hold the original request, and every series reads `route="unmatched"`. `TestHandlerOrder` in `cmd/api/observe_test.go` sends one request with a `traceparent` header through `newHandler`, and checks the `route="/healthz"` series and the `trace_id` of the log line.
+
 <CodeFrom file="go/week13/your-monitor/cmd/api/main.go" region="metrics-server" lang="go" title="cmd/api/main.go" />
 
 `/metrics` lists the routes and the request counts of your api, and the status page of Week 10 is public. A port of its own, never routed from the internet, keeps those numbers internal. It also keeps the scrapes of Prometheus out of `http_requests_total`.
@@ -242,10 +244,10 @@ Run the api and the worker on your machine against the Postgres of Compose, as i
 $ curl -s localhost:2112/metrics | grep http_requests_total
 # HELP http_requests_total HTTP requests answered, by method, route and status code.
 # TYPE http_requests_total counter
-http_requests_total{code="200",method="GET",route="/api/monitors"} 3
+http_requests_total{code="200",method="GET",route="/api/monitors"} 4
 http_requests_total{code="200",method="GET",route="/api/monitors/{id}"} 2
-http_requests_total{code="200",method="GET",route="/healthz"} 5
-http_requests_total{code="404",method="GET",route="/api/monitors/{id}"} 6
+http_requests_total{code="200",method="GET",route="/healthz"} 2
+http_requests_total{code="404",method="GET",route="/api/monitors/{id}"} 2
 http_requests_total{code="404",method="GET",route="unmatched"} 1
 ```
 
@@ -254,6 +256,8 @@ http_requests_total{code="404",method="GET",route="unmatched"} 1
 The worker counts every check by result and times it:
 
 <CodeFrom file="go/week13/your-monitor/cmd/worker/metrics.go" region="metrics" lang="go" title="cmd/worker/metrics.go" />
+
+The buckets are the worker's own, not `DefBuckets`. A check that times out takes just over the 5 seconds of `-timeout`. With `DefBuckets`, it lands between 5 and 10 seconds, and a p95 of timeouts reads anywhere in that range; the bound at 6 seconds keeps it near 5. Set the bounds around the durations you need to tell apart.
 
 `down` and `error` differ on purpose. `down` means the site answered with a status of 400 or more: the site has a problem. `error` means no answer at all: DNS, connect, TLS or the timeout failed. A jump in `error` across every monitor at once points at the network of the worker, not at the sites.
 
@@ -275,11 +279,13 @@ The test runs real checks against three test servers and compares the counter wi
 
 `OTEL_EXPORTER_OTLP_ENDPOINT` is the standard variable for the collector address; the exporter appends `/v1/traces` to it. Without it, OTel keeps its default **no-op** tracer: spans go nowhere and cost a few nanoseconds, which keeps the tests and `go run` free of setup. `WithBatcher` sends finished spans in batches every 5 seconds. `service.name` labels every span with the program it comes from. The api and the worker call it in `main` after the logger, as the worker setup above shows, and defer the shutdown.
 
+**Sampling** decides which traces get recorded. Without `sdktrace.WithSampler`, the SDK reads `OTEL_TRACES_SAMPLER` and defaults to `parentbased_always_on`: a request without a `traceparent` starts a recorded trace, and a request with one follows the sampled bit of the caller. Every request becomes a trace, the Compose healthcheck on `/healthz` every 10 seconds included. On a busy service, keep a share: `OTEL_TRACES_SAMPLER=parentbased_traceidratio` with `OTEL_TRACES_SAMPLER_ARG=0.1` starts a recorded trace for one request in ten. A caller that sends `00` in place of `01` switches off the api span: the log line still carries the trace ID, and Jaeger never receives the trace. Your api trusts the header of any caller, which Step 10 uses. An api open to the internet removes `traceparent` at its edge proxy and starts its own traces, which keeps strangers from deciding what gets recorded.
+
 The api starts a server span for each request:
 
 <CodeFrom file="go/week13/your-monitor/internal/api/trace.go" region="trace" lang="go" title="internal/api/trace.go" />
 
-`Extract` reads the `traceparent` header into the context. `r.WithContext(ctx)` hands the span to every handler, and to `LogRequests`, which runs inside `Trace` and logs the trace ID.
+The **span kind** says which side of a call a span covers: `SpanKindServer` answers a call, and `SpanKindClient` makes one, as the worker `check` span does. `Extract` reads the `traceparent` header into the context. `r.WithContext(ctx)` hands the span to every handler, and to `LogRequests`, which runs inside `Trace` and logs the trace ID.
 
 ### Step 7: Trace Each Job and Its SQL
 
@@ -293,7 +299,7 @@ Each SQL statement gets a span through a hook of `pgx`. A `pgx.QueryTracer` has 
 
 <CodeFrom file="go/week13/your-monitor/internal/obs/sql.go" region="sql" lang="go" title="internal/obs/sql.go" />
 
-The check at the top of `TraceQueryStart` matters. Without it, every poll of an empty queue starts a one-span trace: ten worker goroutines make ten traces a second that say nothing. Set the tracer where each program opens its pool. The worker `connect` from Week 9 gains `cfg.ConnConfig.Tracer = obs.QueryTracer{}`, and the api gets the same:
+The check at the top of `TraceQueryStart` matters. Without it, every poll of an empty queue makes three one-span traces, for its `BEGIN`, `SELECT` and `ROLLBACK`: ten worker goroutines make thirty traces a second that say nothing. Set the tracer where each program opens its pool. The worker `connect` from Week 9 gains `cfg.ConnConfig.Tracer = obs.QueryTracer{}`, and the api gets the same:
 
 <CodeFrom file="go/week13/your-monitor/cmd/api/main.go" region="connect" lang="go" title="cmd/api/main.go" />
 
@@ -319,7 +325,7 @@ The collector receives OTLP over HTTP and exports to Jaeger over gRPC:
 
 <CodeFrom file="go/week13/your-monitor/observability/otel-collector.yaml" region="collector" lang="yaml" title="observability/otel-collector.yaml" />
 
-Grafana reads its data source from a provisioning file, and its dashboard from `observability/grafana/dashboards/your-monitor.json`. The dashboard JSON lists six panels, each with its PromQL query.
+Grafana reads its data source from a provisioning file, and its dashboard from `observability/grafana/dashboards/your-monitor.json`. The dashboard JSON lists seven panels, each with its PromQL query.
 
 <CodeFrom file="go/week13/your-monitor/observability/grafana/provisioning/datasources/datasources.yaml" region="datasources" lang="yaml" title="observability/grafana/provisioning/datasources/datasources.yaml" />
 
@@ -355,10 +361,10 @@ docker compose logs api | grep 4bf92f3577b34da6a3ce929d0e0e4736
 ```
 
 ```txt wrap
-{"time":"2026-10-11T08:05:46.014397959Z","level":"INFO","msg":"request","service":"api","method":"GET","route":"/api/monitors","path":"/api/monitors","status":200,"bytes":348,"duration_ms":0.727,"trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","span_id":"91549a42508ddbb7"}
+{"time":"2026-10-11T08:45:01.102228563Z","level":"INFO","msg":"request","service":"api","method":"GET","route":"/api/monitors","path":"/api/monitors","status":200,"bytes":348,"duration_ms":0.461,"trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","span_id":"10a64b6c3f1e1bb2"}
 ```
 
-The api joined your trace: same trace ID, a new span ID. Paste the trace ID into **Lookup by Trace ID** in Jaeger. The trace holds the `GET /api/monitors` span with a `SELECT` span inside. In Grafana, the request appears in **API requests per second** within one scrape interval. In Jaeger, a worker trace shows as `worker: job` with five spans: `job`, then `check`, `INSERT`, `DELETE` and `COMMIT` inside it.
+The api joined your trace: same trace ID, a new span ID. The header ends in `-01`, the sampled bit; with `-00`, the api records no span, and Jaeger has nothing to show for this trace ID. Paste the trace ID into **Lookup by Trace ID** in Jaeger. The trace holds the `GET /api/monitors` span with a `SELECT` span inside. In Grafana, the request appears in **API requests per second** within one scrape interval. In Jaeger, a worker trace shows as `worker: job` with five spans: `job`, then `check`, `INSERT`, `DELETE` and `COMMIT` inside it.
 
 ## Observe It
 
@@ -370,7 +376,8 @@ Read the dashboard from the top. The queries are the ones in `your-monitor.json`
 | --- | --- | --- |
 | Checks per second, by result | `sum by (result) (rate(monitor_checks_total[5m]))` | Flat lines: monitors divided by their intervals |
 | Check duration, 50th and 95th percentile | `histogram_quantile(0.95, sum by (le) (rate(monitor_check_duration_seconds_bucket[5m])))` | Well under `-timeout`; the panel draws the same query with `0.5` as well |
-| Queue | `monitor_jobs_queued`, `monitor_jobs_oldest_seconds` | Oldest job under a few seconds |
+| Jobs queued | `monitor_jobs_queued` | At most one per monitor |
+| Oldest queued job | `monitor_jobs_oldest_seconds` | Under a few seconds |
 | API requests per second, by route and status | `sum by (route, code) (rate(http_requests_total[5m]))` | `200` on every route; `401` and `404` only where you expect them |
 | API latency, 95th percentile, by route | `histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket[5m])))` | Single-digit milliseconds on a laptop |
 | API share of 5xx answers | `(sum(rate(http_requests_total{code=~"5.."}[5m])) or vector(0)) / sum(rate(http_requests_total[5m]))` | 0 |
@@ -380,7 +387,7 @@ Read the dashboard from the top. The queries are the ones in `your-monitor.json`
 Watch for these patterns:
 
 - **The `error` line rises for every monitor at once.** The worker lost its network or its DNS resolver, not the sites. Compare with the `down` line, which moves per site.
-- **Check p95 sits at the value of `-timeout`.** At least one site in twenty never answers. Find it with the `check` spans in Jaeger: search the `worker` service for the tag `check.result=error`.
+- **Check p95 sits at or above `-timeout`.** At least one site in twenty never answers, and each of its checks takes the full 5 seconds. The worker histogram has bounds at 5 and 6 seconds for this reason: a timed-out check lands between them. Find it with the `check` spans in Jaeger: search the `worker` service for the tag `check.result=error`.
 - **API p95 rises on one route only.** Open a slow trace of that route in Jaeger: the SQL span inside it shows whether Postgres takes the time.
 - **`monitor_jobs_oldest_seconds` grows round after round.** The workers fall behind. See [Operate It](#operate-it).
 
@@ -392,26 +399,26 @@ Week 18 turns these queries into recording rules and burn-rate alerts.
 
 <OperateIt>
 
-**The worker stops.** Run `docker compose stop worker` and wait two minutes. Prometheus marks the `worker` target down, and `up{job="worker"}` drops to `0`. The checks panel goes blank: no worker, no series. The scheduler keeps queuing, and the queue gauges after 100 seconds read:
+**The worker stops.** Run `docker compose stop worker` and wait 90 seconds. At its next scrape, Prometheus marks the `worker` target down, and `up{job="worker"}` drops to `0`: the target is a fixed name in `prometheus.yml`, and a failed scrape of a fixed target sets `up` to `0`, which an alert on `up == 0` catches. The checks panel goes blank: no worker, no series. The scheduler keeps queuing, and the queue gauges 90 seconds after the stop read:
 
 ```txt
 monitor_jobs_queued          3
-monitor_jobs_oldest_seconds  70.001784
+monitor_jobs_oldest_seconds  80.002315
 ```
 
 `monitor_jobs_queued` stays at the number of monitors, three here, because the `NOT EXISTS` of Week 9 queues at most one job per monitor. The age is the honest number: it climbs by 5 seconds each round until a worker returns. Alert on the age, not on the count.
 
-**The collector is down.** The programs keep serving and checking. Spans pile up in the batch of each program, and each failed export becomes one `WARN` line, until the batch gives up and drops those spans:
+**The collector is down.** The programs keep serving and checking. Spans pile up in the batch of each program, and each failed export becomes one `WARN` line, until the batch gives up and drops those spans. In Compose, a stopped container loses its name in the Docker DNS server at `127.0.0.11`, and the line reads, for example:
 
 ```txt wrap
-{"time":"2026-10-11T08:06:39.43797788Z","level":"WARN","msg":"tracing","service":"api","err":"traces export: Post \"http://otel-collector:4318/v1/traces\": dial tcp: connect: connection refused"}
+{"time":"2026-10-11T08:06:39.43797788Z","level":"WARN","msg":"tracing","service":"api","err":"traces export: Post \"http://otel-collector:4318/v1/traces\": dial tcp: lookup otel-collector on 127.0.0.11:53: no such host"}
 ```
 
 Tracing never takes a program down with it, and traces for that window are lost. Metrics and logs still cover it.
 
 **Jaeger is down.** The collector queues the spans and logs `Exporting failed. Will retry the request after interval.` Its own metrics show the queue: `otelcol_exporter_queue_size{exporter="otlp_grpc/jaeger"}` grows, and `otelcol_exporter_sent_spans` stops. When Jaeger returns, the collector sends the queue. Jaeger in this setup keeps traces in memory, which means a restart of Jaeger itself loses every trace it held.
 
-**A scrape target is down.** `localhost:9090/targets` shows the target as `DOWN` with the scrape error, for example `Get "http://scheduler:2112/metrics": dial tcp ...: connect: connection refused`. At the first failed scrape, Prometheus marks every series of that target stale, and its metrics vanish from queries at once, which leaves the queue panel blank.
+**A scrape target is down.** `localhost:9090/targets` shows the target as `DOWN` with the scrape error, for example `Get "http://scheduler:2112/metrics": dial tcp: lookup scheduler on 127.0.0.11:53: no such host`. At the first failed scrape, Prometheus marks every series of that target stale, and its metrics vanish from queries at once, which leaves the queue panel blank.
 
 **A label explodes.** Someone labels requests with `r.URL.Path`. Every monitor ID, and every path a scanner tries, becomes a new series that stays in Prometheus memory for hours. Count the series of a metric with `count(http_requests_total)`: it must stay near routes times methods times status codes, a few dozen here.
 
@@ -432,7 +439,7 @@ Tracing never takes a program down with it, and traces for that window are lost.
 
 Stage 3, pair partner, starts this week and runs to Week 18. Use the assistant for scaffolding, configuration, refactors, and as a reviewer of your own code. Architecture and incident response stay your decisions.
 
-**Do:** hand it the Grafana work. Paste the output of `curl localhost:2112/metrics` and of the worker `/metrics`, and ask for a dashboard panel that shows the share of checks that end in `error`, per worker container. Then check its JSON before you load it: every metric and label name must appear in that output, and `observability_test.go` fails when one does not. Ask it also to review `Instrument` and `Trace` for label values that come from the request.
+**Do:** hand it the Grafana work. Paste the output of `curl localhost:2112/metrics` and of the worker `/metrics`, and ask for a dashboard panel that shows the share of checks that end in `error`, per worker container. Then check its JSON before you load it: every metric and label name must appear in that output, except `job` and `instance`, which Prometheus adds at each scrape, and `observability_test.go` fails when one does not. Ask it also to review `Instrument` and `Trace` for label values that come from the request.
 
 **Do not:** let it choose your labels. An assistant asked for better metrics adds `url`, `monitor_id` or `user` labels, because each one makes a graph look more detailed. Each one is a cardinality decision for your Prometheus: apply the rule from Concepts yourself, and put per-monitor detail in span attributes and log fields, which cost nothing per value.
 
@@ -444,10 +451,9 @@ Stage 3, pair partner, starts this week and runs to Week 18. Use the assistant f
 
 `histogram_quantile` does not know the real durations, only the bucket counts. It assumes the observations spread evenly inside a bucket and interpolates. Repeat its work once by hand.
 
-**1. Read the buckets.** In `localhost:9090/query`, run `monitor_check_duration_seconds_bucket` and note each `le` with its value. Without `rate`, the counts cover every check since the worker started. One run gave:
+**1. Read the buckets.** In `localhost:9090/query`, run `monitor_check_duration_seconds_bucket` and note each `le` with its value. Without `rate`, the counts cover every check since the worker started. The steps below use these counts as an example; yours differ:
 
 ```txt
-le=0.005  8
 le=0.01   9
 le=0.025  9
 le=0.05   9
@@ -456,15 +462,15 @@ le=0.25   12
 ... every bucket up to +Inf: 12
 ```
 
-Twelve checks: eight took 5 ms or less, one between 5 and 10 ms, and three between 50 and 100 ms. Those three are the lookups of `no-such-host.example`, which wait for the DNS answer.
+Twelve checks: nine took 10 ms or less, and three between 50 and 100 ms, such as lookups of `no-such-host.example` that wait for an answer from a DNS server.
 
 **2. Find the rank.** The p95 is the duration below which 95% of the twelve checks fall: rank 0.95 × 12 = 11.4. The first bucket with a count of 11.4 or more is `le=0.1`, with 12. The bucket below it, `le=0.05`, holds 9.
 
 **3. Interpolate.** Inside the bucket from 0.05 to 0.1, the rank 11.4 sits at (11.4 − 9) / (12 − 9) = 0.8 of the way: 0.05 + 0.8 × 0.05 = 0.09 seconds.
 
-**4. Check.** Run `histogram_quantile(0.95, monitor_check_duration_seconds_bucket)`. The run above gave `0.08999999999999998`, the 0.09 from step 3 with floating-point rounding. Do the same for p50: rank 6 falls in the first bucket, between 0 and 0.005, at 6/8 of the way: 0.00375.
+**4. Check.** Run `histogram_quantile(0.95, monitor_check_duration_seconds_bucket)`. On the counts above, Prometheus returns `0.08999999999999998`, the 0.09 from step 3 with floating-point rounding. Do the same for p50: rank 6 falls in the first bucket, between 0 and 0.01, at 6/9 of the way: Prometheus returns `0.006666666666666666`. Then repeat both on your own counts. When every check lands in the first bucket, as on a laptop with the DNS answers cached, the p95 reads 0.95 × 0.01 = `0.0095`, whatever the real durations.
 
-**5. Think about the error.** The real p95 of those twelve checks lies anywhere from 50 to 100 ms; the estimate says 90. Buckets set the precision. The worker uses `DefBuckets`, which has no bound between 2.5 and 5 seconds, close to the default `-timeout` of 5 seconds. Pick buckets around the durations you need to tell apart, and recompute.
+**5. Think about the error.** The real p95 of those twelve checks lies anywhere from 50 to 100 ms; the estimate says 90. Buckets set the precision. Suppose two of the three slow checks took under 75 ms. With an extra bound at 0.075, that bucket holds 11, and the rank 11.4 falls between 0.075 and 0.1: 0.075 + 0.4 × 0.025 = 0.085. More bounds, a narrower range for the answer, and one more series per bound.
 
 </SideLab>
 
