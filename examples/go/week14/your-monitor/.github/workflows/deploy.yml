@@ -16,7 +16,8 @@ on:
 permissions:
   contents: read
 
-# One deploy at a time. A second run waits for the first to finish.
+# One deploy at a time. A second run waits for the first to finish. A
+# third run cancels the waiting second one: the newest request wins.
 concurrency:
   group: deploy-production
   cancel-in-progress: false

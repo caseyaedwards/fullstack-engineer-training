@@ -7,8 +7,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    # Wait a week after a release, which gives a hijacked release time to
-    # be found and pulled before it reaches you.
+    # Wait two weeks after a release, as the pins in ci.yml do. The wait
+    # gives a hijacked release time to be found and pulled before it
+    # reaches you.
     cooldown:
-      default-days: 7
+      default-days: 14
 # endregion: dependabot

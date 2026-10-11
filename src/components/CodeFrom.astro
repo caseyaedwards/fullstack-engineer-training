@@ -21,15 +21,15 @@ const { file, region, lang, title } = Astro.props;
 // Vite resolves this glob from the project root, so it does not depend on the cwd
 // or on where Astro puts the bundled component. node_modules are left out.
 // The glob skips names that start with a dot. The second glob adds them, such as
-// .golangci.yml and .github/workflows/ci.yml, for examples/go only: `exhaustive`
-// also stops leaving out node_modules, and only examples/web has those.
+// .golangci.yml and .github/workflows/ci.yml, for examples/go only. `exhaustive`
+// also stops leaving out node_modules, which the last pattern excludes again.
 const sources = {
   ...import.meta.glob('/examples/**/*', {
     query: '?raw',
     import: 'default',
     eager: false,
   }),
-  ...import.meta.glob(['/examples/go/**/.*', '/examples/go/**/.*/**/*'], {
+  ...import.meta.glob(['/examples/go/**/.*', '/examples/go/**/.*/**/*', '!/examples/go/**/node_modules/**'], {
     query: '?raw',
     import: 'default',
     eager: false,

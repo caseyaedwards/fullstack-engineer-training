@@ -105,6 +105,13 @@ func TestCIJobs(t *testing.T) {
 		t.Errorf("workflow permissions are %v, want only contents: read", w.Permissions)
 	}
 
+	// A group holds one running and one pending run, and a new run cancels
+	// the pending one. Pull requests share a group per ref; every push to
+	// main gets its own run ID, or a third merge cancels the second's images.
+	if g := w.Concurrency["group"]; g != "ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}" {
+		t.Errorf("ci.yml concurrency group is %q, want one per pull request and one per run elsewhere", g)
+	}
+
 	want := []string{"e2e", "images", "lint", "test", "web"}
 	if got := keys(w.Jobs); !slices.Equal(got, want) {
 		t.Fatalf("ci.yml jobs are %v, want %v", got, want)
@@ -189,6 +196,9 @@ func TestDeployIsManual(t *testing.T) {
 	}
 	if len(w.Permissions) != 1 || w.Permissions["contents"] != "read" {
 		t.Errorf("deploy permissions are %v, want only contents: read", w.Permissions)
+	}
+	if w.Concurrency["group"] != "deploy-production" || w.Concurrency["cancel-in-progress"] != "false" {
+		t.Errorf("deploy concurrency is %v, want group deploy-production without cancel-in-progress", w.Concurrency)
 	}
 	d, ok := w.Jobs["deploy"]
 	if !ok || len(w.Jobs) != 1 {
@@ -389,13 +399,20 @@ func TestDependabotWatchesActions(t *testing.T) {
 		Updates []struct {
 			Ecosystem string `yaml:"package-ecosystem"`
 			Directory string
+			Cooldown  struct {
+				DefaultDays int `yaml:"default-days"`
+			}
 		}
 	}
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Version != 2 || len(cfg.Updates) != 1 || cfg.Updates[0].Ecosystem != "github-actions" || cfg.Updates[0].Directory != "/" {
-		t.Errorf("dependabot.yml is %+v, want version 2 with one github-actions update for /", cfg)
+		t.Fatalf("dependabot.yml is %+v, want version 2 with one github-actions update for /", cfg)
+	}
+	// The page pins releases at least two weeks old; Dependabot waits as long.
+	if d := cfg.Updates[0].Cooldown.DefaultDays; d != 14 {
+		t.Errorf("dependabot cooldown is %d days, want 14", d)
 	}
 }
 

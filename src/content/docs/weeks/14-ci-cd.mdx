@@ -10,7 +10,7 @@ done:
   - id: lint-clean
     text: make lint reports 0 issues on your code, and every exclusion in your .golangci.yml carries a comment that gives its reason.
   - id: checks-required
-    text: A pull request in your repository shows the lint, test, web and e2e checks passing, and a rule on main refuses a merge until all four pass.
+    text: A pull request in your repository shows the lint, test, web and e2e checks passing, and a rule on main refuses a merge until all four pass (or, in a private repository on GitHub Free, the four checks pass before you merge).
   - id: red-build-read
     text: You pushed a failing test on a branch, watched its pull request turn red, and found the failing line with gh run view --log-failed.
   - id: images-in-ghcr
@@ -152,7 +152,7 @@ The images job tags each image with `${{ github.sha }}`, the full SHA of the com
 
 ## Build
 
-You add five files and change a few lines of Week 13 code. The code comes from the site examples in `examples/go/week14/your-monitor`, which mirror your repository:
+You add six files and change a few lines of Week 13 code. The code comes from the site examples in `examples/go/week14/your-monitor`, which mirror your repository:
 
 ```txt
 your-monitor/
@@ -163,7 +163,9 @@ your-monitor/
 │       ├── ci.yml            new: checks on every PR, images from main
 │       └── deploy.yml        new: manual deploy, used from Week 16
 ├── Makefile                  new targets: lint and ci
-└── internal/obs/serve.go     new: servers with a header timeout
+└── internal/obs/
+    ├── serve.go              new: header timeouts, pprof on loopback
+    └── serve_test.go         new: tests of both
 ```
 
 ### Step 1: Install the Linters
@@ -237,19 +239,15 @@ Read each finding and decide: fix it, or exclude it with a reason. Never exclude
 
 <CodeFrom file="go/week14/your-monitor/internal/obs/serve.go" region="serve" lang="go" title="internal/obs/serve.go" />
 
-Then replace each `http.ListenAndServe(addr, mux)` with `obs.NewServer(addr, mux).ListenAndServe()`, in the api and the scheduler. In the worker, pass `http.DefaultServeMux` as the handler: pprof registers its pages there. The worker setup after both fixes, this one and the next:
-
-<CodeFrom file="go/week14/your-monitor/cmd/worker/main.go" region="setup" lang="go" title="cmd/worker/main.go" />
-
-A test proves the timeout works. It sends half a request and checks that the server hangs up:
+Then replace each `http.ListenAndServe(addr, mux)` with `obs.NewServer(addr, mux).ListenAndServe()`, in the api, the scheduler and the worker. A test proves the timeout works. It sends half a request and checks that the server hangs up:
 
 <CodeFrom file="go/week14/your-monitor/internal/obs/serve_test.go" region="serve-test" lang="go" title="internal/obs/serve_test.go" />
 
 **errcheck, an ignored error.** Four calls drop an error:
 
-- `defer shutdown(context.Background())` in the api and the worker: a failed shutdown loses the last spans. Wrap it in a function that logs the error, as the worker setup above shows.
+- `defer shutdown(context.Background())` in the api and the worker: a failed shutdown loses the last spans. Wrap it in a function that logs the error, as the worker setup under G108 shows.
 - `io.Copy(io.Discard, ...)` in the webhook notifier: a failed read changes nothing. Write `_, _ = io.Copy(...)`, which tells the next reader of the code that you ignore the error on purpose.
-- `defer conn.Exec(..., pg_advisory_unlock ...)` in `Migrate`: when the unlock fails, the pool gets back a connection that still holds the migration lock, and the `Migrate` of every other program waits on it forever. Close the connection instead, which releases the lock:
+- `defer conn.Exec(..., pg_advisory_unlock ...)` in `Migrate`: when the unlock fails, the pool gets back a connection that still holds the migration lock, and the `Migrate` of every other program waits until the pool drops that connection, up to an hour later. Close the connection instead, which releases the lock:
 
 <CodeFrom file="go/week14/your-monitor/internal/db/db.go" region="unlock" lang="go" title="internal/db/db.go" />
 
@@ -257,11 +255,15 @@ A test proves the timeout works. It sends half a request and checks that the ser
 
 <CodeFrom file="go/week14/your-monitor/cmd/worker/main.go" region="connect" lang="go" title="cmd/worker/main.go" />
 
-**G108, pprof on a public port.** The worker serves pprof only on `-debug-addr`, which you bind to `127.0.0.1`. Keep the import, and mark the line with the reason:
+**G108, pprof on a public port.** The blank import `_ "net/http/pprof"` adds the profiling pages to `http.DefaultServeMux`, the mux that the worker serves on `-debug-addr`. In `compose.yaml`, that address is `:6060`, every network interface of the container, because Prometheus scrapes `/metrics` there from its own container. Anyone who reaches the port reads your heap, your goroutines and your command line, and `/debug/pprof/profile` keeps a CPU busy for 30 seconds per request. A `//nolint` comment here hides a real exposure. Split the two servers instead: `/metrics` keeps `-debug-addr` on a mux of its own, and pprof moves to a new `-pprof-addr` command-line flag that refuses any address but a loopback one. Add to `internal/obs/serve.go`:
 
-```go
-_ "net/http/pprof" //nolint:gosec // G108: pprof answers only on -debug-addr, which you bind to 127.0.0.1
-```
+<CodeFrom file="go/week14/your-monitor/internal/obs/serve.go" region="pprof" lang="go" title="internal/obs/serve.go" />
+
+Delete the blank import. gosec reports only a blank import of `net/http/pprof`, the form that exposes the pages without a line of code that names them. The worker setup after the three fixes:
+
+<CodeFrom file="go/week14/your-monitor/cmd/worker/main.go" region="setup" lang="go" title="cmd/worker/main.go" />
+
+Add `-pprof-addr 127.0.0.1:6061` to `ARGS` in the `Makefile`, and use `http://127.0.0.1:6061/debug/pprof/` wherever <a href={weekHref(5)}>Week 5</a> used port 6060. Two tests in `serve_test.go` check that the server refuses `:6061` and `0.0.0.0:6061`, and that the pages answer.
 
 Run `make lint` again until it prints `0 issues.`, then run `make test`.
 
@@ -271,7 +273,7 @@ Create `.github/workflows/ci.yml`. The top sets the name, the events, the defaul
 
 <CodeFrom file="go/week14/your-monitor/.github/workflows/ci.yml" region="head" lang="yaml" title=".github/workflows/ci.yml" />
 
-`concurrency` gives each branch one group. When you push twice to a pull request in a minute, GitHub cancels the run of the first push, which no one reads anyway. On `main`, every run finishes, because each one pushes images.
+A **concurrency group** holds at most one running and one pending run. A new run cancels the pending one, and with `cancel-in-progress: true` it cancels the running one too. A pull request gets one group, its `github.ref`: when you push twice in a minute, GitHub cancels the run of the first push, which no one reads anyway. A shared group on `main` loses commits. Merge three pull requests in a row, and the third run cancels the pending second one, whose images then never exist. The expression `a && b || c` returns `b` when `a` is true and `c` otherwise. Each push to `main` therefore gets its run ID, a group no other run shares.
 
 ### Step 5: Lint and Test
 
@@ -279,7 +281,7 @@ The first two jobs. Every job sits under `jobs:`, indented by two spaces, in the
 
 <CodeFrom file="go/week14/your-monitor/.github/workflows/ci.yml" region="lint" lang="yaml" title=".github/workflows/ci.yml" />
 
-`actions/setup-go` installs the Go version that the `go` line of `go.mod` names and caches the downloaded modules between runs. `persist-credentials: false` keeps the token out of the checked-out repository: no step here pushes with Git. Set `version:` to the golangci-lint release you noted in Step 1.
+`actions/setup-go` installs the Go version that `go.mod` names, in the `toolchain` line, or else the `go` line, and caches the downloaded modules between runs. `persist-credentials: false` keeps the token out of the checked-out repository: no step here pushes with Git. Set `version:` to the golangci-lint release you noted in Step 1.
 
 <CodeFrom file="go/week14/your-monitor/.github/workflows/ci.yml" region="test" lang="yaml" title=".github/workflows/ci.yml" />
 
@@ -337,7 +339,7 @@ The deploy workflow runs only when you start it, and it stays unused until Week 
 
 <CodeFrom file="go/week14/your-monitor/.github/workflows/deploy.yml" region="deploy-head" lang="yaml" title=".github/workflows/deploy.yml" />
 
-GitHub shows **Run workflow** only for a workflow file on the default branch, `main`. The `sha` input picks the images to deploy. Leave it empty to deploy the commit you start the run from, or give an older SHA to roll back. On GitHub Free, environments exist only in public repositories. In a private one, store `KUBECONFIG` as a repository secret and delete the `environment:` line.
+GitHub shows **Run workflow** only for a workflow file on the default branch, `main`. The `sha` input picks the images to deploy. Leave it empty to deploy the commit you start the run from, and start the run only after the images job of that commit turns green: the deploy does not wait for it. An older SHA rolls back the images only. The manifests always come from the commit the run starts from, the head of `main`. On GitHub Free, environments exist only in public repositories. In a private one, store `KUBECONFIG` as a repository secret and delete the `environment:` line.
 
 <CodeFrom file="go/week14/your-monitor/.github/workflows/deploy.yml" region="deploy-job" lang="yaml" title=".github/workflows/deploy.yml" />
 
@@ -357,7 +359,7 @@ actionlint checks the expressions, the `needs:` names, the event names and every
 
 ### Step 11: Open the Pull Request
 
-Commit the five new files and the fixes on a branch, push it, and open a pull request:
+Commit the six new files and the fixes on a branch, push it, and open a pull request:
 
 ```sh
 git switch -c week-14
@@ -370,7 +372,7 @@ gh pr checks --watch
 
 `gh pr checks --watch` refreshes the list of checks until all of them finish. The pull request page shows the same list under **Checks**. The first run fills the caches and takes the longest.
 
-Make the checks required. On GitHub, open **Settings**, then **Rules** and **Rulesets** in the sidebar, and click **New ruleset**, **New branch ruleset**. Set the enforcement status to **Active**, add the default branch as the target, select **Require status checks to pass before merging**, and add `lint`, `test`, `web` and `e2e`. Click **Create**. The check names exist once they have run, which is why the pull request comes first. On GitHub Free, rulesets work only in a public repository. In a private one, merge only on green by habit, or move to GitHub Pro.
+Make the checks required. On GitHub, open **Settings**, then **Rules** and **Rulesets** in the sidebar, and click **New ruleset**, **New branch ruleset**. Name it `main`, set the enforcement status to **Active**, add the default branch as the target, select **Require status checks to pass before merging**, and add `lint`, `test`, `web` and `e2e`. Click **Create**. The check names exist once they have run, which is why the pull request comes first. On GitHub Free, rulesets work only in a public repository. In a private one, merge only on green by habit, or move to GitHub Pro.
 
 Merge the pull request. The push to `main` starts `ci.yml` again, and this time the five `images` jobs run. Find the packages under **Packages** on your profile page, or on the right side of your repository page. Each one shows the SHA tag and links to your repository.
 
@@ -476,10 +478,10 @@ Make it executable:
 chmod +x .git/hooks/pre-push
 ```
 
-**2. Watch it stop a push.** On a new branch, add a line that drops an error, such as `f.Write(b)` without checking what it returns, commit it and push. This run comes from a small test repository with your `.golangci.yml` and one such line:
+**2. Watch it stop a push.** On a new branch, such as `hook-test`, add a line that drops an error, such as `f.Write(b)` without checking what it returns, commit it and push. This run comes from a small test repository with your `.golangci.yml` and one such line:
 
 ```txt
-$ git push -u origin main
+$ git push -u origin hook-test
 golangci-lint run
 main.go:11:9: Error return value of `f.Write` is not checked (errcheck)
 	f.Write([]byte("hello\n"))
