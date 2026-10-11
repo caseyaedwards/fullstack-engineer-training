@@ -1,17 +1,22 @@
 ---
 title: "Week 9: Background Jobs and Alerts"
+description: Split checking into a scheduler, a job queue in Postgres and a pool of workers, then turn failed checks into incidents and notifications with an alerter.
 week: 9
 phase: build
-hours: [5, 8]
+hours: [6, 8]
 aiStage: 2
 tracks: [messaging, system-design]
 done:
-  - id: item-1
-    text: "Placeholder item 1: this week is not written yet"
-  - id: item-2
-    text: "Placeholder item 2: this week is not written yet"
-  - id: item-3
-    text: "Placeholder item 3: this week is not written yet"
+  - id: explain-skip-locked
+    text: Without notes, you can explain how SELECT ... FOR UPDATE SKIP LOCKED hands each job to one worker, and what happens to a job when its worker dies in the middle of a check.
+  - id: queue-tests-pass
+    text: The queue tests pass under go test -race against Postgres, including four workers on 200 jobs with no job run twice, and you have watched that test fail without SKIP LOCKED.
+  - id: alert-rule-tested
+    text: Your alert rule has a table test for every case, and the alerter tests show that a failed notification comes back on the next round and that two alerters send one notification, not two.
+  - id: incident-drill
+    text: You stopped a monitored api, watched the alerter open an incident after three failed checks and resolve it on the next success, and saw both states in GET /api/incidents.
+  - id: stack-runs-five
+    text: make up starts postgres, api, scheduler, worker and alerter, and the scheduler log shows a round line with the queue depth every 5 seconds.
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -21,43 +26,531 @@ import AiThisWeek from '../../../components/AiThisWeek.astro';
 import SideLab from '../../../components/SideLab.astro';
 import ReadWith from '../../../components/ReadWith.astro';
 import DoneWhen from '../../../components/DoneWhen.astro';
+import Diagram from '../../../components/Diagram.astro';
+import CodeFrom from '../../../components/CodeFrom.astro';
+import { weekHref, trackHref } from '../../../lib/links';
 
 <WeekHeader />
 
+At the end of <a href={weekHref(8)}>Week 8</a>, one worker process does two jobs: every round, it loads the monitors from Postgres, checks all of them on a pool, and stores the results. Start a second worker, and every site gets checked twice. Nobody hears about a site that goes down unless they read the log. This week, you split the work into a **scheduler** that decides what is due, a **queue** that holds the work, **workers** that do it, and an **alerter** that tells people when a site goes down and comes back.
+
 ## Goals
 
-This section is not written yet.
+- Explain what a job queue is, and why it sits between the program that decides and the programs that do the work.
+- Build the queue as a table in Postgres, claim jobs with `SELECT ... FOR UPDATE SKIP LOCKED`, and prove with a concurrent test that no job runs twice.
+- Explain why a job that runs inside one transaction runs at least once, and its result lands exactly once.
+- Turn check results into incidents with a rule you test, and send a notification on every change.
+- Run five services with Docker Compose: postgres, api, scheduler, worker and alerter.
 
 ## Concepts
 
-This section is not written yet.
+### Background Jobs and Queues
+
+A **background job** is work that runs outside any request: no user waits for it. Checking a site every 60 seconds is one. A **job queue** holds those jobs between two kinds of programs. A **producer** adds jobs, and a **consumer** takes them out and does them. Your scheduler is the producer and your workers are the consumers.
+
+The queue decouples the two sides:
+
+- **Scale.** Ten workers drain the queue faster than one, and the scheduler does not change.
+- **Restarts.** The jobs live in the database, not in the memory of a process. Restart a worker, and its jobs wait for it.
+- **Backlog.** When the workers fall behind, the queue grows. Its length tells you how far behind they are, which you log in [Observe It](#observe-it).
+
+<Diagram
+  id="jobs-flow"
+  title="Who reads and writes what, from a due monitor to a notification"
+  code={`direction: right
+sched: scheduler
+mon: "monitors\\ntable"
+jobs: "check_jobs\\ntable"
+worker: "worker\\nN goroutines"
+sites: monitored sites
+res: "check_results\\ntable"
+alerter: alerter
+inc: "incidents\\ntable"
+hook: "webhook\\nor log"
+api: api
+
+sched -> mon: due?
+sched -> jobs: INSERT
+worker -> jobs: "claim, DELETE"
+worker -> sites: probe.Check
+worker -> res: INSERT
+alerter -> res: newest 3
+alerter -> inc: "open, resolve"
+alerter -> hook: Notify
+api -> inc: GET /api/incidents
+`}
+  steps={[
+    { hl: ['sched', 'mon', 'jobs', 'sched->mon', 'sched->jobs'], caption: 'Every 5 seconds, the scheduler finds the monitors whose interval has passed and adds one row per monitor to check_jobs. It checks nothing itself.' },
+    { hl: ['worker', 'jobs', 'worker->jobs'], caption: 'Each worker goroutine claims one job and locks its row. Other workers skip that row and claim the next one.' },
+    { hl: ['worker', 'sites', 'res', 'jobs', 'worker->sites', 'worker->res', 'worker->jobs'], caption: 'The worker checks the site with probe.Check from Week 4, inserts the result and deletes the job. All three happen in one transaction: either all of them take effect, or none does.' },
+    { hl: ['alerter', 'res', 'inc', 'alerter->res', 'alerter->inc'], caption: 'Every 10 seconds, the alerter reads the newest results of each monitor. Three failures in a row open an incident, and the next success resolves it.' },
+    { hl: ['alerter', 'hook', 'alerter->hook'], caption: 'Each change of an incident becomes one notification: a JSON POST to a webhook, or a log line when no webhook is set.' },
+    { hl: ['api', 'inc', 'api->inc'], caption: 'The api lists incidents for the status page that Week 10 builds.' },
+  ]}
+/>
+
+### Postgres as the Queue
+
+A dedicated message broker, such as NATS, RabbitMQ or Redis Streams, is a server built to move messages. This course uses a table in the Postgres you already run, for three reasons:
+
+- One database to run, back up and restore. The `pg_dump` from Week 8 covers the queue too.
+- One transaction covers the job and its result: the worker cannot store a result and lose track of the job, or the other way round.
+- The pattern is common in production: River for Go and Solid Queue for Ruby on Rails keep their jobs in a database table and claim them the same way.
+
+The cost: workers ask the table for work over and over, which is called **polling**, and each check in flight holds a database connection. A monitor for 300 sites with 60-second intervals makes five jobs a second, far below what one Postgres server handles. When you need many thousands of messages a second, or many different consumers of the same message, a broker fits better. The <a href={trackHref('messaging')}>Messaging and Streaming track</a> compares the three brokers with this table.
+
+### Row Locks and SKIP LOCKED
+
+A **transaction** groups SQL statements into one unit. It starts with `BEGIN` and ends with `COMMIT`, which makes every change visible to everyone at once, or `ROLLBACK`, which throws every change away. Postgres rolls back on its own when the connection drops before the commit.
+
+`SELECT ... FOR UPDATE` reads rows and **locks** them until the transaction ends. Any other transaction that tries to lock, change or delete those rows waits. That is half of what a queue needs: two workers never hold the same job. The other half is speed. With plain `FOR UPDATE`, every worker asks for the oldest job, and every worker after the first waits for that one row, which makes your workers take turns.
+
+`SKIP LOCKED` changes the wait into a skip: Postgres passes over the rows another transaction has locked and returns the next row that is free. Each worker gets a different job, at once.
+
+<Diagram
+  id="skip-locked"
+  title="Two workers claim jobs, and a crashed worker gives its job back"
+  code={`shape: sequence_diagram
+w1: worker 1
+pg: Postgres
+w2: worker 2
+
+w1 -> pg: "BEGIN; SELECT ... FOR UPDATE SKIP LOCKED"
+pg -> w1: "job 7, row locked"
+w2 -> pg: "BEGIN; SELECT ... FOR UPDATE SKIP LOCKED"
+pg -> w2: "job 8: job 7 is locked, skipped"
+w1 -> pg: "INSERT result; DELETE job 7; COMMIT"
+w2 -> pg: "connection drops during the check"
+w1 -> pg: "BEGIN; SELECT ... FOR UPDATE SKIP LOCKED"
+pg -> w1: "job 8, attempts 0"
+`}
+  steps={[
+    { hl: ['w1', 'pg', 'w1->pg', 'pg->w1'], caption: 'Worker 1 starts a transaction and asks for the oldest due job. Postgres returns job 7 and locks its row until worker 1 commits or rolls back.' },
+    { hl: ['w2', 'pg', 'w2->pg', 'pg->w2'], caption: 'Worker 2 asks the same question a moment later. The row of job 7 is locked, and SKIP LOCKED passes over it: worker 2 gets job 8 without waiting.' },
+    { hl: ['w1', 'pg', 'w1->pg#1'], caption: 'Worker 1 checks the site, then inserts the result and deletes job 7 in the same transaction. COMMIT makes both visible together and releases the lock.' },
+    { hl: ['w2', 'pg', 'w2->pg#1'], caption: 'Worker 2 dies in the middle of its check, for example on SIGKILL. Its connection drops, Postgres rolls the transaction back, and job 8 is unlocked and unchanged.' },
+    { hl: ['w1', 'pg', 'w1->pg#2', 'pg->w1#1'], caption: 'The next worker that asks gets job 8. No result for it exists yet, which means nothing is stored twice.' },
+  ]}
+/>
+
+### At-Least-Once Delivery
+
+The diagram shows the delivery guarantee of this queue. A job runs **at least once**: a crash before the commit hands it to the next worker, and the site gets one more `GET`. Its result lands **exactly once**, because the insert of the result and the delete of the job commit together. No queue can promise that the work itself runs exactly once: a worker that dies a moment before its commit has already done the work. Design every job such that a second run does no harm. Such a job is **idempotent**. A `GET` against a site is.
+
+The guarantee has a price. A worker holds its transaction open for the whole check, up to the 5-second timeout. While it does, Postgres shows that connection as `idle in transaction`, and the worker needs one connection per goroutine. Queues that run longer jobs use a **lease** instead: the claim sets a time until which the job belongs to the worker and commits at once, and the job comes back when the lease runs out. Amazon SQS calls this the visibility timeout.
+
+### From Results to Incidents
+
+One failed check is not worth waking anyone for: a single request times out, or a deploy restarts the server for two seconds. An **incident** is a period during which a monitor is down. Your rule: three failed checks in a row open an incident, and the next successful check resolves it. People get a notification when an incident opens and when it resolves, never for each failure. A monitor that flips between up and down on every check is **flapping**, and a rule that alerts on every flip trains people to ignore alerts.
+
+<Diagram
+  id="alert-states"
+  title="The states of one monitor under the alert rule"
+  code={`direction: down
+up: up
+failing: "failing\\n1 or 2 failures"
+open: incident open
+
+up -> failing: check fails
+failing -> up: check succeeds
+failing -> open: "third failure:\\nopen and notify"
+open -> up: "check succeeds:\\nresolve and notify"
+open -> open: "check fails:\\nnothing new"
+`}
+/>
+
+The alerter keeps no state in memory. Each round, it reads the newest three results and the open incident of each monitor from Postgres and decides again. Restart it at any moment, and the next round picks up where the last one stopped.
+
+A **webhook** is a URL that accepts an HTTP `POST` and does something with it, such as posting a message to a chat channel. The alerter inserts the incident and sends the webhook inside one transaction, and commits only after the webhook answers with a `2xx` status. A webhook that fails rolls the insert back, and the next round tries both again. Notifications, too, arrive at least once: a crash between the webhook and the commit sends the same incident twice. The receiver spots a repeat by the `incident_id` in each event.
 
 ## Build
 
-This section is not written yet.
+By the end of this section, `your-monitor` has two new programs, `cmd/scheduler` and `cmd/alerter`, a rewritten `cmd/worker`, and three new packages. The code comes from the site examples in `examples/go/week09/your-monitor`, which mirror your repository. Their import paths start with `fsp/examples/week09/your-monitor`, and yours start with `github.com/<user>/your-monitor`:
+
+```txt
+your-monitor/
+├── migrations/002_jobs_alerts.sql   new: check_jobs, incidents, last_enqueued_at
+├── internal/
+│   ├── queue/        new: Enqueue, Work, Depth
+│   ├── alert/        new: Decide, Notifier, Webhook, Log, Alerter, Store
+│   ├── dbtest/       new: one fresh schema per test
+│   └── api/          adds GET /api/incidents
+└── cmd/
+    ├── scheduler/    new
+    ├── worker/       claims jobs instead of looping over the monitors
+    └── alerter/      new
+```
+
+### Step 1: Add the Migration
+
+Create `migrations/002_jobs_alerts.sql`. `db.Migrate` from Week 8 applies it at the next start of any program, because its number is new:
+
+<CodeFrom file="go/week09/your-monitor/migrations/002_jobs_alerts.sql" region="jobs" lang="sql" title="migrations/002_jobs_alerts.sql" />
+
+`ON DELETE CASCADE` deletes the jobs of a monitor together with the monitor. The index on `run_at` serves the workers, who always ask for the oldest job. The incidents table follows in the same file:
+
+<CodeFrom file="go/week09/your-monitor/migrations/002_jobs_alerts.sql" region="incidents" lang="sql" title="migrations/002_jobs_alerts.sql" />
+
+`incidents_one_open` is a **partial index**: it covers only the rows that match its `WHERE`, here the open incidents. Because it is `UNIQUE`, Postgres refuses a second open incident for the same monitor, however many alerters run. Resolved incidents fall outside the index, and a monitor keeps as many of them as it collects.
+
+### Step 2: Enqueue the Due Monitors
+
+Create `internal/queue/queue.go`. The scheduler needs one function:
+
+<CodeFrom file="go/week09/your-monitor/internal/queue/queue.go" region="enqueue" lang="go" title="internal/queue/queue.go" />
+
+`WITH due AS (UPDATE ... RETURNING m.id)` is a **data-modifying CTE**, short for common table expression: the `UPDATE` marks the due monitors and returns their IDs, and the `INSERT` turns each ID into a job. One statement does both, inside one transaction. `make_interval(secs => m.interval_seconds)` turns the interval column into a Postgres interval.
+
+Three choices keep the queue correct:
+
+- **One clock.** Every time comes from `now()` in Postgres, never from the clock of the machine that runs the scheduler. Two schedulers on two machines with clocks that disagree still agree on what is due.
+- **No pile-up.** `NOT EXISTS` skips a monitor that still has a job waiting. When every worker is down, the queue holds one job per monitor, not one per round.
+- **Two schedulers, one job.** When two schedulers run the `UPDATE` at the same moment, the second waits for the row locks of the first. After the first commits, Postgres checks the `WHERE` again against the new row, sees a fresh `last_enqueued_at`, and skips it. `TestTwoSchedulersDoNotQueueAMonitorTwice` runs four schedulers on 50 monitors and counts 50 jobs.
+
+### Step 3: Claim and Run One Job
+
+Add the worker side to the same file:
+
+<CodeFrom file="go/week09/your-monitor/internal/queue/queue.go" region="claim" lang="go" title="internal/queue/queue.go" />
+
+`ORDER BY j.run_at, j.id LIMIT 1` picks the oldest due job. `defer tx.Rollback(ctx)` is the safety net: on every path that returns before `Commit`, the transaction rolls back and the job goes back to the queue. After a successful `Commit`, the deferred `Rollback` does nothing.
+
+`Work` checks `ctx.Err()` before it counts a failure. On SIGTERM, the signal context from Week 3 cancels the check in flight. That check proves nothing about the site, and the job stays unchanged for the next worker. The transaction body:
+
+<CodeFrom file="go/week09/your-monitor/internal/queue/queue.go" region="store" lang="go" title="internal/queue/queue.go" />
+
+The `INSERT` is the one Week 8 runs, inside the transaction this time. `recover` catches a **panic**, the Go crash that a nil pointer or an index out of range causes, and turns it into an error. Without it, one bad job stops a whole worker process.
+
+### Step 4: Retry a Failing Job
+
+A job that fails, for example because of a panic or a lost database connection, gets two more tries, further apart each time. That growing gap is called **backoff**. A job that fails on every try is a **poison job**, and after `MaxAttempts` the worker drops it:
+
+<CodeFrom file="go/week09/your-monitor/internal/queue/queue.go" region="retry" lang="go" title="internal/queue/queue.go" />
+
+`retry` runs outside the rolled-back transaction, which means its `UPDATE` survives. A worker that dies on SIGKILL never reaches `retry`: its job comes back with the same `attempts`, and the next worker tries at once.
+
+### Step 5: Test the Queue Against Postgres
+
+These tests talk to a real Postgres, the one Compose runs. `internal/dbtest` creates a new **schema**, a namespace for tables inside one database, for every test, applies the migrations in it, and drops it at the end. Go runs the tests of different packages at the same time, and a schema of their own keeps the jobs of one test out of the queue of another. The helper reads `DATABASE_URL`:
+
+<CodeFrom file="go/week09/your-monitor/internal/dbtest/dbtest.go" region="ci" lang="go" title="internal/dbtest/dbtest.go" />
+
+On your laptop, a missing `DATABASE_URL` skips these tests. In CI, where GitHub Actions sets `CI` to `true`, it fails them: a suite that skips its database tests in CI passes without testing anything. Point the tests at your Compose database, with the password from your `.env`:
+
+```sh
+export DATABASE_URL="postgres://monitor:changeme@127.0.0.1:5432/monitor?sslmode=disable"
+go test -race ./internal/queue
+```
+
+The test that matters most starts four workers on 200 jobs:
+
+<CodeFrom file="go/week09/your-monitor/internal/queue/queue_test.go" region="once-test" lang="go" title="internal/queue/queue_test.go" />
+
+A concurrency test that never runs two things at once proves nothing. `maxPar` records the most checks in flight at one moment, and the test fails unless the workers overlap. The 2 ms sleep makes each fake check last long enough for the others to start.
+
+Break the claim on purpose, the way you broke the lock in Week 4, and watch the tests catch it. Delete the last line of `claimSQL`, `FOR UPDATE OF j SKIP LOCKED`, and run the tests:
+
+```txt
+--- FAIL: TestEachJobRunsOnce (0.90s)
+    queue_test.go:145: job 135 ran 4 times, want 1
+    queue_test.go:145: job 108 ran 4 times, want 1
+```
+
+Without a lock, all four workers read the same oldest job and run it. Put back `FOR UPDATE OF j` without `SKIP LOCKED`:
+
+```txt
+--- FAIL: TestEachJobRunsOnce (0.83s)
+    queue_test.go:149: at most 1 check ran at a time, want the workers to overlap
+--- FAIL: TestLockedJobIsSkipped (2.08s)
+    queue_test.go:195: second Work = false, claim: timeout: context deadline exceeded; want false, nil: it must skip the locked job
+```
+
+Every job ran once, but the workers took turns, and the second worker in `TestLockedJobIsSkipped` waited for the lock until its 2-second deadline. Restore the line. `TestCancelledWorkLeavesTheJob` cancels a check halfway and finds the job untouched, and `TestFailingJobIsRetriedThenDropped` panics in every check and watches the job get dropped after three attempts.
+
+### Step 6: Rewrite the Worker
+
+The worker no longer decides what to check. Replace `cmd/worker/main.go`. It keeps `-timeout`, `-workers` and `-debug-addr` from Week 5, drops `-interval`, and adds `-poll`:
+
+<CodeFrom file="go/week09/your-monitor/cmd/worker/main.go" region="main" lang="go" title="cmd/worker/main.go" />
+
+Each goroutine holds one connection for the whole of its check, which makes the pool size matter:
+
+<CodeFrom file="go/week09/your-monitor/cmd/worker/main.go" region="connect" lang="go" title="cmd/worker/main.go" />
+
+Without `MaxConns`, `pgxpool` opens at most 4 connections, or one per CPU on a machine with more than four, and with `-workers 10` the other goroutines wait for a connection instead of checking. The check itself is the Week 5 `checkOne`, with a job in place of a URL:
+
+<CodeFrom file="go/week09/your-monitor/cmd/worker/main.go" region="check" lang="go" title="cmd/worker/main.go" />
+
+`toResult` is the conversion from Week 8 that turns the output of `probe.Check` into a `monitor.Result`. Keep yours. The loop replaces `pool.Run`:
+
+<CodeFrom file="go/week09/your-monitor/cmd/worker/main.go" region="run" lang="go" title="cmd/worker/main.go" />
+
+After a job, a goroutine asks again at once, because more jobs can be waiting. When the queue is empty, it waits `-poll` before the next look. `TestRunDrainsThenPolls` in `cmd/worker/main_test.go` counts the calls to prove both, and `TestWorkerChecksQueuedJobs` runs the real check against two `httptest` sites through the real queue.
+
+Delete `internal/pool`: the queue replaces the fixed pool. Then run `grep -rn 'internal/check"' --include='*.go' .`, and when it prints nothing, delete `internal/check` too. Delete `urls.txt` and `run_test.go`, which tests the old loop, and in the `Makefile`, set `ARGS ?= -workers 10`.
+
+Keep the idea of the Week 3 signal test, with a queue in place of `urls.txt`. `TestSignalReturnsJobsToTheQueue` in `cmd/worker/signal_test.go` builds the worker, queues three jobs for a site that never answers, and sends SIGTERM, then SIGINT, while all three checks wait. The worker must log `stopped` and exit with code `0` within 5 seconds, and all three jobs must still wait in `check_jobs` with `attempts` at `0`. `dbtest.NewWithURL` hands the program a `DATABASE_URL` for the schema of the test.
+
+### Step 7: Add the Scheduler
+
+Create `cmd/scheduler/main.go`. Its `main` follows the pattern of the worker: the Go command-line flags, the signal context, the pool, `db.Migrate`. `-interval` sets the time between two looks for due monitors: 5 seconds by default. Each round logs one line:
+
+<CodeFrom file="go/week09/your-monitor/cmd/scheduler/main.go" region="round" lang="go" title="cmd/scheduler/main.go" />
+
+`every` runs the first round at once, without waiting a full interval. `TestRoundLogsTheQueue` runs two rounds on two monitors and expects `enqueued=2 queued=2`, then `enqueued=0 queued=2`. Add `run-scheduler` and `run-alerter` targets to the `Makefile`, next to `run-api`, with `go run ./cmd/scheduler` and `go run ./cmd/alerter`.
+
+### Step 8: Write the Alert Rule and Its Test
+
+Create `internal/alert/rule.go`. The rule is a **pure function**: it reads only its arguments and changes nothing, which makes it the easiest code of the week to test:
+
+<CodeFrom file="go/week09/your-monitor/internal/alert/rule.go" region="rule" lang="go" title="internal/alert/rule.go" />
+
+Every row of the table is one case of the state diagram above:
+
+<CodeFrom file="go/week09/your-monitor/internal/alert/rule_test.go" region="rule-test" lang="go" title="internal/alert/rule_test.go" />
+
+### Step 9: Send Notifications
+
+Create `internal/alert/notify.go` with the event and the interface:
+
+<CodeFrom file="go/week09/your-monitor/internal/alert/notify.go" region="notifier" lang="go" title="internal/alert/notify.go" />
+
+The webhook notifier posts the event as JSON:
+
+<CodeFrom file="go/week09/your-monitor/internal/alert/notify.go" region="webhook" lang="go" title="internal/alert/notify.go" />
+
+The URL of a chat webhook carries its secret in the path: anyone who has it can post to your channel. A `*url.Error` from `client.Do` quotes the whole URL, and the alerter logs every error, which leaks the secret into your logs. `Notify` keeps only the host and the cause. The test checks a `403` and a refused connection:
+
+<CodeFrom file="go/week09/your-monitor/internal/alert/notify_test.go" region="webhook-test" lang="go" title="internal/alert/notify_test.go" />
+
+The log notifier writes one line per event, and fills in when `ALERT_WEBHOOK_URL` is empty:
+
+<CodeFrom file="go/week09/your-monitor/internal/alert/notify.go" region="log" lang="go" title="internal/alert/notify.go" />
+
+### Step 10: Open and Resolve Incidents
+
+Create `internal/alert/alerter.go`. A round reads every monitor with its open incident and applies the rule:
+
+<CodeFrom file="go/week09/your-monitor/internal/alert/alerter.go" region="alerter" lang="go" title="internal/alert/alerter.go" />
+
+The incident starts at the first of the three failed checks, `recent[2]`, not at the moment the alerter notices. Opening one inserts and notifies in one transaction:
+
+<CodeFrom file="go/week09/your-monitor/internal/alert/alerter.go" region="open" lang="go" title="internal/alert/alerter.go" />
+
+`ON CONFLICT (monitor_id) WHERE resolved_at IS NULL DO NOTHING` names the partial index from Step 1. When a second alerter inserts at the same moment, its insert waits for the first transaction. Once the first commits, the second insert does nothing and returns no row, and the second alerter sends nothing. `resolve`, in the same file, does the same with `UPDATE incidents SET resolved_at = $2 WHERE id = $1 AND resolved_at IS NULL`. The example tests prove three behaviors against Postgres:
+
+- `TestAlerterOpensAfterThreeFailuresAndResolvesOnSuccess`: two failures send nothing, the third opens one incident, a second round sends nothing new, and a success resolves it.
+- `TestFailedNotificationIsRetriedNextRound`: a notifier that fails leaves no incident behind, and the next round opens it.
+- `TestTwoAlertersNotifyOnce`: two alerters with a slow notifier, in a race, send one event.
+
+Create `cmd/alerter/main.go` in the pattern of the scheduler, with `-interval` at 10 seconds and `-threshold` at 3. It picks the notifier from the environment:
+
+<CodeFrom file="go/week09/your-monitor/cmd/alerter/main.go" region="notifier" lang="go" title="cmd/alerter/main.go" />
+
+The webhook URL comes from the environment and never from a command-line flag: any user on the machine reads the command-line flags of every process with `ps`.
+
+### Step 11: Serve Incidents from the API
+
+Create `internal/api/incidents.go`. `alert.Store` in `internal/alert/incidents.go` runs the query, and the handler parses `?open=`:
+
+<CodeFrom file="go/week09/your-monitor/internal/api/incidents.go" region="incidents" lang="go" title="internal/api/incidents.go" />
+
+Add an `incidents Incidents` field to `handler` and a parameter to `NewHandler` that sets it, and add the route to the map in `routes()`:
+
+<CodeFrom file="go/week09/your-monitor/internal/api/api.go" region="route" lang="go" title="internal/api/api.go" />
+
+In `cmd/api/main.go`, pass `alert.Store{DB: pool}` as the new argument, and pass `nil` in the tests that do not need incidents. `TestListIncidents` in `internal/api/incidents_test.go` drives the route with a fake store: `?open=true` returns only open incidents with `"resolved_at":null`, and `?open=yes` returns `400`.
+
+`TestOpenAPIMatchesRoutes` from Week 7 now fails: the handler serves a route that `api/openapi.yaml` does not describe. Add the path:
+
+<CodeFrom file="go/week09/your-monitor/api/openapi.yaml" region="incidents" lang="yaml" title="api/openapi.yaml" />
+
+Then add the schema under `components.schemas`:
+
+<CodeFrom file="go/week09/your-monitor/api/openapi.yaml" region="incident-schema" lang="yaml" title="api/openapi.yaml" />
+
+`type: [string, "null"]` is the OpenAPI 3.1 way to say that `resolved_at` holds a time or `null`.
+
+### Step 12: Run an Incident Drill
+
+Run the four programs on your laptop, against the Postgres in Compose, and take a site down. Stop the stack with `make down`, then start Postgres alone:
+
+```sh
+docker compose up --detach postgres
+```
+
+Open four terminals in the repository. In each, export `DATABASE_URL` as in Step 5, then start one program per terminal: `make run-api`, `make run-scheduler`, `make run`, `make run-alerter`. In a fifth terminal, add a monitor for the api itself:
+
+```txt
+$ curl -s -X POST http://127.0.0.1:8080/api/monitors -H 'Content-Type: application/json' -d '{"url": "http://127.0.0.1:8080/healthz", "interval_seconds": 30}'
+{"id":1,"url":"http://127.0.0.1:8080/healthz","interval_seconds":30,"created_at":"2026-10-11T07:02:20.670935Z"}
+```
+
+Within 5 seconds, the scheduler queues the first job and the worker checks it. Stop the api with **Ctrl+C**, and watch the worker and the alerter terminals. These lines come from one run:
+
+```txt wrap
+2026/10/11 07:03:28 check job=3 monitor=1 url=http://127.0.0.1:8080/healthz up=false status=0 first_byte_ms=0 error="Get \"http://127.0.0.1:8080/healthz\": dial tcp 127.0.0.1:8080: connect: connection refused"
+2026/10/11 07:04:03 check job=4 monitor=1 url=http://127.0.0.1:8080/healthz up=false status=0 first_byte_ms=0 error="Get \"http://127.0.0.1:8080/healthz\": dial tcp 127.0.0.1:8080: connect: connection refused"
+2026/10/11 07:04:39 check job=5 monitor=1 url=http://127.0.0.1:8080/healthz up=false status=0 first_byte_ms=0 error="Get \"http://127.0.0.1:8080/healthz\": dial tcp 127.0.0.1:8080: connect: connection refused"
+2026/10/11 07:04:48 alert opened incident=1 monitor=1 url=http://127.0.0.1:8080/healthz cause="Get \"http://127.0.0.1:8080/healthz\": dial tcp 127.0.0.1:8080: connect: connection refused"
+```
+
+The checks run 35 or 36 seconds apart: the 30-second interval, plus the wait for the next 5-second scheduler tick, plus up to one 1-second worker poll. The incident opens 9 seconds after the third failure, at the next alerter round. Start the api again with `make run-api`, and ask it for open incidents before the next check:
+
+```txt
+$ curl -s 'http://127.0.0.1:8080/api/incidents?open=true'
+[{"id":1,"monitor_id":1,"started_at":"2026-10-11T07:03:28.810443Z","resolved_at":null,"cause":"Get \"http://127.0.0.1:8080/healthz\": dial tcp 127.0.0.1:8080: connect: connection refused"}]
+```
+
+`started_at` matches the first failed check, not the alert. The next check succeeds, and the alerter resolves the incident:
+
+```txt
+2026/10/11 07:05:14 check job=6 monitor=1 url=http://127.0.0.1:8080/healthz up=true status=200 first_byte_ms=0
+2026/10/11 07:05:18 alert resolved incident=1 monitor=1 url=http://127.0.0.1:8080/healthz cause="Get \"http://127.0.0.1:8080/healthz\": dial tcp 127.0.0.1:8080: connect: connection refused"
+```
+
+`?open=true` now answers `[]`, and `GET /api/incidents` lists the incident with `"resolved_at":"2026-10-11T07:05:14.064431Z"`. Stop all four programs with **Ctrl+C**.
+
+### Step 13: Add the Services to Docker and Compose
+
+In the `Dockerfile`, build all four programs: `-o /out/ ./cmd/api ./cmd/worker ./cmd/scheduler ./cmd/alerter`. Add a target for each new program after the `worker` target:
+
+<CodeFrom file="go/week09/your-monitor/Dockerfile" region="targets" lang="dockerfile" title="Dockerfile" />
+
+In `compose.yaml`, set the `command` of `worker` to `["-workers", "${WORKERS:-10}"]`, delete its `urls.txt` volume, and add the two services after it:
+
+<CodeFrom file="go/week09/your-monitor/compose.yaml" region="new-services" lang="yaml" title="compose.yaml" />
+
+Add `ALERT_WEBHOOK_URL=` to `.env.example`, with a comment that the URL is a password. Run `make up`, then check the stack. This output is an example:
+
+```txt
+$ docker compose ps --format 'table {{.Service}}\t{{.Status}}'
+SERVICE     STATUS
+alerter     Up 12 seconds
+api         Up 12 seconds (healthy)
+postgres    Up 18 seconds (healthy)
+scheduler   Up 12 seconds
+worker      Up 12 seconds
+$ docker compose logs --tail 2 scheduler
+scheduler-1  | 2026/10/11 07:20:43 round enqueued=0 queued=0 oldest_ms=0
+scheduler-1  | 2026/10/11 07:20:48 round enqueued=1 queued=1 oldest_ms=2
+```
+
+Inside Compose, `127.0.0.1` is the container itself, as Week 6 explains. A monitor for the api uses its service name: `http://api:8080/healthz`. Commit on a `week-09` branch, open a pull request, and merge it.
 
 ## Observe It
 
 <ObserveIt>
-This section is not written yet.
+
+The scheduler round line is the pulse of the queue. `queued` counts the jobs waiting, and `oldest_ms` is how long the oldest of them has waited past its `run_at`:
+
+```txt
+2026/10/11 07:02:53 round enqueued=1 queued=1 oldest_ms=2
+```
+
+Follow it with `docker compose logs --follow scheduler`, and read these signs:
+
+- **`queued` returns to 0 between rounds, and `oldest_ms` stays under 1000.** The workers keep up.
+- **`queued` stays near the number of monitors, and `oldest_ms` grows every round.** No worker takes jobs: the workers are down, or each one waits for a database connection. `NOT EXISTS` keeps the queue from growing past one job per monitor.
+- **`oldest_ms` climbs during busy minutes and falls after them.** The workers keep up on average but not at the peak. Raise `WORKERS`, or start a second worker container with `docker compose up --detach --scale worker=2`.
+
+Postgres shows each worker in flight. `docker compose exec postgres psql -U monitor -d monitor` opens `psql`, the Postgres client:
+
+```sql
+SELECT state, count(*) FROM pg_stat_activity WHERE datname = 'monitor' GROUP BY state;
+SELECT id, monitor_id, run_at, attempts FROM check_jobs WHERE attempts > 0;
+```
+
+During a round of checks, the `idle in transaction` row counts the checks in flight: each one holds a claimed job. The second query lists jobs that failed at least once and wait for a retry. A row there points to a bug in the worker or a database problem, not to a site that is down, because a failed check counts as a result. Week 13 turns `queued` into the `monitor_jobs_queued` gauge.
+
 </ObserveIt>
 
 ## Operate It
 
 <OperateIt>
-This section is not written yet.
+
+**A worker gets SIGKILL in the middle of a check.** Try it: `docker compose kill --signal SIGKILL worker` while checks run. Postgres rolls back the open transactions, and the jobs wait in `check_jobs` with `attempts` unchanged. `restart: on-failure` starts the worker again, and it claims them. No result is lost, and none is stored twice.
+
+**The scheduler is down.** The queue empties, no new results arrive, and the alerter stays quiet: no results means no failures. A monitor that stops monitoring looks exactly like a site that is up. `SELECT max(checked_at) FROM check_results` shows the time of the newest check: when it is older than the shortest interval plus a minute, the checks have stopped. Week 18 turns that into a check freshness SLO.
+
+**The webhook fails.** The alerter logs `round failed: monitor 1: webhook to hooks.example.com: status 500`, and no incident row exists yet. Each round tries again, every 10 seconds, until the webhook answers `2xx`. The status page shows the incident only once someone has been told.
+
+**Too many connections.** Postgres accepts 100 connections by default. Each worker container opens up to `WORKERS` plus one, and the api, the scheduler and the alerter open their own pools. Past the limit, a new connection fails with `FATAL: sorry, too many clients already`. Count before you scale: three worker containers with `WORKERS=30` take 93 connections on their own.
+
+| What you see | What it points to |
+| --- | --- |
+| `queued` near the number of monitors and `oldest_ms` growing | No worker claims jobs: the workers are down, stuck or out of connections |
+| No new rows in `check_results`, and `queued=0` | The scheduler is down, or no monitors exist |
+| `job 12: dropped after 3 attempts` in the worker log | A poison job: the same job fails on every try. The error on the line before names the cause |
+| The alerter logs `round failed` every 10 seconds | The webhook or the database is down. The incident opens once both answer |
+| Two notifications for one `incident_id` | The alerter died between the webhook and its commit, and sent the event again: at-least-once delivery |
+| `FATAL: sorry, too many clients already` | Every connection slot of Postgres is taken: lower `WORKERS` or the number of containers |
+
 </OperateIt>
 
 ## AI This Week
 
 <AiThisWeek>
-This section is not written yet.
+
+Stage 2, review everything: generate code with the assistant, then read every line, write or extend the tests, and explain it back. Do not merge code you cannot explain or that has no test.
+
+**Do:** Slack accepts a webhook `POST` only in its own JSON shape, with a `text` field. Give the assistant the `Notifier` interface and the `Event` struct, and ask it for a Slack notifier with a test. Then review it against Step 9: does it set a timeout, check the status code, keep the webhook URL out of every error and log line, and read the body before it closes it? Add a test for each answer that is no. Then ask it to list the cases your `TestDecide` table misses, and decide for each one whether the rule is right or the table is incomplete.
+
+**Do not:** accept a change to `claimSQL`, the transaction in `Work` or the unique index that makes a flaky test pass. An assistant that sees `TestEachJobRunsOnce` fail now and then suggests a `time.Sleep` or fewer workers. Those changes hide the race and leave it in your code. Find out which job ran twice and why, with the [side lab](#side-lab) if needed, before you change a line.
+
 </AiThisWeek>
 
 ## Side Lab
 
-<SideLab title="Optional lab: not written yet">
-This section is not written yet.
+<SideLab title="Watch row locks from two psql sessions: FOR UPDATE, NOWAIT and SKIP LOCKED">
+
+Postgres row locks drive the whole queue. Watch them from two terminals, without any Go code. Open `psql` in each terminal with `docker compose exec postgres psql -U monitor -d monitor`. These outputs come from Postgres 16, and Postgres 17 prints the same columns.
+
+**1. Create a toy queue,** in terminal A:
+
+```sql
+CREATE TABLE lab_jobs (id int PRIMARY KEY, payload text);
+INSERT INTO lab_jobs VALUES (1, 'first'), (2, 'second'), (3, 'third');
+```
+
+**2. Lock the first job in terminal A,** and leave the transaction open:
+
+```sql
+BEGIN;
+SELECT id, payload FROM lab_jobs ORDER BY id LIMIT 1 FOR UPDATE;
+```
+
+**3. Try three claims in terminal B:**
+
+```txt
+monitor=# SELECT id, payload FROM lab_jobs ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED;
+ id | payload
+----+---------
+  2 | second
+(1 row)
+
+monitor=# SELECT id, payload FROM lab_jobs ORDER BY id LIMIT 1 FOR UPDATE NOWAIT;
+ERROR:  could not obtain lock on row in relation "lab_jobs"
+monitor=# SELECT id, payload FROM lab_jobs ORDER BY id LIMIT 1 FOR UPDATE;
+```
+
+`SKIP LOCKED` returns job 2 at once. `NOWAIT` fails at once instead of waiting. Plain `FOR UPDATE` hangs.
+
+**4. Find the wait.** Open a third terminal with `psql` and ask what each session does:
+
+```txt
+monitor=# SELECT pid, state, wait_event_type, wait_event, left(query, 40) AS query FROM pg_stat_activity WHERE datname = 'monitor' AND pid <> pg_backend_pid();
+ pid  |        state        | wait_event_type |  wait_event   |                  query
+------+---------------------+-----------------+---------------+------------------------------------------
+ 5393 | idle in transaction | Client          | ClientRead    | SELECT id, payload FROM lab_jobs ORDER B
+ 5398 | active              | Lock            | transactionid | SELECT id, payload FROM lab_jobs ORDER B
+(2 rows)
+```
+
+Terminal A is `idle in transaction`: it holds the lock and waits for you. Terminal B waits on `transactionid`, the transaction of A. `SELECT locktype, mode, granted FROM pg_locks WHERE NOT granted;` shows that request: a `ShareLock` with `granted` set to `f`, for false. When your monitor runs, its own sessions show up in the list too.
+
+**5. Release it.** Type `COMMIT;` in terminal A, and terminal B returns job 1 at once. Run `ROLLBACK;` in B and `DROP TABLE lab_jobs;` in A to clean up. A worker that hangs with an open transaction blocks others the same way. The Postgres setting `idle_in_transaction_session_timeout` ends such sessions after a time you choose.
+
 </SideLab>
 
 ## Done When
