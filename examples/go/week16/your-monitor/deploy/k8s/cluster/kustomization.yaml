@@ -1,0 +1,14 @@
+# region: cluster-kustomization
+# Cluster setup that you apply once, as the cluster administrator, from
+# your laptop: kubectl apply -k deploy/k8s/cluster
+# deploy.yml never applies these files. Its ServiceAccount cannot create
+# namespaces, ClusterIssuers, Roles or admission policies, and that is
+# the point.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - cluster-issuers.yaml
+  - ci-deployer.yaml
+  - service-policy.yaml
+# endregion: cluster-kustomization
