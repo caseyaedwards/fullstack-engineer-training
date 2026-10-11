@@ -3,6 +3,7 @@ package systemdesign
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 )
@@ -112,3 +113,13 @@ func TestBackoffIsFullJitter(t *testing.T) {
 }
 
 // endregion: tests
+
+// A caller who passes the largest time.Duration as max, to mean no cap,
+// must not make backoff overflow and panic in rand.N.
+func TestBackoffWithNoCapDoesNotOverflow(t *testing.T) {
+	for n := range 70 {
+		if d := backoff(n, time.Second, math.MaxInt64); d < 0 {
+			t.Fatalf("backoff(%d) = %v, want a duration of 0 or more", n, d)
+		}
+	}
+}

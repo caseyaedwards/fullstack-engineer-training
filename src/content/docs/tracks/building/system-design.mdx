@@ -29,7 +29,7 @@ When a component runs as its own program and talks to the others over the networ
 
 Every split also costs something. A function call that never fails becomes a network call that times out, arrives twice or arrives late. Each service needs its own build, deploy, logs and alerts. One program with clean packages inside, a **modular monolith**, keeps the boundaries without the network, and it is the right start for a new app with one team.
 
-Draw boundaries around **data ownership**: each piece of data has one service that writes it, and the others read it or ask that service. In the uptime monitor, the api writes the monitors themselves, the worker writes `check_results`, and the alerter writes `incidents`. The scheduler writes only `last_enqueued_at` on `monitors`, a column the api never touches. The job queue is shared by design: the scheduler inserts, and the workers delete. When two services write the same rows for different reasons, a change to the schema or the rules needs both of them changed and deployed together, and the boundary between them exists only on paper. The monitor shares one Postgres database between its services, which keeps backups and transactions simple, at the price of one schema that every service depends on.
+Draw boundaries around **data ownership**: each piece of data has one service that writes it, and the others read it or ask that service. In the uptime monitor, the api writes the monitors themselves, the worker writes `check_results`, and the alerter writes `incidents`. The scheduler writes only `last_enqueued_at` on `monitors`, a column the api never touches. Two services share the job queue by design: the scheduler inserts, and the workers delete. When two services write the same rows for different reasons, a change to the schema or the rules needs both of them changed and deployed together, and the boundary between them exists only on paper. The monitor shares one Postgres database between its services, which keeps backups and transactions simple, at the price of one schema that every service depends on.
 
 ### Layers and Interfaces Inside a Service
 
@@ -73,7 +73,7 @@ A **timeout budget** is the total time a caller is willing to spend on an operat
 
 ## Diagrams
 
-The first diagram shows the uptime monitor at the end of the course, grouped by boundary, with an arrow from each service to the tables it reads and writes.
+The first diagram shows the uptime monitor at the end of the course, grouped by boundary, with an arrow from each service to the tables it reads and writes. Week 11 adds `users` and `sessions`, which the api writes.
 
 <Diagram
   id="monitor-boundaries"
@@ -94,6 +94,8 @@ db: "Postgres" {
   jobs: check_jobs
   results: check_results
   incidents
+  users
+  sessions
 }
 outside: "outside world" {
   sites: monitored sites
@@ -102,19 +104,24 @@ outside: "outside world" {
 browser -> public.web: "page, /api/"
 public.web -> public.api: "/api/ proxy"
 public.api -> db.monitors: writes
+public.api -> db.results: reads
 public.api -> db.incidents: reads
+public.api -> db.users: writes
+public.api -> db.sessions: writes
 background.scheduler -> db.monitors: "reads due, stamps"
 background.scheduler -> db.jobs: inserts
 background.worker -> db.jobs: "claims, deletes"
+background.worker -> db.monitors: reads
 background.worker -> db.results: writes
 background.worker -> outside.sites: checks
+background.alerter -> db.monitors: reads
 background.alerter -> db.results: reads
 background.alerter -> db.incidents: writes
 background.alerter -> outside.hook: notifies
 `}
 />
 
-The second diagram follows one notification through the `Retry` function from the example. The alerter gives the whole send a budget of 10 seconds and four attempts, with a base of 500 ms and a cap of 4 seconds.
+The second diagram is a hypothetical: the monitor alerter does not call `Retry`, and [In the Uptime Monitor](#in-the-uptime-monitor) explains what it does instead. Suppose the alerter wraps its webhook send in the `Retry` function from the example, with a budget of 10 seconds, four attempts, a base of 500 ms and a cap of 4 seconds. The diagram follows one notification through it.
 
 <Diagram
   id="retry-budget"
@@ -136,7 +143,7 @@ hook -> retry: "200 OK"
 retry -> alerter: nil
 `}
   steps={[
-    { hl: ['alerter', 'retry', 'alerter->retry'], caption: 'The alerter creates a context with a 10-second deadline and calls Retry. Every attempt and every sleep below takes from those 10 seconds.' },
+    { hl: ['alerter', 'retry', 'alerter->retry'], caption: 'In this hypothetical, the alerter creates a context with a 10-second deadline and calls Retry. Every attempt and every sleep below takes from those 10 seconds.' },
     { hl: ['retry', 'hook', 'retry->hook', 'hook->retry'], caption: 'Attempt 1 gets a 503: the receiver is restarting. A 503 is transient: send returns it as a plain error, and Retry tries again.' },
     { hl: ['retry', 'retry->retry'], caption: 'Before attempt 2, Retry sleeps a random time between zero and the ceiling of 500 ms. Other alerters that failed at the same moment draw other times and spread out.' },
     { hl: ['retry', 'hook', 'retry->hook#1', 'hook->retry#1'], caption: 'Attempt 2 also gets a 503. The ceiling doubles to 1 second.' },
@@ -157,7 +164,7 @@ The example is a retry function with exponential backoff and full jitter. `Perma
 
 - `sleep` is a package variable holding a function. The real one waits on a timer or on the context, whichever comes first. The tests swap in a version that records each duration and returns at once, which keeps them fast and free of wall-clock timing.
 - The loop checks `ctx.Err()` before every attempt, and `sleep` returns the context error when the budget runs out mid-wait. A cancelled caller gets `context.Canceled` back, and no further attempt starts.
-- `backoff` doubles the ceiling from `base`, caps it at `max`, and draws a uniform random duration up to it with `rand.N` from `math/rand/v2`. The check for a ceiling of zero or less catches a doubling that overflows `time.Duration`.
+- `backoff` doubles the ceiling from `base`, caps it at `max`, and draws a uniform random duration up to it with `rand.N` from `math/rand/v2`. The check for a ceiling of zero or less catches a doubling that overflows `time.Duration`, and a ceiling equal to the largest `time.Duration` draws without the `+ 1`, which overflows too.
 - After the last attempt, `Retry` wraps the last error with `%w`, which keeps `errors.Is(err, errUnavailable)` true for the caller.
 
 The tests pin each promise of the function:
@@ -168,11 +175,11 @@ The tests pin each promise of the function:
 
 ## In the Uptime Monitor
 
-<WeekLink n={6} anchor="the-target-architecture">Week 6</WeekLink> lays out the target architecture: a web page, four Go services and Postgres with the job queue inside it. <WeekLink n={6} anchor="one-repository-for-every-program">One repository for every program</WeekLink> keeps them in one monorepo, with one `cmd/` folder per service and shared packages under `internal/`.
+<WeekLink n={6} anchor="the-target-architecture">Week 6</WeekLink> lays out the target architecture: a web page, four Go services and Postgres with the job queue inside it. <WeekLink n={6} anchor="one-repository-for-every-program">One repository for every program</WeekLink> keeps them in one **monorepo**, a single repository for every program of the project, with one `cmd/` folder per service and shared packages under `internal/`.
 
 <WeekLink n={7} anchor="layers-and-the-store-interface">Week 7</WeekLink> splits the api into layers, with the handlers depending on the `Store` interface and `main` passing in the store. <WeekLink n={7} anchor="openapi-the-contract">OpenAPI: The Contract</WeekLink> takes the code-first approach from the table above, with a test that compares the routes in the contract with the router.
 
-<WeekLink n={9} anchor="background-jobs-and-queues">Week 9</WeekLink> moves the checks behind a queue, which turns a synchronous loop into asynchronous work between the scheduler, the workers and the alerter. Its <WeekLink n={9} anchor="step-4-retry-a-failing-job">retry of a failing job</WeekLink> moves `run_at` 30 seconds further out after each failure: linear backoff with no jitter, which works there because the scheduler already spreads jobs over time and one Postgres holds them all.
+<WeekLink n={9} anchor="background-jobs-and-queues">Week 9</WeekLink> moves the checks behind a queue, which turns a synchronous loop into asynchronous work between the scheduler, the workers and the alerter. Its <WeekLink n={9} anchor="step-4-retry-a-failing-job">retry of a failing job</WeekLink> moves `run_at` 30 seconds further out after each failure: linear backoff with no jitter, which works there because the scheduler already spreads jobs over time and one Postgres holds them all. The alerter retries by round instead of with backoff: its webhook client has a 5-second timeout, a failed webhook rolls back the incident insert, and the next round tries both again, as <WeekLink n={9} anchor="from-results-to-incidents">From Results to Incidents</WeekLink> describes.
 
 <WeekLink n={10} anchor="what-the-page-asks-the-api">Week 10</WeekLink> builds the status page on the general API and meets the N+1 pattern: one request for the list, then one per monitor. For tens of monitors, the general design is enough.
 

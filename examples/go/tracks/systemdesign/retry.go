@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"time"
 )
@@ -89,6 +90,9 @@ func backoff(n int, base, max time.Duration) time.Duration {
 	}
 	if ceiling <= 0 {
 		return 0
+	}
+	if ceiling == math.MaxInt64 { // ceiling + 1 overflows
+		return rand.N(ceiling)
 	}
 	return rand.N(ceiling + 1)
 }
