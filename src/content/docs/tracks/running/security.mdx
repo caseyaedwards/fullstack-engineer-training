@@ -25,32 +25,40 @@ An **asset** is something worth protecting: the password hashes, the session tab
 <Diagram
   id="trust-boundaries"
   title="Trust boundaries of the uptime monitor on the VPS"
-  code={`direction: right
-internet: internet {
-  user: "browser"
-  sites: "monitored sites"
+  code={`vars: {
+  d2-config: {
+    layout-engine: elk
+  }
 }
+direction: down
+user: browser
 ci: "GitHub runner"
 laptop: "your laptop"
 vps: VPS {
   traefik: Traefik
   api: api
-  worker: worker
   pg: Postgres
+  worker: worker
   kube: "Kubernetes API"
 }
-cloud: "provider network" {
-  meta: "metadata service\\n169.254.169.254"
-}
-internet.user -> vps.traefik: "TLS, login, sameOrigin"
+sites: "monitored sites"
+meta: "metadata service\\n169.254.169.254"
+user -> vps.traefik
 vps.traefik -> vps.api
-vps.api -> vps.pg: "SQL parameters"
-vps.worker -> internet.sites: "user URLs"
-vps.worker -> cloud.meta: "must never reach" {style.stroke-dash: 4}
-vps.worker -> vps.kube: "must never reach" {style.stroke-dash: 4}
-ci -> vps.kube: "SSH tunnel, RBAC"
-laptop -> vps: "SSH key"
+vps.api -> vps.pg
+vps.worker -> vps.pg
+ci -> vps.kube
+laptop -> vps.kube
+vps.worker -> sites
+vps.worker -> meta: blocked {style.stroke-dash: 4}
 `}
+  steps={[
+    { hl: ['user', 'vps.traefik', 'vps.api', 'user->vps.traefik', 'vps.traefik->vps.api'], caption: 'The internet to the api: every request from a browser crosses here. TLS protects it on the way, the session cookie names the user, and sameOrigin refuses writes that another site starts.' },
+    { hl: ['vps.api', 'vps.pg', 'vps.api->vps.pg'], caption: 'The api to Postgres: user input reaches the database only as SQL parameters, never as part of the statement text.' },
+    { hl: ['vps.worker', 'sites', 'meta', 'vps.worker->sites', 'vps.worker->meta'], caption: 'The worker to the URLs it fetches: users choose these targets. Public sites pass. The metadata service, the Kubernetes API and every other internal address must stay out of reach, and SafeDialer refuses them at dial time.' },
+    { hl: ['ci', 'vps.kube', 'ci->vps.kube'], caption: 'CI to the cluster: the deploy job reaches the Kubernetes API only through an SSH tunnel, and RBAC limits its token to one namespace.' },
+    { hl: ['laptop', 'vps.kube', 'laptop->vps.kube'], caption: 'Your laptop to the VPS: SSH with a key, no passwords, and the administrator kubeconfig that only you hold.' },
+  ]}
 />
 
 ### Defense in Depth
