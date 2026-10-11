@@ -1,0 +1,211 @@
+// Command api is the HTTP API of the uptime monitor. Week 6 made it a stub
+// with GET /healthz; Week 7 serves the REST API for monitors from
+// internal/api; Week 8 keeps the monitors and their check results in
+// Postgres; Week 9 adds the incidents that cmd/alerter opens; Week 11
+// adds logins. Run it from the examples/go directory:
+//
+//	DATABASE_URL=postgres://monitor:changeme@127.0.0.1:5432/monitor?sslmode=disable \
+//	    go run ./week18/your-monitor/cmd/api -addr 127.0.0.1:8080
+//
+// With -healthcheck, it checks a running api instead of starting one.
+// The Compose healthcheck uses that mode, because the container image
+// holds no curl or wget. With -create-user EMAIL, it adds a user with the
+// password it reads from stdin, and exits.
+//
+// With -metrics-addr, it serves its Prometheus metrics on that address.
+// With OTEL_EXPORTER_OTLP_ENDPOINT set, it sends a span for each request
+// to that OpenTelemetry collector.
+
+// region: imports
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"fsp/examples/week18/your-monitor/internal/alert"
+	"fsp/examples/week18/your-monitor/internal/api"
+	"fsp/examples/week18/your-monitor/internal/auth"
+	"fsp/examples/week18/your-monitor/internal/db"
+	"fsp/examples/week18/your-monitor/internal/obs"
+)
+
+// endregion: imports
+
+// region: handler
+
+// newHandler builds the api the program serves: the routes of internal/api
+// over the Postgres stores and the auth service. Around them, from the
+// outside in: a span, a log line and the request metrics, for every
+// request. api.NewHandler adds the security headers, Cache-Control and
+// the same-origin check inside them.
+func newHandler(pool *pgxpool.Pool, users *auth.Service, metrics *api.Metrics) http.Handler {
+	h := api.NewHandler(db.NewMonitorStore(pool), db.NewResultStore(pool), alert.Store{DB: pool}, users)
+	h = metrics.Instrument(h)
+	h = api.LogRequests(slog.Default(), h)
+	return api.Trace(h)
+}
+
+// openDB connects to Postgres and brings the schema up to date.
+func openDB(ctx context.Context, url string) (*pgxpool.Pool, error) {
+	pool, err := db.Connect(ctx, url)
+	if err != nil {
+		return nil, err
+	}
+	if err := db.Migrate(ctx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
+}
+
+// endregion: handler
+
+// region: main
+
+func main() {
+	addr := flag.String("addr", ":8080", "address to listen on; :8080 means port 8080 on every network interface")
+	metricsAddr := flag.String("metrics-addr", "", "address for the Prometheus /metrics endpoint, for example 127.0.0.1:2112; empty turns it off")
+	healthcheck := flag.String("healthcheck", "", "URL of a running api's /healthz: exit with 0 if it answers 200, 1 otherwise")
+	databaseURL := flag.String("database-url", os.Getenv("DATABASE_URL"), "Postgres connection string; defaults to $DATABASE_URL")
+	newUser := flag.String("create-user", "", "add a user with this email, with the password read from stdin, then exit")
+	limitConfig := limitFlags(flag.CommandLine)
+	flag.Parse()
+
+	if *healthcheck != "" {
+		if err := checkHealth(*healthcheck); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *databaseURL == "" {
+		fmt.Fprintln(os.Stderr, "missing -database-url or DATABASE_URL")
+		os.Exit(2)
+	}
+
+	// region: setup
+	slog.SetDefault(obs.NewLogger(os.Stdout, "api"))
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	shutdown, err := obs.StartTracing(ctx, "api")
+	if err != nil {
+		obs.Fatal(err)
+	}
+	defer func() {
+		// Shutdown sends the spans still in memory. An error here means lost spans.
+		if err := shutdown(context.Background()); err != nil {
+			slog.Error("tracing shutdown", "err", err)
+		}
+	}()
+	if *metricsAddr != "" {
+		go serveMetrics(*metricsAddr)
+	}
+
+	pool, err := openDB(ctx, *databaseURL)
+	if err != nil {
+		obs.Fatal(err)
+	}
+	defer pool.Close()
+	// endregion: setup
+
+	// region: create-user-flag
+	users := auth.NewService(db.NewAuthStore(pool))
+	if *newUser != "" {
+		if isTerminal(os.Stdin) {
+			obs.Fatal(fmt.Errorf("-create-user reads the password from a pipe: printf the password into it"))
+		}
+		if err := createUser(ctx, users, *newUser, os.Stdin, os.Stdout); err != nil {
+			obs.Fatal(err)
+		}
+		return
+	}
+	// endregion: create-user-flag
+
+	// region: wrap-limits
+	cfg, err := limitConfig()
+	if err != nil {
+		obs.Fatal(err)
+	}
+	limits := api.NewRateLimits(cfg, prometheus.DefaultRegisterer)
+	handler := limits.Limit(newHandler(pool, users, api.NewMetrics(prometheus.DefaultRegisterer)))
+	// endregion: wrap-limits
+
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		obs.Fatal(err)
+	}
+	slog.Info("listening", "addr", ln.Addr().String(), "metrics_addr", *metricsAddr,
+		"rate_limit", float64(cfg.Limit), "rate_burst", cfg.Burst, "trusted_proxies", fmt.Sprint(cfg.Trusted))
+	if err := serve(ctx, ln, handler); err != nil {
+		obs.Fatal(err)
+	}
+	slog.Info("stopped")
+}
+
+// endregion: main
+
+// region: metrics-server
+
+// serveMetrics answers GET /metrics on addr with every metric registered
+// with prometheus.DefaultRegisterer: the request metrics, and the Go
+// runtime and process metrics that client_golang registers on its own.
+// The api serves them on a port of their own, which never faces the
+// internet.
+func serveMetrics(addr string) {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", promhttp.Handler())
+	slog.Error("metrics server stopped", "err", obs.NewServer(addr, mux).ListenAndServe())
+}
+
+// endregion: metrics-server
+
+// region: serve
+
+// serve answers requests on ln until ctx is cancelled. Then it stops
+// accepting connections, gives the requests in flight up to 5 seconds to
+// finish, and returns.
+func serve(ctx context.Context, ln net.Listener, h http.Handler) error {
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 5 * time.Second}
+	errc := make(chan error, 1)
+	go func() { errc <- srv.Serve(ln) }()
+
+	select {
+	case err := <-errc:
+		return err // Serve failed on its own, before any shutdown
+	case <-ctx.Done():
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return srv.Shutdown(shutdownCtx)
+}
+
+// checkHealth gets url and returns an error unless the answer is 200 OK
+// within 2 seconds.
+func checkHealth(url string) error {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%s: status %d", url, resp.StatusCode)
+	}
+	return nil
+}
+
+// endregion: serve

@@ -1,0 +1,5 @@
+# region: k3s-config
+# Copy to /etc/rancher/k3s/config.yaml before the first start of K3s.
+# K3s generates a key and encrypts every Secret in its datastore with it.
+secrets-encryption: true
+# endregion: k3s-config

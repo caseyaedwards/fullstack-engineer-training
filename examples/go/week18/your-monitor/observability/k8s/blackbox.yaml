@@ -1,0 +1,65 @@
+# region: blackbox
+# Blackbox exporter: Prometheus sends it GET /probe?target=<URL>, and it
+# requests that URL and answers with metrics about the try, such as
+# probe_success and probe_http_status_code. It runs with the http_2xx
+# module of the configuration in its image.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blackbox
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: blackbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: blackbox
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: blackbox
+    spec:
+      # The image names no user and starts as root. An HTTP probe needs no
+      # privilege: run it as nobody.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: blackbox
+          image: prom/blackbox-exporter:v0.28.0
+          ports:
+            - name: web
+              containerPort: 9115
+          readinessProbe:
+            httpGet:
+              path: /-/healthy
+              port: web
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+# endregion: blackbox
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: blackbox
+  namespace: monitoring
+spec:
+  selector:
+    app.kubernetes.io/name: blackbox
+  ports:
+    - name: web
+      port: 9115
+      targetPort: web

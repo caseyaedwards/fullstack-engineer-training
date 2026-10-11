@@ -1,0 +1,18 @@
+# region: namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: your-monitor
+  labels:
+    # Pod Security admission refuses any pod in this namespace that breaks
+    # the restricted standard: a root user, privilege escalation, extra
+    # capabilities, no seccomp profile, a host path, a host port or the
+    # host network. The version pins the rules of Kubernetes 1.36, so an
+    # upgrade of K3s does not change them under you.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.36
+    # enforce checks pods only. warn also checks Deployments and other
+    # workloads, so kubectl apply prints what their pods would break.
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.36
+# endregion: namespace

@@ -1,0 +1,26 @@
+# region: kustomization
+# Prometheus and Alertmanager on the VPS. Apply it from your laptop as the
+# cluster administrator: kubectl apply -k observability
+# deploy.yml never applies it: the CI ServiceAccount of Week 16 cannot
+# create namespaces or Roles.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - k8s/namespace.yaml
+  - k8s/prometheus.yaml
+  - k8s/alertmanager.yaml
+  - k8s/blackbox.yaml
+# The same rule file and Alertmanager file that Compose mounts. Kustomize
+# adds a hash of the content to each ConfigMap name, which restarts the
+# pod whenever a rule or a route changes.
+configMapGenerator:
+  - name: prometheus-config
+    namespace: monitoring
+    files:
+      - prometheus.yml=k8s/prometheus.yml
+      - rules/slo.rules.yml
+  - name: alertmanager-config
+    namespace: monitoring
+    files:
+      - alertmanager.yml
+# endregion: kustomization

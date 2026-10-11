@@ -1,0 +1,227 @@
+# The service level objectives (SLOs) of your monitor, as Prometheus rules.
+# docs/slo.md says what each SLO promises and why. Prometheus evaluates
+# every rule of a group in order, every 30 seconds, and stores the result
+# of each recording rule as a new series under its record name.
+groups:
+  - name: slo
+    interval: 30s
+    rules:
+      # region: availability
+      # Status page availability. A valid event is a GET of an /api/ route,
+      # which is what the status page and the probe send. A good event is
+      # one the api answers with a status under 500: a 404 for a monitor
+      # that does not exist is the api doing its job. A 429 from the rate
+      # limit never reaches http_requests_total, and a request that matches
+      # no route carries route="unmatched": both stay out. The or vector(0)
+      # gives 0 errors when no 5xx series exists.
+      - record: slo:sli_error:ratio_rate5m
+        labels:
+          slo: availability
+        expr: |
+          (sum(rate(http_requests_total{method="GET", route=~"/api/.+", code=~"5.."}[5m])) or vector(0))
+          /
+          sum(rate(http_requests_total{method="GET", route=~"/api/.+"}[5m]))
+      # endregion: availability
+      - record: slo:sli_error:ratio_rate30m
+        labels:
+          slo: availability
+        expr: |
+          (sum(rate(http_requests_total{method="GET", route=~"/api/.+", code=~"5.."}[30m])) or vector(0))
+          /
+          sum(rate(http_requests_total{method="GET", route=~"/api/.+"}[30m]))
+      - record: slo:sli_error:ratio_rate1h
+        labels:
+          slo: availability
+        expr: |
+          (sum(rate(http_requests_total{method="GET", route=~"/api/.+", code=~"5.."}[1h])) or vector(0))
+          /
+          sum(rate(http_requests_total{method="GET", route=~"/api/.+"}[1h]))
+      - record: slo:sli_error:ratio_rate6h
+        labels:
+          slo: availability
+        expr: |
+          (sum(rate(http_requests_total{method="GET", route=~"/api/.+", code=~"5.."}[6h])) or vector(0))
+          /
+          sum(rate(http_requests_total{method="GET", route=~"/api/.+"}[6h]))
+      - record: slo:sli_error:ratio_rate3d
+        labels:
+          slo: availability
+        expr: |
+          (sum(rate(http_requests_total{method="GET", route=~"/api/.+", code=~"5.."}[3d])) or vector(0))
+          /
+          sum(rate(http_requests_total{method="GET", route=~"/api/.+"}[3d]))
+      - record: slo:sli_error:ratio_rate30d
+        labels:
+          slo: availability
+        expr: |
+          (sum(rate(http_requests_total{method="GET", route=~"/api/.+", code=~"5.."}[30d])) or vector(0))
+          /
+          sum(rate(http_requests_total{method="GET", route=~"/api/.+"}[30d]))
+
+      # region: freshness
+      # Check freshness. Every 30 seconds, this rule records 1 when checks
+      # run on schedule and 0 when they do not. On schedule means both:
+      #   - the oldest waiting job has waited 50 seconds or less, and
+      #   - at least one check finished in the last 2 minutes.
+      # The second condition catches a scheduler that cannot reach Postgres:
+      # its gauge then keeps the last value it set. When either metric is
+      # missing, because the scheduler or every worker is gone, the
+      # or on() vector(0) records 0: no data counts as late.
+      # The second condition needs at least one monitor checked every
+      # 60 seconds or more often: the self-check of docs/slo.md.
+      # The last line records nothing at all until Prometheus has 2 minutes
+      # of history: right after its first start, the 2-minute increase()
+      # has too few scrapes to judge, and a late step there is a false page.
+      - record: slo:checks_on_time:bool
+        expr: |
+          (
+            (
+              (max(monitor_jobs_oldest_seconds) <= bool 50)
+              *
+              (sum(increase(monitor_checks_total[2m])) > bool 0)
+            )
+            or on() vector(0)
+          )
+          and on() (count(up offset 2m) > 0)
+      - record: slo:sli_error:ratio_rate5m
+        labels:
+          slo: freshness
+        expr: 1 - avg_over_time(slo:checks_on_time:bool[5m])
+      # endregion: freshness
+      - record: slo:sli_error:ratio_rate30m
+        labels:
+          slo: freshness
+        expr: 1 - avg_over_time(slo:checks_on_time:bool[30m])
+      - record: slo:sli_error:ratio_rate1h
+        labels:
+          slo: freshness
+        expr: 1 - avg_over_time(slo:checks_on_time:bool[1h])
+      - record: slo:sli_error:ratio_rate6h
+        labels:
+          slo: freshness
+        expr: 1 - avg_over_time(slo:checks_on_time:bool[6h])
+      - record: slo:sli_error:ratio_rate3d
+        labels:
+          slo: freshness
+        expr: 1 - avg_over_time(slo:checks_on_time:bool[3d])
+      - record: slo:sli_error:ratio_rate30d
+        labels:
+          slo: freshness
+        expr: 1 - avg_over_time(slo:checks_on_time:bool[30d])
+
+      # region: budget
+      # The error budget of each SLO: 1 minus its target. 99.5% leaves 0.5%,
+      # 99% leaves 1%.
+      - record: slo:error_budget:ratio
+        labels:
+          slo: availability
+        expr: vector(0.005)
+      - record: slo:error_budget:ratio
+        labels:
+          slo: freshness
+        expr: vector(0.01)
+
+      # The burn rate: how fast each SLO spends its budget. 1 spends the
+      # budget in exactly 30 days. 14.4 spends 2% of it in one hour.
+      - record: slo:burn_rate:5m
+        expr: slo:sli_error:ratio_rate5m / on(slo) slo:error_budget:ratio
+      # endregion: budget
+      - record: slo:burn_rate:30m
+        expr: slo:sli_error:ratio_rate30m / on(slo) slo:error_budget:ratio
+      - record: slo:burn_rate:1h
+        expr: slo:sli_error:ratio_rate1h / on(slo) slo:error_budget:ratio
+      - record: slo:burn_rate:6h
+        expr: slo:sli_error:ratio_rate6h / on(slo) slo:error_budget:ratio
+      - record: slo:burn_rate:3d
+        expr: slo:sli_error:ratio_rate3d / on(slo) slo:error_budget:ratio
+
+      # region: remaining
+      # The share of the 30-day budget that is left: 1 is untouched, 0 is
+      # spent, below 0 is an SLO you missed.
+      - record: slo:error_budget:remaining
+        expr: 1 - slo:sli_error:ratio_rate30d / on(slo) slo:error_budget:ratio
+      # endregion: remaining
+
+      # region: alerts
+      # Multi-window, multi-burn-rate alerts, from the Google SRE workbook,
+      # chapter Alerting on SLOs. Each alert needs the long window AND the
+      # short window above the same burn rate. The long window proves the
+      # problem is big enough to act on; the short window, 1/12 of the long
+      # one, proves it is still going on, which ends the alert within
+      # minutes of a fix.
+      - alert: ErrorBudgetFastBurn
+        expr: slo:burn_rate:1h > 14.4 and slo:burn_rate:5m > 14.4
+        labels:
+          severity: page
+        annotations:
+          summary: "The {{ $labels.slo }} SLO burns its error budget {{ $value | printf \"%.1f\" }} times too fast."
+          description: "At 14.4 times or more, one hour spends 2% of the 30-day budget, and the whole budget is gone in 50 hours or less."
+          runbook_url: https://github.com/your-user/your-monitor/blob/main/docs/runbook.md#errorbudgetfastburn
+
+      - alert: ErrorBudgetSlowBurn
+        expr: slo:burn_rate:6h > 6 and slo:burn_rate:30m > 6
+        labels:
+          severity: page
+        annotations:
+          summary: "The {{ $labels.slo }} SLO burns its error budget {{ $value | printf \"%.1f\" }} times too fast."
+          description: "At 6 times or more, six hours spend 5% of the 30-day budget, and the whole budget is gone in 5 days or less."
+          runbook_url: https://github.com/your-user/your-monitor/blob/main/docs/runbook.md#errorbudgetslowburn
+
+      - alert: ErrorBudgetTicket
+        expr: slo:burn_rate:3d > 1 and slo:burn_rate:6h > 1
+        labels:
+          severity: ticket
+        annotations:
+          summary: "The {{ $labels.slo }} SLO has spent its error budget faster than it earns it for 3 days."
+          description: "At 1 time or more, three days spend 10% of the 30-day budget. Plan a fix this week."
+          runbook_url: https://github.com/your-user/your-monitor/blob/main/docs/runbook.md#errorbudgetticket
+      # endregion: alerts
+
+  # region: health
+  - name: health
+    interval: 30s
+    rules:
+      # A probe of the status page fails, or no probe result exists. The
+      # availability SLI counts only the requests that reach the api: when
+      # nginx answers 502 because every api pod is gone, or the web pod,
+      # Traefik, DNS or the certificate fails, the SLI sees nothing. The
+      # probes see it. On the VPS, the job has two targets, one per
+      # instance label, and the alert fires for either.
+      - alert: StatusPageDown
+        expr: |
+          probe_success{job="status-page-probe"} == 0
+          or absent(probe_success{job="status-page-probe"})
+        for: 2m
+        labels:
+          severity: page
+          slo: availability
+        annotations:
+          summary: "The status page has failed every probe for 2 minutes."
+          description: "Blackbox exporter gets an error or a status outside 200 to 299 from the status page, or Prometheus gets no probe result at all."
+          runbook_url: https://github.com/your-user/your-monitor/blob/main/docs/runbook.md#statuspagedown
+
+      # The certificate that the public probe sees expires within 14 days.
+      # cert-manager renews a 90-day certificate 30 days before expiry by
+      # default, so this means every renewal has failed for more than two
+      # weeks.
+      - alert: CertificateExpiresSoon
+        expr: probe_ssl_earliest_cert_expiry{job="status-page-probe"} - time() < 14 * 86400
+        labels:
+          severity: ticket
+          slo: availability
+        annotations:
+          summary: "The certificate of {{ $labels.instance }} expires in {{ $value | humanizeDuration }}."
+          description: "cert-manager renews a Let's Encrypt certificate 30 days before expiry. A certificate this close to expiry means every renewal has failed for more than two weeks."
+          runbook_url: https://github.com/your-user/your-monitor/blob/main/docs/runbook.md#certificateexpiressoon
+
+      # Always firing. Alertmanager sends it to an outside heartbeat check
+      # every 5 minutes. When the pings stop, Prometheus, Alertmanager or
+      # the box is down, and the heartbeat service alerts you.
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: heartbeat
+        annotations:
+          summary: "The alerting pipeline works. This alert always fires."
+          runbook_url: https://github.com/your-user/your-monitor/blob/main/docs/runbook.md#watchdog
+  # endregion: health

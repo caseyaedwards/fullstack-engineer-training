@@ -1,0 +1,12 @@
+# region: redirect
+# Answers a plain http:// request with a permanent redirect to https://.
+# A request that already uses https passes through unchanged.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+# endregion: redirect

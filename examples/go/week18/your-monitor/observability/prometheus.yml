@@ -1,0 +1,57 @@
+# region: prometheus
+# Prometheus scrapes every target every 15 seconds: it sends GET /metrics
+# and stores each number in the answer with the time of the scrape.
+global:
+  scrape_interval: 15s
+
+# region: rules
+# The SLO rules of Week 18, and where to send the alerts they fire.
+rule_files:
+  - /etc/prometheus/rules/slo.rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+# endregion: rules
+
+scrape_configs:
+  - job_name: api
+    static_configs:
+      - targets: ["api:2112"]
+
+  - job_name: scheduler
+    static_configs:
+      - targets: ["scheduler:2112"]
+
+  # A fixed target: when the worker stops, the scrape fails and
+  # up{job="worker"} reads 0, which an alert can catch. With more than one
+  # worker container, the name worker answers with one of them per scrape.
+  - job_name: worker
+    static_configs:
+      - targets: ["worker:6060"]
+
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8888"]
+
+  # The probe of Week 18: see observability/k8s/prometheus.yml. On your
+  # laptop, it probes the web container only.
+  - job_name: status-page-probe
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: ["http://web:8080/api/monitors"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]
+# endregion: prometheus

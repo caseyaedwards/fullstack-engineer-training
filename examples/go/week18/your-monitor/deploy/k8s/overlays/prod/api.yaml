@@ -1,0 +1,22 @@
+# region: api-patch
+# The api in production: the client limits, the proxies it trusts, and
+# room in the grace period for the preStop pause of prestop.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: api
+          env:
+            # The k3s pod network: Traefik and nginx connect from it.
+            - name: TRUSTED_PROXIES
+              value: 10.42.0.0/16
+            - name: RATE_LIMIT
+              value: "10"
+            - name: RATE_BURST
+              value: "40"
+# endregion: api-patch

@@ -86,6 +86,21 @@ jobs:
       - name: Install age and rclone
         run: sudo apt-get update && sudo apt-get install -y age rclone
 
+      # Week 18 checks its alert rules and Alertmanager config with promtool
+      # and amtool, and fails rather than skips in CI when they are missing.
+      - name: Install promtool and amtool
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -fsSL -O https://github.com/prometheus/prometheus/releases/download/v3.15.0/prometheus-3.15.0.linux-amd64.tar.gz
+          curl -fsSL -O https://github.com/prometheus/alertmanager/releases/download/v0.34.1/alertmanager-0.34.1.linux-amd64.tar.gz
+          echo '2a542df32eac02ee17b9d844fb2aa1de00dafa5476579ba8a3ba862e9d572ea0  prometheus-3.15.0.linux-amd64.tar.gz' | sha256sum -c
+          echo '265b9d1e55ef0d5306a436018af6d2b686c2ce051f03d968f7464ecb1372a7e8  alertmanager-0.34.1.linux-amd64.tar.gz' | sha256sum -c
+          tar -xzf prometheus-3.15.0.linux-amd64.tar.gz
+          tar -xzf alertmanager-0.34.1.linux-amd64.tar.gz
+          sudo cp prometheus-3.15.0.linux-amd64/promtool alertmanager-0.34.1.linux-amd64/amtool /usr/local/bin/
+          promtool --version
+          amtool --version
+
       - name: Go examples
         working-directory: examples/go
         run: |

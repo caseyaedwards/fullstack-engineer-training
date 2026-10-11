@@ -1,17 +1,24 @@
 ---
 title: "Week 18: SRE"
+description: Decide how reliable your monitor must be, measure it with two SLOs, page yourself only when the error budget burns fast, and practice an incident on the live box from page to postmortem.
 week: 18
 phase: run
-hours: [5, 8]
+hours: [6, 8]
 aiStage: 3
 tracks: [sre, observability]
 done:
-  - id: item-1
-    text: "Placeholder item 1: this week is not written yet"
-  - id: item-2
-    text: "Placeholder item 2: this week is not written yet"
-  - id: item-3
-    text: "Placeholder item 3: this week is not written yet"
+  - id: slos-written
+    text: docs/slo.md in your repository states two SLOs, each with its SLI in PromQL, its target and its error budget in requests or minutes, and you can do the budget arithmetic without notes.
+  - id: rule-tests-pass
+    text: promtool check rules and promtool test rules pass on your rules, including a test in which the fast-burn alert fires and one in which a short blip does not page.
+  - id: page-reaches-phone
+    text: Prometheus, Alertmanager and blackbox exporter run on your VPS, a test page sent with amtool rings your phone, and the VPS heartbeat check shows a ping from the last 10 minutes.
+  - id: runbook-and-rotation
+    text: docs/oncall.md and docs/runbook.md are in your repository, and every alert links to a runbook section that a test checks.
+  - id: drill-run
+    text: You stopped Postgres on the live box, got paged, mitigated from the runbook, and saw every alert resolve, with the time of each step written down.
+  - id: postmortem-written
+    text: A blameless postmortem of the drill, from TEMPLATE.md, sits in docs/postmortems/ with a timeline, causes and at least two actions.
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -21,43 +28,523 @@ import AiThisWeek from '../../../components/AiThisWeek.astro';
 import SideLab from '../../../components/SideLab.astro';
 import ReadWith from '../../../components/ReadWith.astro';
 import DoneWhen from '../../../components/DoneWhen.astro';
+import Diagram from '../../../components/Diagram.astro';
+import CodeFrom from '../../../components/CodeFrom.astro';
+import { weekHref, trackHref } from '../../../lib/links';
 
 <WeekHeader />
 
+Your monitor now runs on a real domain, scales under load and survives a rollback, as <a href={weekHref(17)}>Week 17</a> left it. One question remains open: how reliable does it have to be, and how do you know when it is not? **Site reliability engineering** (SRE) answers it with numbers. You pick what to measure, set a target, and let the gap between the target and 100% decide when you drop everything and when you keep building. This week, your monitor gets two such targets, alerts that ring your phone only when one is in real danger, an on-call routine for one person, and its first incident: one you cause on purpose.
+
 ## Goals
 
-This section is not written yet.
+- Define an SLI, an SLO and an error budget, and work out the budget of a target in requests and in minutes.
+- Write two SLOs for your monitor, with SLIs in PromQL over the metrics of <a href={weekHref(13)}>Week 13</a>.
+- Alert on how fast the budget burns, with multi-window, multi-burn-rate alerts, and prove them with `promtool` unit tests.
+- Route pages, tickets and a heartbeat through Alertmanager, and run it on your VPS next to Prometheus.
+- Run an incident drill on the live box, and write a blameless postmortem of it.
 
 ## Concepts
 
-This section is not written yet.
+### SLIs, SLOs and Error Budgets
+
+A **service level indicator** (SLI) is a number that says how well the service works for its users, written as a ratio: good events divided by valid events. A **valid event** is one you count at all, such as a `GET` of the status page. A **good event** is a valid event that went well, such as one the api answers without a server error.
+
+A **service level objective** (SLO) is a target for an SLI over a window of time: 99.5% of status page requests succeed, measured over the last 30 days. The window rolls: every minute, the oldest minute drops out.
+
+The **error budget** is what the target allows to fail: 100% minus the SLO. A 99.5% SLO has a budget of 0.5%. Over 30 days, 0.5% of the time is 0.005 × 30 × 24 hours = 3.6 hours, and 0.5% of 345,600 requests is 1,728 failed requests.
+
+The budget turns reliability into a decision. While budget is left, you ship features, deploy on a Friday, try the risky migration. When the budget is spent, reliability work comes first until it recovers. A target of 100% leaves no budget: every deploy, every Postgres restart and every reboot of the VPS breaks it. Pick a target that the setup can meet: one VPS, one Postgres, one person who sleeps.
+
+### Two SLOs for Your Monitor
+
+Your monitor does two jobs for its users: it shows a status page, and it checks their sites on schedule. Each job gets one SLO.
+
+| SLO | SLI | Target | Budget in 30 days |
+| --- | --- | --- | --- |
+| Status page availability | `GET` requests to `/api/` routes that the api answers with a status under 500 | 99.5% | 0.5% of requests |
+| Check freshness | 30-second steps in which checks run on schedule | 99% | 7 hours and 12 minutes |
+
+The availability SLI counts **requests**: `http_requests_total` already carries the route and the status code of each one. A `404` for a monitor that does not exist counts as good: the api did its job. A `429` from the rate limit of Week 17 never reaches the request counter: the limiter answers before the code that counts, which keeps it out of the SLI. A `GET` that matches no route carries `route="unmatched"` and stays out of the SLI: no status page sends it.
+
+The freshness SLI counts **time**, because no request asks whether a check ran on time. Every 30 seconds, Prometheus records 1 when checks run on schedule and 0 when they do not. On schedule means two things. First, the oldest job in the queue has waited 50 seconds or less: a due monitor waits up to 5 seconds for the next scheduler round, and a check takes up to 5 seconds, the worker `-timeout`, which keeps every monitor checked within its interval plus 60 seconds. Second, at least one check has finished in the last 2 minutes. Missing data counts as late.
+
+A status page that nobody opens sends no requests, and a ratio of zero requests says nothing. A **probe** fixes that: **blackbox exporter**, a small Prometheus program, loads the status page api every 15 seconds through two paths. One goes through your domain: DNS, the certificate, Traefik and the web pod. The other goes straight to the web Service inside the cluster. Each probe is one more valid event, 8 a minute, 345,600 in 30 days. The probes also see what the api cannot see.
+
+<Diagram
+  id="sli-sources"
+  title="Where each SLI is measured"
+  code={`direction: down
+bb: blackbox exporter
+traefik: Traefik
+web: "web (nginx)"
+api: api
+pg: Postgres
+sched: scheduler
+worker: worker
+prom: Prometheus
+
+bb -> traefik: public URL
+traefik -> web
+bb -> web: Service URL
+web -> api: proxy /api
+api -> pg: SQL
+sched -> pg: queue jobs
+worker -> pg: claim jobs
+prom -> api: http_requests_total
+prom -> sched: monitor_jobs_oldest_seconds
+prom -> worker: monitor_checks_total
+prom -> bb: probe_success
+`}
+  steps={[
+    { hl: ['prom', 'api', 'prom->api'], caption: 'Availability is counted inside the api. Every answer increments http_requests_total with its route and status code, and Prometheus scrapes the counter every 15 seconds.' },
+    { hl: ['bb', 'traefik', 'web', 'api', 'bb->traefik', 'traefik->web', 'bb->web', 'web->api', 'prom->bb'], caption: 'The probes send real requests through nginx to the api, 8 a minute, which keeps the SLI fed when no user visits. probe_success also tells you when the certificate, Traefik or nginx fails: the api counter never sees those requests.' },
+    { hl: ['prom', 'sched', 'prom->sched', 'sched->pg'], caption: 'Freshness, part one: the scheduler measures the age of the oldest waiting job each round and keeps it in a gauge.' },
+    { hl: ['prom', 'worker', 'prom->worker', 'worker->pg'], caption: 'Freshness, part two: the check counter of the worker must grow. When the scheduler cannot reach Postgres, its gauge keeps its last value and looks healthy. The stopped counter gives it away.' },
+  ]}
+/>
+
+### Burn Rate
+
+The **burn rate** is how fast an SLO spends its budget, compared with the rate that spends it in exactly 30 days. At a burn rate of 1, the budget lasts the 30 days. At 2, it lasts 15. As a formula: burn rate = error ratio ÷ budget. A 3.6% error ratio against a 0.5% budget is a burn rate of 7.2.
+
+| Burn rate | Budget lasts | Share of the 30-day budget spent in one hour |
+| --- | --- | --- |
+| 1 | 30 days | 0.14% |
+| 6 | 5 days | 0.83% |
+| 14.4 | 50 hours | 2% |
+| 200 | 3.6 hours | 28% |
+
+For the availability SLO, 200 is the highest burn rate there is: every request fails, an error ratio of 1 against a budget of 0.005.
+
+### Burn-Rate Alerts on Two Windows
+
+The obvious alert, error ratio above 0.5% over 5 minutes, pages you for a two-minute blip that cost a sliver of the budget. Stretch the window to 3 days, and a total outage takes hours to cross the line. The Google SRE workbook, in its chapter Alerting on SLOs, combines three ideas:
+
+- **Alert on the burn rate, not on the error ratio.** A page fires when the budget burns fast enough to matter: 14.4 over one hour spends 2% of the budget, 6 over six hours spends 5%. Both are worth an interruption. A burn rate of 1 over 3 days spends 10%: worth a ticket, not a page.
+- **Use a long window** to measure the size of the problem. A two-minute blip barely moves a one-hour window.
+- **Add a short window**, 1/12 of the long one, and require both. The long window keeps reading high for up to an hour after a fix; the short window drops back within minutes, which resolves the alert soon after you fix the cause.
+
+The workbook gives these parameters for a 99.9% SLO. They depend on the share of the budget spent, not on the target, which makes them fit both of your SLOs:
+
+| Severity | Long window | Short window | Burn rate | Budget spent when it fires |
+| --- | --- | --- | --- | --- |
+| Page | 1 hour | 5 minutes | 14.4 | 2% |
+| Page | 6 hours | 30 minutes | 6 | 5% |
+| Ticket | 3 days | 6 hours | 1 | 10% |
+
+Budget spent = burn rate × long window ÷ 30 days: 14.4 × 1 hour ÷ 720 hours = 2%. For availability, a burn rate of 14.4 is an error ratio of 14.4 × 0.005 = 0.072. During a total outage the error ratio is 1, and the one-hour window reaches 0.072 after 0.072 × 60 minutes = 4.3 minutes: that is how long a full outage takes to page you. At 10% errors, it takes 43 minutes. At 5% errors the fast-burn page never fires, and the slow-burn page catches it: 6 × 0.005 = 0.03, reached after 0.03 ÷ 0.05 × 6 hours = 3.6 hours.
+
+<Diagram
+  id="alert-path"
+  title="From a metric to your phone"
+  code={`direction: down
+rec: recording rules
+alerts: alert rules
+am: Alertmanager
+page: "Telegram, with sound"
+ticket: "Telegram, no sound"
+hb: heartbeat check
+you: you
+
+rec -> alerts: burn rates
+alerts -> am: firing alerts
+am -> page: severity=page
+am -> ticket: severity=ticket
+am -> hb: Watchdog
+page -> you
+ticket -> you
+hb -> you: Telegram when pings stop
+`}
+  steps={[
+    { hl: ['rec', 'alerts', 'rec->alerts'], caption: 'Every 30 seconds, recording rules turn the raw counters into error ratios over six windows, from 5 minutes to 30 days, and divide five of them by the budget into burn rates. Alert rules compare those burn rates with 14.4, 6 and 1.' },
+    { hl: ['alerts', 'am', 'alerts->am'], caption: 'Prometheus sends each firing alert to Alertmanager, and sends it again every minute while it fires. Prometheus decides that something is wrong; Alertmanager decides who hears about it.' },
+    { hl: ['am', 'page', 'ticket', 'am->page', 'am->ticket', 'page->you', 'ticket->you'], caption: 'Alertmanager groups alerts, routes them by their severity label, and holds back a ticket while a page fires for the same SLO. A page rings only during your on-call hours.' },
+    { hl: ['am', 'hb', 'am->hb', 'hb->you'], caption: 'The Watchdog alert always fires. Alertmanager pings an outside heartbeat check with it every 5 minutes. When the VPS, Prometheus or Alertmanager dies, the pings stop, and the heartbeat service sends you a Telegram message of its own.' },
+  ]}
+/>
+
+### Pages, Tickets and the Watchdog
+
+A **page** interrupts you: it rings your phone and asks for action now. A **ticket** asks for action within a working day. Every alert must be one or the other and must name a runbook: a page you cannot act on teaches you to ignore pages.
+
+Alerts run on your monitoring, and your monitoring runs on the same VPS as the app. When the VPS dies, nothing is left to page you. A **dead man's switch** turns silence into a signal: an alert that always fires sends a heartbeat to a service outside your VPS, and that service alerts you when the heartbeat stops. This page uses healthchecks.io, which has a free plan and sends its alerts by email and through its own Telegram bot.
 
 ## Build
 
-This section is not written yet.
+The code comes from `examples/go/week18/your-monitor`, which mirrors your repository at the end of Week 17. The new files:
+
+```txt
+your-monitor/
+├── docs/
+│   ├── slo.md, oncall.md, runbook.md
+│   └── postmortems/TEMPLATE.md
+└── observability/
+    ├── rules/slo.rules.yml      recording rules and alerts
+    ├── rules/slo.test.yml       promtool unit tests
+    ├── alertmanager.yml         routes and receivers
+    ├── slo_test.go              keeps the files in step
+    ├── kustomization.yaml       the stack for the VPS
+    └── k8s/                     Prometheus, Alertmanager, blackbox exporter
+```
+
+### Step 1: Write the SLOs Down
+
+An SLO that lives only in a rule file gets changed without a discussion. Write it in `docs/slo.md` first, with the arithmetic:
+
+<CodeFrom file="go/week18/your-monitor/docs/slo.md" region="slos" lang="md" title="docs/slo.md" />
+
+The **budget policy** at the end is the part that changes behavior: it says what you stop doing when the budget runs out.
+
+The freshness SLI needs a check to finish every 2 minutes. Monitors run every 30 to 3,600 seconds, and with only hourly ones, or none, most steps read late and the fast burn pages with nothing wrong. Add the **self-check**: a monitor of your own status page at the shortest interval, logged in as in <a href={weekHref(15)}>Week 15</a>:
+
+```sh
+printf '{"email":"you@example.com","password":"%s"}' "$PASSWORD" | curl -sS -c cookies.txt -H 'Content-Type: application/json' -d @- https://status.example.com/api/login
+curl -sS -b cookies.txt -H 'Content-Type: application/json' -d '{"url":"https://status.example.com/healthz","interval_seconds":30}' https://status.example.com/api/monitors
+```
+
+### Step 2: Record the SLIs
+
+A **recording rule** evaluates a PromQL expression on a schedule and stores the result as a new series. The alerts then read cheap, precomputed series instead of computing a 3-day rate every 30 seconds. Create `observability/rules/slo.rules.yml`. The availability SLI, for the 5-minute window:
+
+<CodeFrom file="go/week18/your-monitor/observability/rules/slo.rules.yml" region="availability" lang="yaml" title="observability/rules/slo.rules.yml" />
+
+The name follows the Prometheus convention `level:metric:operations`. `labels` adds `slo="availability"` to the result, and the file repeats the rule for the windows `30m`, `1h`, `6h`, `3d` and `30d`. The freshness SLI records one 0 or 1 per step, then averages it over each window:
+
+<CodeFrom file="go/week18/your-monitor/observability/rules/slo.rules.yml" region="freshness" lang="yaml" title="observability/rules/slo.rules.yml" />
+
+`<= bool 50` returns 1 or 0 instead of filtering the series out. Multiplying two such values gives 1 only when both conditions hold. The last line guards against a false page: in the first minutes after Prometheus starts with an empty disk, `increase()` sees one or two scrapes, reads 0, and the step looks late. Then the budgets and the burn rates:
+
+<CodeFrom file="go/week18/your-monitor/observability/rules/slo.rules.yml" region="budget" lang="yaml" title="observability/rules/slo.rules.yml" />
+
+`on(slo)` matches each error ratio with the budget that carries the same `slo` label. The file repeats the burn rate for every window, and records the budget left over 30 days as `slo:error_budget:remaining`.
+
+### Step 3: Alert on Burn Rates
+
+<CodeFrom file="go/week18/your-monitor/observability/rules/slo.rules.yml" region="alerts" lang="yaml" title="observability/rules/slo.rules.yml" />
+
+`and` keeps a series from the left only when the right side has a series with the same labels: here, the same `slo`. One alert rule covers both SLOs. `severity` is the label Alertmanager routes on. `runbook_url` reaches your phone with the page; replace `your-user` with your GitHub user name. A second group covers what the SLIs cannot see:
+
+<CodeFrom file="go/week18/your-monitor/observability/rules/slo.rules.yml" region="health" lang="yaml" title="observability/rules/slo.rules.yml" />
+
+`absent()` returns a series when its argument returns none. Without it, a deleted blackbox exporter makes `probe_success` vanish, and `== 0` matches nothing. `for: 2m` keeps the alert pending for 2 minutes before it fires, which rides out one failed probe.
+
+### Step 4: Unit-Test the Alerts
+
+An alert you have never seen fire is an alert you hope works. `promtool`, which ships with Prometheus, runs **rule unit tests**: you write the input series, it evaluates the rules at the times you list, and it compares the alerts that fire with the ones you expect. Series values use a short notation: `0+100x60` starts at 0 and adds 100 sixty times, one step per `interval`; `6000x30` repeats 6000. The first test stops every request at minute 60:
+
+<CodeFrom file="go/week18/your-monitor/observability/rules/slo.test.yml" region="fast-burn-fires" lang="yaml" title="observability/rules/slo.test.yml" />
+
+The page fires at minute 65, the 4.3 minutes from Concepts. `16.7` is 500 failed requests out of the last hour's 6,000. The input moves a minute at a time: the burn rate jumps from 13.3 at minute 64 to 16.7 at minute 65. An empty `exp_alerts` asserts that an alert does not fire:
+
+<CodeFrom file="go/week18/your-monitor/observability/rules/slo.test.yml" region="blip-does-not-page" lang="yaml" title="observability/rules/slo.test.yml" />
+
+`promql_expr_test` checks any expression: here, that the short window crosses 14.4 and the long one does not, which is the reason for the silence. The file holds thirteen more tests: the page resolves minutes after a fix, 5% errors page through the slow burn, a slow leak opens a ticket and pages nobody, two cases where only one ticket window burns, slow workers, a missing scheduler, a frozen queue gauge, the first start of Prometheus, a failing and a missing probe, an expiring certificate, and the Watchdog. Run them with the `promtool` of the Prometheus image that Compose runs:
+
+```sh
+docker compose run --rm --no-deps --entrypoint promtool prometheus check rules /etc/prometheus/rules/slo.rules.yml
+docker compose run --rm --no-deps --entrypoint promtool prometheus test rules /etc/prometheus/rules/slo.test.yml
+```
+
+```txt
+Checking /etc/prometheus/rules/slo.rules.yml
+  SUCCESS: 27 rules found
+
+  SUCCESS
+```
+
+Now break a rule and watch a test catch it. Delete `and slo:burn_rate:5m > 14.4` from `ErrorBudgetFastBurn` and run the tests again:
+
+```txt
+  FAILED:
+    name: the page resolves minutes after the fix,
+    alertname: ErrorBudgetFastBurn, time: 1h25m,
+        exp:[],
+        got:[
+            0:
+              Labels:{alertname="ErrorBudgetFastBurn", severity="page", slo="availability"}
+```
+
+Without the short window, the page keeps ringing 5 minutes after the fix. Put the line back. A Go test in `observability/slo_test.go` checks what `promtool` cannot: every metric a rule names exists in the Go code, and every alert has a route and a runbook section:
+
+<CodeFrom file="go/week18/your-monitor/observability/slo_test.go" region="rules-test" lang="go" title="observability/slo_test.go" />
+
+### Step 5: Route Alerts with Alertmanager
+
+Alertmanager receives the alerts that Prometheus fires, groups them, silences them, and sends them to **receivers**. Your receiver is a Telegram bot, which rings your phone for free. Create it:
+
+1. In Telegram, open a chat with `@BotFather`, send `/newbot`, and answer its two questions. BotFather replies with a **token**, the password of your bot.
+2. Send any message to your new bot, then read the ID of your chat with it: `curl -s "https://api.telegram.org/bot<token>/getUpdates"`. The number after `"chat":{"id":` is your chat ID.
+3. On healthchecks.io, create two checks, `laptop` and `vps`, each with a period of 5 minutes and a grace time of 10 minutes, and copy both ping URLs. Each stack pings its own: a laptop that runs `make up` must not keep a dead VPS green.
+4. In the integrations of your healthchecks.io project, add Telegram: it sends you to `@HealthchecksBot`, where you send `/start`. healthchecks.io turns a new integration on for every check. Keep Telegram on for `vps`, and later for `pg-backup` and `restore-drill`: a dead VPS then rings your phone, not only your inbox. In the `laptop` check, turn off every integration: it exists only to keep the laptop from pinging `vps`.
+5. Write the four values into `observability/secrets/`, one per file, and add `observability/secrets/` to `.gitignore`:
+
+```sh
+mkdir -p observability/secrets
+printf '%s' '<token>' > observability/secrets/telegram-bot-token
+printf '%s' '<chat ID>' > observability/secrets/telegram-chat-id
+printf '%s' '<laptop ping URL>' > observability/secrets/heartbeat-url-laptop
+printf '%s' '<vps ping URL>' > observability/secrets/heartbeat-url-vps
+```
+
+Create all four before `make up`: Docker turns a missing file of a bind mount into an empty folder. `.dockerignore` lists `observability/secrets` too, which keeps the token out of the images that `COPY . .` builds.
+
+Then the **routing tree**. Every alert enters at the top and goes down to the first child route whose matchers it meets:
+
+<CodeFrom file="go/week18/your-monitor/observability/alertmanager.yml" region="route" lang="yaml" title="observability/alertmanager.yml" />
+
+An **inhibit rule** mutes one alert while another fires:
+
+<CodeFrom file="go/week18/your-monitor/observability/alertmanager.yml" region="inhibit" lang="yaml" title="observability/alertmanager.yml" />
+
+The on-call hours, which the page route names in `active_time_intervals`, and the receivers:
+
+<CodeFrom file="go/week18/your-monitor/observability/alertmanager.yml" region="on-call" lang="yaml" title="observability/alertmanager.yml" />
+
+<CodeFrom file="go/week18/your-monitor/observability/alertmanager.yml" region="receivers" lang="yaml" title="observability/alertmanager.yml" />
+
+Alertmanager reads each `*_file` when it sends, and trims the newline at the end. `&message` names the template once, and `*message` reuses it. Check the file, then ask which receiver gets an alert with given labels:
+
+```txt
+$ amtool check-config observability/alertmanager.yml
+Checking 'observability/alertmanager.yml'  SUCCESS
+Found:
+ - global config
+ - route
+ - 2 inhibit rules
+ - 3 receivers
+ - 0 templates
+
+$ amtool config routes test --config.file=observability/alertmanager.yml alertname=ErrorBudgetFastBurn severity=page slo=availability
+page
+```
+
+`amtool` ships with Alertmanager. The new `make check-slo` runs the rule check, the unit tests and `amtool check-config` from the images of Compose. Add it as a step of the `lint` job in `ci.yml`, with `POSTGRES_PASSWORD` and `GRAFANA_PASSWORD` set to any value in its `env:`: Compose refuses to read `compose.yaml` without them.
+
+### Step 6: Run It in Compose
+
+On your laptop, Prometheus loads the rules and finds Alertmanager through `observability/prometheus.yml`:
+
+<CodeFrom file="go/week18/your-monitor/observability/prometheus.yml" region="rules" lang="yaml" title="observability/prometheus.yml" />
+
+The same file gains a `status-page-probe` job, which Step 7 explains, and an `alertmanager` job. `compose.yaml` mounts `./observability/rules` into Prometheus and adds two services:
+
+<CodeFrom file="go/week18/your-monitor/compose.yaml" region="alertmanager" lang="yaml" title="compose.yaml" />
+
+Run `make up`, open `localhost:9090/rules` to see every rule with its last value, and `localhost:9090/alerts` to see the Watchdog firing. `localhost:9093` is Alertmanager. Within 5 minutes, the `laptop` check on healthchecks.io shows its first ping. The laptop stack sends real pages too, during your on-call hours: run `make down` when you stop working on it. Your laptop database needs its own self-check. Right after the first `make up`, run the two curl commands of Step 1 against `http://localhost:8080` with the URL `http://web:8080/healthz`, logged in as the local user you created with `api -create-user` in Week 11. The `pgdata` volume keeps the monitor: you do this once. Without it, the freshness SLI reads late, and the laptop pages you about 3 minutes after `make up`.
+
+### Step 7: Deploy to the VPS
+
+On the VPS, the same files run in a namespace of their own, `monitoring`. `observability/kustomization.yaml` packages them:
+
+<CodeFrom file="go/week18/your-monitor/observability/kustomization.yaml" region="kustomization" lang="yaml" title="observability/kustomization.yaml" />
+
+In the cluster, Prometheus finds its targets through the Kubernetes API with **service discovery**: one target per declared container port of each running pod, which keeps every api and worker pod of the autoscaler in view:
+
+<CodeFrom file="go/week18/your-monitor/observability/k8s/prometheus.yml" region="prometheus-k8s" lang="yaml" title="observability/k8s/prometheus.yml" />
+
+Put your domain in the first target of the probe job. `kubectl -n kube-system get svc traefik -o jsonpath='{.status.loadBalancer.ingress[*].ip}'` must print your public address: kube-proxy then sends the probe straight to Traefik, inside the VPS. The probe tests DNS, the certificate, Traefik and the web pod, not ufw or the provider firewall. If it prints a private address, add `node-external-ip: <public address>` to `/etc/rancher/k3s/config.yaml` and restart k3s with `sudo systemctl restart k3s`.
+
+Each target URL goes to blackbox exporter as the `target` parameter, which is what the three `relabel_configs` do, and stays as the `instance` label: `StatusPageDown` fires for either path. To list pods, Prometheus needs one right in the `your-monitor` namespace, and only that one:
+
+<CodeFrom file="go/week18/your-monitor/observability/k8s/prometheus.yaml" region="rbac" lang="yaml" title="observability/k8s/prometheus.yaml" />
+
+`k8s/prometheus.yaml` also holds a 5 GiB volume and a Deployment with `--storage.tsdb.retention.time=35d`: the 30-day window needs 30 days of data, and the default keeps 15. `k8s/alertmanager.yaml` and `k8s/blackbox.yaml` hold one small Deployment each, pinned to the image versions of `compose.yaml`. Open the SSH tunnel of <a href={weekHref(16)}>Week 16</a>, apply it all from your laptop with the administrator kubeconfig, then create the Secret with the `vps` heartbeat URL:
+
+```sh
+kubectl apply -k deploy/k8s/cluster
+kubectl apply -k observability
+kubectl -n monitoring create secret generic alertmanager-secrets \
+  --from-file=observability/secrets/telegram-bot-token \
+  --from-file=observability/secrets/telegram-chat-id \
+  --from-file=heartbeat-url=observability/secrets/heartbeat-url-vps
+kubectl -n monitoring get pods
+```
+
+The first command applies the Service policy of Week 16, whose binding now names `monitoring` next to `your-monitor`: no Service of the monitoring stack can open a port on the VPS either. The Alertmanager pod waits in `ContainerCreating` until the Secret exists, then starts. Neither Prometheus nor Alertmanager gets an Ingress: they have no login, and the internet has no business with them. Reach them through the Kubernetes API instead. Run `make down` first: Compose holds ports 9090 and 9093 on your laptop. Then send yourself a test page, inside your on-call hours, because outside them the page waits:
+
+```sh
+make down
+kubectl -n monitoring port-forward svc/prometheus 9090 &
+kubectl -n monitoring port-forward svc/alertmanager 9093 &
+amtool --alertmanager.url=http://127.0.0.1:9093 alert add alertname=TestPage severity=page slo=availability --annotation='summary="A test page from amtool."'
+```
+
+After the 30 seconds of `group_wait`, your phone rings:
+
+```txt
+[FIRING] TestPage availability
+A test page from amtool.
+Runbook:
+```
+
+On `localhost:9090/targets`, every pod of your monitor is `UP` under the jobs `api`, `scheduler`, `worker` and `alerter`, next to `status-page-probe`, `prometheus` and `alertmanager`. In the query box, `probe_success` reads 1 for both instances, the public URL and the Service URL.
+
+### Step 8: On Call and the Runbook
+
+On call for one person means a promise you can keep: hours in which you answer, and hours in which you sleep and accept the cost. Write it down:
+
+<CodeFrom file="go/week18/your-monitor/docs/oncall.md" region="oncall" lang="md" title="docs/oncall.md" />
+
+The cost is real. A page at 23:00 waits until 07:00, and 8 hours of total outage spend more than twice the 3.6-hour monthly availability budget. That is the trade for a hobby service run by one person. A paid service with the same target needs a second person in another time zone.
+
+A **runbook** tells the person holding the pager what to do first, written while nothing is on fire. The `runbook_url` of each alert points to its section in `docs/runbook.md`:
+
+<CodeFrom file="go/week18/your-monitor/docs/runbook.md" region="fast-burn" lang="md" title="docs/runbook.md" />
+
+The runbook says **mitigate** first: restore the service by rollback, restart or scale, before you understand the cause. A rollback that fixes the symptom in two minutes beats a root cause found in forty.
+
+Prometheus cannot see the backups of <a href={weekHref(17)}>Week 17</a>: the CronJob runs once a day, and the drill runs on your laptop. Two more healthchecks.io checks watch them, and the runbook section `Backups` says what to do when one alerts. `backup.sh` reads its ping URL from the `offsite` Secret and refuses to run without it. It pings `/fail` first thing in `fail()`, which alerts you at once on a failed run, and pings the URL itself as its last line. A check that has never been pinged stays new and never alerts: give each check its first ping now, in this order:
+
+1. On healthchecks.io, create `pg-backup` with the cron schedule `17 3 * * *`, time zone UTC and a grace time of 2 hours: the 1-hour start deadline and the 30-minute run limit, which holds the retries.
+2. Put its ping URL into the `offsite` Secret, before the new image runs:
+
+   ```sh
+   kubectl -n your-monitor patch secret offsite --type=merge -p '{"stringData":{"BACKUP_PING_URL":"https://hc-ping.com/<uuid>"}}'
+   ```
+
+3. Push, and let CI build the backup image, which gains `curl`, and deploy it. Wait for the deploy run to finish: a job started from the old CronJob sends no ping.
+4. Run a backup now with `kubectl -n your-monitor create job --from=cronjob/pg-backup pg-backup-first`, and check that `pg-backup` turns green on healthchecks.io.
+5. Create `restore-drill` with a period of 7 days and a grace time of 1 day. Append `&& curl -fsS -m 10 --retry 3 https://hc-ping.com/<uuid>` to the drill command of Week 17, run the drill once now, and check that `restore-drill` turns green. The ping goes out only when the drill passes.
+
+### Step 9: Run the Incident Drill
+
+A **drill** is an incident you start on purpose, at a time you choose, to test the alerts, the runbook and yourself before a real incident does. Pick a time inside your on-call hours, open a copy of the postmortem template, and write each time down as you go. Then stop Postgres on the live box:
+
+```sh
+kubectl -n your-monitor scale statefulset postgres --replicas=0
+```
+
+Postgres shuts down cleanly, and its volume stays. The api keeps answering, with `500` for every read. The workers cannot claim jobs, and the scheduler rounds fail. Now play the responder: when the page rings, open the runbook link and follow it. A test run of these rules, Alertmanager routes and programs, outside Kubernetes, with one hour of healthy history before Postgres stopped and 11 minutes of outage, gave this timeline in UTC:
+
+```txt
+12:44:00  Postgres stopped
+12:45:03  ticket    ErrorBudgetTicket availability
+12:46:33  page      ErrorBudgetSlowBurn availability
+12:46:48  page      StatusPageDown
+12:47:03  ticket    ErrorBudgetTicket freshness
+12:49:03  page      ErrorBudgetFastBurn availability
+12:50:03  page      ErrorBudgetSlowBurn freshness
+12:55:03  page      ErrorBudgetFastBurn freshness
+12:55:14  Postgres started
+12:56:48  resolved  StatusPageDown
+13:00:03  resolved  ErrorBudgetFastBurn freshness
+13:04:03  resolved  ErrorBudgetFastBurn availability
+13:25:03  resolved  ErrorBudgetSlowBurn freshness
+13:26:33  resolved  ErrorBudgetSlowBurn availability
+```
+
+`StatusPageDown` rang 2 minutes and 48 seconds after the trigger, at the end of its 2 minutes pending. The fast burn for availability rang 5 minutes after the trigger: the 4.3 minutes from Concepts, plus the next rule evaluation and 30 seconds of `group_wait`. Freshness took 11 minutes: a step counts as late once no check has finished for 2 minutes, and the one-hour window then needs 8.6 late minutes to reach 14.4 against a 1% budget.
+
+The slow burns and the tickets rang early because Prometheus held one hour of data, and a 6-hour or 3-day window over one hour of history reads close to the 1-hour window. With full history, a total outage needs 0.03 × 360 = 10.8 minutes to fire the slow burn for availability, after the fast burn, which then mutes it through the second inhibit rule. The ticket needs 0.005 × 4,320 = 21.6 minutes, and the page mutes it too. On a box you deployed this week, expect the order of this test run. The tickets stay open until the outage leaves the 6-hour window: a ticket asks for the postmortem, not for action now.
+
+Runbook step 5 finds the cause: `kubectl -n your-monitor get statefulset postgres` shows `0/1`. Mitigate with the runbook line:
+
+```sh
+kubectl -n your-monitor scale statefulset postgres --replicas=1
+kubectl -n your-monitor rollout status statefulset postgres
+```
+
+The api, the scheduler and the workers reconnect on their next query, with no restart. Watch the alerts resolve on `localhost:9093` and on your phone. A resolve message arrives at the next `group_interval` of its group, up to 5 minutes after the alert ends. Then read what the drill cost in `slo:error_budget:remaining`. With 30 days of history, 11 minutes of total outage cost 11 ÷ 216 = 5% of the availability budget. With less history, the 30-day window holds only what Prometheus has: the test run read −19.9 for availability, 20.9 budgets spent.
+
+### Step 10: Write the Postmortem
+
+A **postmortem** is the written record of an incident: what happened, why, and what changes. **Blameless** means it looks for the conditions that made the failure possible, never for a person to blame. A person who fears blame hides what they did, and the next incident has the same cause. Copy the template to `docs/postmortems/` under the date of your drill, such as `2026-10-11-postgres-stopped.md`:
+
+<CodeFrom file="go/week18/your-monitor/docs/postmortems/TEMPLATE.md" region="template" lang="md" title="docs/postmortems/TEMPLATE.md" />
+
+Fill it from your notes. For the drill, the causes form a chain: Postgres runs as one pod with no replica, the api and the workers have no other store, and nothing stops a scale to zero. Detection is a number you measured: the minutes from the trigger to the first page. Actions come in three kinds: **prevent** the cause, **detect** it sooner, **mitigate** it faster. For example, a detect action: a `tcp_connect` probe of `postgres.your-monitor.svc:5432` through the blackbox exporter you already run, paging after one minute of failures, which beats the 2 minutes of `StatusPageDown`. An alert on a Postgres pod that is not ready needs kube-state-metrics, which this stack does not run. A mitigate action: the scale command as a line at the top of the runbook. A test keeps every postmortem in the folder on the sections of the template:
+
+<CodeFrom file="go/week18/your-monitor/observability/slo_test.go" region="postmortem-test" lang="go" title="observability/slo_test.go" />
 
 ## Observe It
 
 <ObserveIt>
-This section is not written yet.
+
+Read the budget every Monday, as `docs/oncall.md` says. Paste these into `localhost:9090/query`:
+
+| Question | Query | Healthy |
+| --- | --- | --- |
+| How much budget is left? | `slo:error_budget:remaining` | Above 0.5 for both SLOs, once Prometheus holds 30 days of data |
+| How fast does it burn right now? | `slo:burn_rate:1h` | Under 1 |
+| What fails? | `sum by (route, code) (rate(http_requests_total{code=~"5.."}[1h]))` | Empty |
+| Do the probes work? | `probe_success{job="status-page-probe"}` | 1 for both instances |
+| How late are the checks? | `monitor_jobs_oldest_seconds` | Under 10 seconds |
+| Do the rules evaluate? | `rate(prometheus_rule_evaluation_failures_total[5m])` | 0 |
+
+Draw `slo:burn_rate:1h` and `slo:burn_rate:5m` for `slo="availability"` on one graph over the drill. The 5-minute line climbs to 200 within 5 minutes and falls to 0 within 5 minutes of the fix. The 1-hour line climbs for the length of the outage and falls back over the next hour. The page fires where both lines sit above 14.4.
+
+Watch for these patterns:
+
+- **`slo:error_budget:remaining` drops a little every day with no alert.** A slow leak under a burn rate of 1. Look for a route with a steady trickle of `5xx`.
+- **The burn rate jumps at every deploy.** The rollout drops requests. Check the readiness probes and the rollout settings of Week 17.
+- **Freshness burns, and `monitor_jobs_oldest_seconds` stays low.** The checks stopped, not the queue: no worker runs, or none reaches Postgres.
+
 </ObserveIt>
 
 ## Operate It
 
 <OperateIt>
-This section is not written yet.
+
+**The VPS goes down.** Nothing on the VPS can page you. When the pings stop, healthchecks.io waits out the 5-minute period and the 10-minute grace time, then messages you through its Telegram bot. This is the one alert that does not depend on your own stack.
+
+**Telegram refuses the message.** Someone revoked the token in BotFather, or the Secret holds a typo or misses a key. Alertmanager logs one line per failed try, and retries. With a missing file:
+
+```txt wrap
+level=WARN source=retry_stage.go:165 msg="Notify attempt failed, will retry later" component=dispatcher receiver=ticket integration=telegram[0] attempts=1 err="could not read /etc/alertmanager/secrets/telegram-bot-token: open /etc/alertmanager/secrets/telegram-bot-token: no such file or directory"
+```
+
+`alertmanager_notifications_failed_total{integration="telegram"}` grows with every failed try, whatever the reason. The Watchdog still pings: the heartbeat proves that Alertmanager runs, not that pages arrive. Send a test page with `amtool` after every change to the receivers.
+
+**A rule names a metric that does not exist.** The rule evaluates to nothing, without an error, and its alert never fires. `promtool check rules` passes. Only the unit tests and `slo_test.go` catch it, which is why both exist.
+
+**You plan an outage.** An upgrade of Postgres takes 10 minutes. Silence the pages before you start, with a comment and an end time:
+
+```sh
+amtool --alertmanager.url=http://127.0.0.1:9093 silence add 'severity=~"page|ticket"' --duration=1h --comment="Postgres upgrade"
+```
+
+A silence hides the alert, not the cost: the budget still pays for the 10 minutes. The matcher covers both SLOs, because a stopped Postgres burns freshness too. Expire the silence with `amtool --alertmanager.url=http://127.0.0.1:9093 silence expire <ID>` when the work ends. On the VPS, silences live in an `emptyDir`, and a new Alertmanager pod starts with none.
+
+**Alerts flap.** A page fires, resolves and fires again every few minutes, because the burn rate sits on the threshold. Fix the cause. Raising the threshold to stop the noise also hides the next real outage.
+
+| What you see | What it points to |
+| --- | --- |
+| A healthchecks.io message about `vps`, no page | The VPS, Prometheus or Alertmanager is down |
+| `Notify attempt failed` in the Alertmanager log | Wrong or missing token or chat ID, or no route to Telegram |
+| An alert that never fires in a drill | A rule that names a missing metric or label |
+| `ContainerCreating` on the Alertmanager pod | The `alertmanager-secrets` Secret does not exist |
+| `StatusPageDown` with no `ErrorBudgetFastBurn` for more than 5 minutes | Requests never reach the api: web, the api pods, or blackbox exporter |
+| A page at 07:00 for something that broke at 02:00 | The on-call hours held it back, as `docs/oncall.md` promises |
+
 </OperateIt>
 
 ## AI This Week
 
 <AiThisWeek>
-This section is not written yet.
+
+Stage 3, pair partner, for the last week of the course. Use the assistant for scaffolding, configuration, refactors, and as a reviewer of your own work. Architecture and incident response stay your decisions.
+
+**Do:** hand it your rule file and test file, and ask for more `promtool` test cases: a burn rate just under each threshold, a slow burn that turns into a fast one, a restart of the api that resets its counters. Run each test it writes, and break the rule it tests to watch the test fail, as in Step 4. Ask it also to review a draft of your postmortem for sentences that blame a person.
+
+**Do not:** let it run the incident. When the page rings, follow your runbook, read your graphs and pick the mitigation yourself. An assistant handed a pasted log in the middle of an outage suggests the most common fix for that error text, not the one for your system, and you lose the minutes your runbook saves. After the incident, ask it to check your timeline for gaps.
+
 </AiThisWeek>
 
 ## Side Lab
 
-<SideLab title="Optional lab: not written yet">
-This section is not written yet.
+<SideLab title="Read a public postmortem and map it onto your template">
+
+Companies that run large services publish their postmortems. Reading them is the cheapest way to learn from outages you did not have to live through.
+
+**1. Pick one.** Read the Cloudflare blog post [Details of the Cloudflare outage on July 2, 2019](https://blog.cloudflare.com/details-of-the-cloudflare-outage-on-july-2-2019/). A change to one firewall rule took down a large share of the traffic of Cloudflare.
+
+**2. Map it.** Copy `TEMPLATE.md` and fill in each section from the post: the summary in three sentences, the impact with its numbers, the timeline in UTC, how they detected it, and the chain of causes. Mark each action of the post as prevent, detect or mitigate.
+
+**3. Find the chain.** Write the causes as conditions, each one needed for the outage to happen. Count them. Then find the one condition that, removed, stops the outage with the least work.
+
+**4. Compare.** Find the place where the post explains a decision that went wrong without naming who made it. Compare it with the Causes section of your drill postmortem.
+
 </SideLab>
 
 ## Done When
@@ -67,3 +554,22 @@ This section is not written yet.
 ## Read with This Week
 
 <ReadWith />
+
+## Looking Back
+
+In <a href={weekHref(1)}>Week 1</a>, your monitor started as a Go program that checked one URL and printed one line. Here is what it became:
+
+- **Foundations, weeks 0 to 5.** Go, Linux processes and signals, the network path from DNS to the first byte, and a worker pool with timeouts. Every later week leans on these.
+- **Build, weeks 6 to 10.** A repository with an api, a Postgres schema, a queue built on `SKIP LOCKED`, an alerter, and a React status page with tests at every level.
+- **Harden, weeks 11 to 14.** Sessions and hashed passwords, a bug hunt with a debugger and a profiler, logs, metrics and traces, and a pipeline that tests every change and builds the images.
+- **Run, weeks 15 to 18.** Kubernetes on a laptop, then a real VPS with DNS and TLS, autoscaling and restore drills, and this week an SLO, a pager and a postmortem.
+
+You built each layer by hand before you let a tool generate it, and you tested each one before you trusted it. That habit, carried over from your QA work, is what makes an engineer someone others trust with production.
+
+## Where to Go Next
+
+- **Read the sources of this week.** The Google books Site Reliability Engineering and The Site Reliability Workbook are free to read at `sre.google`. Start with the workbook chapters Implementing SLOs and Alerting on SLOs.
+- **Go deeper on one track.** The <a href={trackHref('sre')}>SRE and Incident Response track</a> and the <a href={trackHref('observability')}>Observability track</a> pick up where this week stops.
+- **Make Postgres survive a lost pod.** Run a second Postgres as a streaming replica, then plan and drill the failover. Your freshness SLO measures whether it worked.
+- **Watch from outside.** Put a second small VPS in another region with its own blackbox exporter, and alert when the two views disagree.
+- **Contribute.** Pick an open issue labeled for newcomers in a project you used here: Prometheus, Alertmanager, k3s or pgx. Maintainers value a pull request that comes with a test.
