@@ -326,7 +326,10 @@ test(`light mode neutrals follow the reference page`, async ({ page }) => {
 test(`serif headings stay inside page content`, async ({ page }) => {
   await load(page, HOME, 'light');
   const family = (sel: string) => page.locator(sel).first().evaluate((el) => getComputedStyle(el).fontFamily);
-  expect(await family('h1#_top')).toMatch(/serif/);
-  expect(await family('.site-title')).toMatch(/serif/);
-  expect(await family('.week-timeline h3')).not.toMatch(/Georgia|ui-serif/);
+  // Starlight's sans stack ends in sans-serif, so match the serif stack's Georgia.
+  expect(await family('h1#_top')).toContain('Georgia');
+  expect(await family('.site-title')).toContain('Georgia');
+  expect(await family('.week-timeline h3')).not.toContain('Georgia');
+  await load(page, WEEK, 'light');
+  expect(await family('.sl-markdown-content h2')).toContain('Georgia');
 });
