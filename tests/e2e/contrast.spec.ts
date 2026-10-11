@@ -9,6 +9,31 @@ const WEEK = 'weeks/04-networking/';
 const HOME = '';
 const AA = 4.5;
 
+// The Gruvbox accents (src/styles/theme.css). Links and strokes are Gruvbox green;
+// the -low tints are a Gruvbox green blended over the page; light-mode text green
+// is faded green darkened with fg0 because #79740e alone is just under AA.
+const GRUVBOX = {
+  dark: {
+    '--sl-color-accent-low': '#363820',
+    '--sl-color-accent': '#b8bb26',
+    '--sl-color-accent-high': '#b8bb26',
+    '--sl-color-blue-low': '#363820',
+    '--sl-color-blue': '#b8bb26',
+    '--sl-color-blue-high': '#b8bb26',
+  },
+  light: {
+    '--sl-color-accent-low': '#e6e2b9',
+    '--sl-color-accent': '#79740e',
+    '--sl-color-accent-high': '#656115',
+    '--sl-color-blue-low': '#e6e2b9',
+    '--sl-color-blue': '#79740e',
+    '--sl-color-blue-high': '#656115',
+  },
+} as const;
+// Gruvbox greens sit at hue 55-65 degrees (#79740e 57, #98971a 60, #b8bb26 61);
+// the band keeps them and excludes Gruvbox yellow (42), aqua (104) and any blue.
+const GREEN_HUE: [number, number] = [50, 75];
+
 type RGBA = [number, number, number, number];
 
 // --- WCAG relative luminance (https://www.w3.org/TR/WCAG21/#dfn-relative-luminance) ---
@@ -22,6 +47,8 @@ const ratio = (a: RGBA, b: RGBA) => {
   const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
   return (hi + 0.05) / (lo + 0.05);
 };
+
+const toHex = ([r, g, b]: RGBA) => '#' + [r, g, b].map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
 
 function hue([r, g, b]: RGBA) {
   const [R, G, B] = [r / 255, g / 255, b / 255];
@@ -150,13 +177,15 @@ function expectAtLeast(ms: Measured[], min: number) {
 
 for (const theme of ['dark', 'light'] as const) {
   test.describe(`${theme} theme`, () => {
-    test(`accent is green`, async ({ page }) => {
+    test(`accent is Gruvbox green`, async ({ page }) => {
       await load(page, HOME, theme);
       // The blue tokens are remapped to the accent, so asides, badges and cards are green too.
-      for (const name of ['--sl-color-accent-low', '--sl-color-accent', '--sl-color-accent-high', '--sl-color-blue']) {
-        const h = hue(await variable(page, name));
-        expect(h, `${name} hue ${h.toFixed(0)}`).toBeGreaterThanOrEqual(90);
-        expect(h, `${name} hue ${h.toFixed(0)}`).toBeLessThanOrEqual(160);
+      for (const [name, want] of Object.entries(GRUVBOX[theme])) {
+        const c = await variable(page, name);
+        expect.soft(toHex(c), name).toBe(want);
+        const h = hue(c);
+        expect.soft(h, `${name} hue ${h.toFixed(0)}`).toBeGreaterThanOrEqual(GREEN_HUE[0]);
+        expect.soft(h, `${name} hue ${h.toFixed(0)}`).toBeLessThanOrEqual(GREEN_HUE[1]);
       }
     });
 
@@ -226,7 +255,17 @@ test(`print from dark mode: text meets WCAG AA on white`, async ({ page }) => {
     const r = ratio(c, white);
     expect.soft(r, `${name}: ${r.toFixed(2)}:1 (${fg})`).toBeGreaterThanOrEqual(AA);
   }
-  const h = hue(await variable(page, '--sl-color-accent'));
-  expect(h, `print --sl-color-accent hue ${h.toFixed(0)}`).toBeGreaterThanOrEqual(90);
-  expect(h, `print --sl-color-accent hue ${h.toFixed(0)}`).toBeLessThanOrEqual(160);
+  // Printed accents are the light-mode Gruvbox greens.
+  for (const name of ['--sl-color-accent', '--sl-color-accent-high'] as const) {
+    expect.soft(toHex(await variable(page, name)), `print ${name}`).toBe(GRUVBOX.light[name]);
+  }
+});
+
+// Casey asked for a dark background that is not pure black: Gruvbox bg0_h.
+test(`dark mode page background is Gruvbox bg0_h`, async ({ page }) => {
+  await load(page, HOME, 'dark');
+  const body = await page.locator('body').evaluate((el) => getComputedStyle(el).backgroundColor);
+  const c = await page.evaluate((css) => (window as unknown as { __contrast: { parse(s: string): RGBA } }).__contrast.parse(css), body);
+  expect(toHex(c)).toBe('#1d2021');
+  expect(toHex(await variable(page, '--sl-color-bg'))).toBe('#1d2021');
 });

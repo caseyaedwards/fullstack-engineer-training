@@ -1,23 +1,35 @@
 /*
- * Site palette: greens on nori.
+ * Site palette: Gruvbox (github.com/morhetz/gruvbox), dark and light.
  *
  * Starlight's documented theming approach: override its colour variables under
  * :root (dark mode) and :root[data-theme='light']. Every component, the D2
  * diagrams (src/styles/diagrams.css) and the Expressive Code frames read these
- * variables, so this is the only file with literal colours.
+ * variables, so this is the only file with literal colours. Code tokens come from
+ * Shiki's gruvbox-dark-hard and gruvbox-light-hard themes (astro.config.mjs).
  *
- * Dark mode sits on nori, the green-black of dried seaweed: the page is #1f2a1c
- * and raised surfaces (sidebar, nav, code) are #2b3a26. The grays carry a slight
- * green tint, and the text grays are light enough that body, sidebar and
- * table-of-contents text all pass WCAG AA (4.5:1) on both surfaces.
- * Light mode is white with a faint green tint on surfaces and a dark green accent.
+ * Dark mode is Gruvbox dark hard: the page is bg0_h #1d2021 (dark, not black),
+ * raised surfaces (sidebar, nav, code frames) are bg0 #282828 and bg1 #3c3836.
+ * Headings are fg0 #fbf1c7, body text fg1 #ebdbb2, secondary text fg3 #bdae93.
+ * Gruvbox's #928374 gray is never used for text. Light mode is Gruvbox light hard:
+ * page bg0_h #f9f5d7, raised bg0 #fbf1c7 and bg1 #ebdbb2, body text fg1 #3c3836.
+ * Every text role passes WCAG AA (4.5:1) on the surfaces it sits on.
  *
- * Accent roles: --sl-color-accent is the medium green of strokes, borders, focus
- * rings and diagram highlights; --sl-color-accent-high is the link and site-title
- * green in dark mode (Starlight's --sl-color-text-accent), and the fill of the
- * current sidebar item; --sl-color-accent-low is the tinted surface of callouts,
- * notes, completed weeks and lit diagram shapes, and in dark mode the text of the
- * current sidebar item.
+ * Accent roles (Gruvbox green):
+ * --sl-color-accent is the green of strokes, borders, focus rings and diagram
+ * highlights: bright green #b8bb26 in dark mode, faded green #79740e in light.
+ * --sl-color-accent-high is the link and site-title green (Starlight's
+ * --sl-color-text-accent) and the fill of the current sidebar item: #b8bb26 in
+ * dark mode. In light mode #79740e is 4.4:1 on bg0_h, just short of AA, and
+ * Gruvbox has no darker green, so text uses #79740e darkened with fg0 #282828
+ * (75% / 25% = #656115: the same 57 degree hue, 5.8:1 on the page).
+ * --sl-color-accent-low is the tinted surface of callouts, notes, completed weeks
+ * and lit diagram shapes, and in dark mode the text of the current sidebar item.
+ * It is a Gruvbox green blended over the page: neutral green #98971a 20% over
+ * #1d2021 in dark mode, faded green #79740e 15% over #f9f5d7 in light mode.
+ *
+ * Starlight's green, orange, purple and red scales (asides, badges, the Operate
+ * and AI callouts) take the Gruvbox colours of the same names, with each -low
+ * surface blended over the page the same way.
  */
 
 /*
@@ -28,49 +40,108 @@
 @media not print {
   :root,
   ::backdrop {
-    --sl-color-accent-low: #1d4527;
-    --sl-color-accent: #4caf5f;
-    --sl-color-accent-high: #8fd69b;
+    --sl-color-accent-low: #363820; /* neutral green #98971a 20% over bg0_h */
+    --sl-color-accent: #b8bb26; /* bright green */
+    --sl-color-accent-high: #b8bb26; /* bright green */
 
-    --sl-color-white: #f4f9f1;
-    --sl-color-gray-1: #e3ecdf;
-    --sl-color-gray-2: #d5e1cf;
-    --sl-color-gray-3: #adc0a6;
-    --sl-color-gray-4: #6e8467;
-    --sl-color-gray-5: #3d4f37;
-    --sl-color-gray-6: #2b3a26;
-    --sl-color-black: #1f2a1c;
+    --sl-color-white: #fbf1c7; /* fg0: headings */
+    --sl-color-gray-1: #fbf1c7; /* fg0 */
+    --sl-color-gray-2: #ebdbb2; /* fg1: body text */
+    --sl-color-gray-3: #bdae93; /* fg3: secondary text */
+    --sl-color-gray-4: #7c6f64; /* bg4: borders, never text */
+    --sl-color-gray-5: #3c3836; /* bg1 */
+    --sl-color-gray-6: #282828; /* bg0: sidebar, nav, code frames */
+    --sl-color-black: #1d2021; /* bg0_h: the page */
 
-    --sl-color-backdrop-overlay: rgb(17 24 15 / 0.7);
+    --sl-color-green-low: #363820; /* #98971a 20% over bg0_h */
+    --sl-color-green: #98971a;
+    --sl-color-green-high: #b8bb26;
+    --sl-color-orange-low: #39291e; /* #d65d0e 15% over bg0_h */
+    --sl-color-orange: #d65d0e;
+    --sl-color-orange-high: #fe8019;
+    --sl-color-purple-low: #332a30; /* #b16286 15% over bg0_h */
+    --sl-color-purple: #b16286;
+    --sl-color-purple-high: #d3869b;
+    --sl-color-red-low: #2b2021; /* #cc241d 8% over bg0_h: #fb4934 is 4.8:1 on the bare page */
+    --sl-color-red: #cc241d;
+    --sl-color-red-high: #fb4934;
+
+    --sl-color-backdrop-overlay: rgb(29 32 33 / 0.7);
   }
 }
 
 /* Light mode. */
 :root[data-theme='light'],
 [data-theme='light'] ::backdrop {
-  --sl-color-accent-low: #dcefdf;
-  --sl-color-accent: #22693a;
-  --sl-color-accent-high: #144421;
+  --sl-color-accent-low: #e6e2b9; /* faded green #79740e 15% over bg0_h */
+  --sl-color-accent: #79740e; /* faded green */
+  --sl-color-accent-high: #656115; /* #79740e 75% + fg0 #282828 25% */
 
-  --sl-color-white: #0f170d;
-  --sl-color-gray-1: #1b2618;
-  --sl-color-gray-2: #273424;
-  --sl-color-gray-3: #44553e;
-  --sl-color-gray-4: #7f927a;
-  --sl-color-gray-5: #c2d0bc;
-  --sl-color-gray-6: #e4ece0;
-  --sl-color-gray-7: #f2f7f0;
-  --sl-color-black: #ffffff;
+  --sl-color-white: #282828; /* fg0: headings */
+  --sl-color-gray-1: #282828; /* fg0 */
+  --sl-color-gray-2: #3c3836; /* fg1: body text */
+  --sl-color-gray-3: #665c54; /* fg3: secondary text */
+  --sl-color-gray-4: #a89984; /* bg4: borders, never text */
+  --sl-color-gray-5: #d5c4a1; /* bg2 */
+  --sl-color-gray-6: #ebdbb2; /* bg1 */
+  --sl-color-gray-7: #fbf1c7; /* bg0: nav, code frames */
+  --sl-color-black: #f9f5d7; /* bg0_h: the page */
 
-  --sl-color-backdrop-overlay: rgb(52 66 48 / 0.6);
+  --sl-color-green-low: #e6e2b9;
+  --sl-color-green: #79740e;
+  --sl-color-green-high: #656115;
+  --sl-color-orange-low: #f4deb9; /* #d65d0e 15% over bg0_h */
+  --sl-color-orange: #d65d0e;
+  --sl-color-orange-high: #af3a03;
+  --sl-color-purple-low: #eedfcb; /* #b16286 15% over bg0_h */
+  --sl-color-purple: #b16286;
+  --sl-color-purple-high: #8f3f71;
+  --sl-color-red-low: #f2d6bb; /* #cc241d 15% over bg0_h */
+  --sl-color-red: #cc241d;
+  --sl-color-red-high: #9d0006;
+
+  /* Starlight's light mode draws links in --sl-color-accent, which here is a stroke colour. */
+  --sl-color-text-accent: var(--sl-color-accent-high);
+  --sl-color-bg-accent: var(--sl-color-accent-high);
+
+  --sl-color-backdrop-overlay: rgb(60 56 54 / 0.6);
 }
 
-/* Printing uses Starlight's light greys; give it the light-mode greens. */
+/*
+ * Printing: Gruvbox light text and accents on white paper, whichever mode the
+ * reader picked on screen.
+ */
 @media print {
   :root {
-    --sl-color-accent-low: #dcefdf;
-    --sl-color-accent: #22693a;
-    --sl-color-accent-high: #144421;
+    --sl-color-accent-low: #e6e2b9;
+    --sl-color-accent: #79740e;
+    --sl-color-accent-high: #656115;
+
+    --sl-color-white: #282828;
+    --sl-color-gray-1: #282828;
+    --sl-color-gray-2: #3c3836;
+    --sl-color-gray-3: #665c54;
+    --sl-color-gray-4: #a89984;
+    --sl-color-gray-5: #d5c4a1;
+    --sl-color-gray-6: #ebdbb2;
+    --sl-color-gray-7: #fbf1c7;
+    --sl-color-black: #ffffff;
+
+    --sl-color-green-low: #e6e2b9;
+    --sl-color-green: #79740e;
+    --sl-color-green-high: #656115;
+    --sl-color-orange-low: #f4deb9;
+    --sl-color-orange: #d65d0e;
+    --sl-color-orange-high: #af3a03;
+    --sl-color-purple-low: #eedfcb;
+    --sl-color-purple: #b16286;
+    --sl-color-purple-high: #8f3f71;
+    --sl-color-red-low: #f2d6bb;
+    --sl-color-red: #cc241d;
+    --sl-color-red-high: #9d0006;
+
+    --sl-color-text-accent: var(--sl-color-accent-high);
+    --sl-color-bg-accent: var(--sl-color-accent-high);
   }
 }
 
