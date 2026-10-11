@@ -1,0 +1,173 @@
+# region: head
+# CI for your-monitor: the checks of make ci on every pull request and
+# every push to main. A push to main that passes them also builds the
+# images and pushes them to the GitHub Container Registry (GHCR).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# The GITHUB_TOKEN of every job can read the repository and nothing else.
+# The one job that needs more asks for it.
+permissions:
+  contents: read
+
+# A pull request gets one group: a new push cancels the run of its older
+# commit. A push to main gets a group of its own, named by its run ID, and
+# no other run shares it: every commit on main builds its images.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+# endregion: head
+
+# region: lint
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      # Every action is pinned to a full commit SHA. The comment names the
+      # release that the SHA belongs to.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.14.0
+  # endregion: lint
+
+  # region: test
+# The Go tests, against a Postgres 17 service container.
+  test:
+    runs-on: ubuntu-24.04
+    # A Postgres 17 container that runs next to the job. Its port 5432 is
+    # published on the runner, and the job waits until pg_isready passes.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: monitor
+          POSTGRES_PASSWORD: monitor
+          POSTGRES_DB: monitor
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U monitor -d monitor"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      # The database lives only as long as the job: this password guards nothing.
+      DATABASE_URL: postgres://monitor:monitor@localhost:5432/monitor?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go test -race ./...
+  # endregion: test
+
+  # region: web
+# The Vitest tests and the production build of web/.
+  web:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+  # endregion: web
+
+  # region: e2e
+# The Playwright tests, against the Vite dev server.
+  e2e:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      # On failure, keep the Playwright traces for a week. Download them
+      # from the Summary page of the run.
+      - if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-traces
+          path: web/test-results/
+          retention-days: 7
+  # endregion: e2e
+
+  # region: images
+# The images, built and pushed for a push to main.
+  images:
+    # Only after every check passes, and only for a push to main.
+    needs: [lint, test, web, e2e]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    # This job alone can write packages: it pushes the images.
+    permissions:
+      contents: read
+      packages: write
+    # Five copies of this job run side by side, one per Dockerfile target.
+    strategy:
+      matrix:
+        target: [api, worker, scheduler, alerter, web]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Image names must be lowercase. A GitHub user name can hold capitals.
+      - name: Name the image
+        env:
+          TARGET: ${{ matrix.target }}
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/$TARGET" >> "$GITHUB_ENV"
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          # Links the package to this repository on GitHub.
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          # Reuse unchanged layers from the last build of this target.
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+      - name: Summary
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: echo "Pushed \`$IMAGE:$GITHUB_SHA\`, digest \`$DIGEST\`" >> "$GITHUB_STEP_SUMMARY"
+  # endregion: images
