@@ -50,13 +50,13 @@ Every authorization system asks the same three-part question: can this **princip
 | --- | --- | --- | --- |
 | Your api, Week 11 | a logged-in user | `POST`, `DELETE` | `/api/monitors` |
 | Kubernetes | a user, or a ServiceAccount: the identity of a program | a verb, such as `get` or `patch` | a resource type in a namespace, such as `deployments` in `your-monitor` |
-| Amazon Web Services (AWS) IAM | a user or a role | `s3:GetObject` | an ARN, such as `arn:aws:s3:::backups/*` |
+| Amazon Web Services (AWS) IAM | a user or a role | `s3:GetObject` | an Amazon Resource Name (ARN), such as `arn:aws:s3:::backups/*` |
 
-An ARN, short for Amazon Resource Name, is the string AWS uses to name any resource. Many systems add a fourth part, a **condition**: allow this only from one network, only before a date, only with a second factor.
+A **namespace** is a named partition of a Kubernetes cluster, such as `your-monitor`, and most rights apply inside one. An ARN is the string AWS uses to name any resource. Many systems add a fourth part, a **condition**: allow this only from one network, only before a date, only with a second factor.
 
 ### Policies and Statements
 
-A **policy** is a document that lists what principals can and cannot do. It holds **statements**. Each statement names an effect, `Allow` or `Deny`, a set of actions and a set of resources. AWS, Google Cloud and this page all use this shape.
+A **policy** is a document that lists what principals can and cannot do. It holds **statements**. Each statement names an effect, `Allow` or `Deny`, a set of actions and a set of resources. AWS and this page use this shape. Google Cloud uses another: an allow policy binds a role, a named set of permissions, to principals on a resource.
 
 Three rules decide the answer, and AWS documents them as its policy evaluation logic:
 
@@ -121,7 +121,7 @@ res: "the kinds of the prod\\noverlay in your-monitor"
 other: "Secrets, other namespaces"
 rb -> sa: "subject"
 rb -> role: "roleRef"
-role -> res: "get, create, patch"
+role -> res: "get, create, patch;\\nlist, watch on Deployments"
 role -> other: "no rule: refused"
 `}
 />
@@ -152,7 +152,7 @@ Change the `Deny` case to set `allowed = false` instead of returning, and `a den
 
 In <WeekLink n={11} anchor="who-are-you-and-what-can-you-do">Week 11</WeekLink>, the api learns both halves. Authentication is a bcrypt check of the password, then a session cookie that names the user on every later request. Authorization is one rule: anyone reads, and any logged-in user writes. `requireUser` in <WeekLink n={11} anchor="step-7-guard-the-routes">Step 7</WeekLink> enforces it and answers `401` when no valid session exists. The monitor needs no roles yet: every user can do everything. The day a second person joins as a read-only viewer, a policy like the example on this page replaces the one rule, and `requireUser` passes the principal to `Allowed`.
 
-In <WeekLink n={16} anchor="who-can-reach-what">Week 16</WeekLink>, IAM moves to the cluster. Your own kubeconfig holds administrator rights, which you use by hand for the setup. CI gets its own identity, the `deployer` ServiceAccount, and a Role built from what `deploy.yml` runs: `get`, `create` and `patch` on the kinds of the prod overlay, plus `list` and `watch` on Deployments for `kubectl rollout status`. <WeekLink n={16} anchor="step-8-apply-the-cluster-setup">Step 8</WeekLink> also names what the Role cannot stop: `create` on Deployments runs any image, and that pod reads the Secrets of the namespace. Least privilege narrows the damage. It does not remove it. <WeekLink n={16} anchor="step-11-give-ci-a-way-in">Step 11</WeekLink> issues the token for 90 days, confines the SSH user `tunnel` to one forwarded port, and runs `kubectl auth can-i` before every deploy, which asks the API server the authorization question without changing anything.
+In <WeekLink n={16} anchor="who-can-reach-what">Week 16</WeekLink>, IAM moves to the cluster. Your own kubeconfig, the file that tells `kubectl` where the cluster is and which credentials to send, holds administrator rights, which you use by hand for the setup. CI gets its own identity, the `deployer` ServiceAccount, and a Role built from what `deploy.yml` runs: `get`, `create` and `patch` on the kinds of the prod overlay, plus `list` and `watch` on Deployments for `kubectl rollout status`. <WeekLink n={16} anchor="step-8-apply-the-cluster-setup">Step 8</WeekLink> also names what the Role cannot stop: `create` on Deployments runs any image, and that pod reads the Secrets of the namespace. Least privilege narrows the damage. It does not remove it. <WeekLink n={16} anchor="step-11-give-ci-a-way-in">Step 11</WeekLink> issues the token for 90 days, confines the SSH user `tunnel` to one forwarded port, and runs `kubectl auth can-i` before every deploy, which asks the API server the authorization question without changing anything.
 
 ## Common Mistakes
 
@@ -167,7 +167,7 @@ In <WeekLink n={16} anchor="who-can-reach-what">Week 16</WeekLink>, IAM moves to
 ## Going Deeper
 
 - **OpenID Connect for CI.** GitHub Actions issues a signed token per job, and a cloud provider exchanges it for credentials that last one hour by default on AWS, which removes the stored 90-day token.
-- **Attribute-based access control.** Attribute-based access control (ABAC) decides on attributes of the principal and the resource, such as a team tag that must match on both, which scales better than one role per team.
+- **Attribute-based access control** (ABAC) decides on attributes of the principal and the resource, such as a team tag that must match on both, which scales better than one role per team.
 - **Relationship-based access control.** Google Zanzibar and its open source descendants, such as OpenFGA and SpiceDB, answer questions like can this user edit this document through a graph of who owns what.
 - **Policy engines.** Open Policy Agent and Cedar keep policies as code outside the application, with tests, and answer the authorization question through an API.
 - **Kubernetes admission control.** Week 16 already uses a ValidatingAdmissionPolicy: RBAC decides who can create a Service, and admission decides what that Service can contain.
