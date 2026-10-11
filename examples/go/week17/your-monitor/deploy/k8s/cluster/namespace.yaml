@@ -1,0 +1,15 @@
+# region: namespace
+# contract copy: week 16 (restricted, as the Week 16 review settled it)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: your-monitor
+  labels:
+    # Pod Security admission refuses any pod in this namespace that breaks
+    # the restricted standard: a root user, privilege escalation, extra
+    # capabilities, no seccomp profile, or a volume from the node.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.36
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.36
+# endregion: namespace

@@ -1,0 +1,178 @@
+# region: backup-pvc
+# The disk the dumps go to. On k3s, the local-path StorageClass puts it
+# in a folder under /var/lib/rancher/k3s/storage on the server: the same
+# disk as the database, which is why the dumps must also leave the box.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pg-backups
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+# endregion: backup-pvc
+---
+# region: backup-cronjob
+# Every day at 03:17 UTC, a pod runs backup.sh with pg_dump from the
+# postgres:17 image, against the postgres Service.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pg-backup
+spec:
+  schedule: "17 3 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid # never two dumps at once
+  startingDeadlineSeconds: 3600 # a run missed by up to an hour still starts
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2 # retry a failed dump twice
+      activeDeadlineSeconds: 1800
+      template:
+        spec:
+          restartPolicy: Never
+          # The postgres user of the image, which can write to the claim
+          # through fsGroup, and the restrictions of the Week 15 programs.
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
+            fsGroup: 999
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: backup
+              image: postgres:17
+              command: ["sh", "/scripts/backup.sh"]
+              # The same ConfigMap and Secret as the programs, in the
+              # variables that pg_dump and psql read.
+              envFrom:
+                - configMapRef:
+                    name: monitor-config
+                - secretRef:
+                    name: postgres
+              env:
+                - name: PGHOST
+                  value: postgres
+                - name: PGUSER
+                  value: $(POSTGRES_USER)
+                - name: PGDATABASE
+                  value: $(POSTGRES_DB)
+                - name: PGPASSWORD
+                  value: $(POSTGRES_PASSWORD)
+                - name: KEEP_DAYS
+                  value: "14"
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+                - name: scripts
+                  mountPath: /scripts
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: pg-backups
+            - name: scripts
+              configMap:
+                name: backup-scripts
+            - name: tmp
+              emptyDir: {}
+# endregion: backup-cronjob
+---
+# region: drill-cronjob
+# Every Sunday at 04:17 UTC, a pod restores the newest dump into a new,
+# empty Postgres server inside itself, and compares the counts with the
+# live database. Run it any time with kubectl create job --from.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: restore-drill
+spec:
+  schedule: "17 4 * * 0"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0 # a failed drill is a finding, not a glitch to retry
+      activeDeadlineSeconds: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
+            fsGroup: 999
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: drill
+              image: postgres:17
+              command: ["sh", "/scripts/restore-drill.sh"]
+              envFrom:
+                - configMapRef:
+                    name: monitor-config
+                - secretRef:
+                    name: postgres
+              env:
+                - name: MAX_AGE_HOURS
+                  value: "26"
+                - name: PGHOST
+                  value: postgres
+                - name: PGUSER
+                  value: $(POSTGRES_USER)
+                - name: PGDATABASE
+                  value: $(POSTGRES_DB)
+                - name: PGPASSWORD
+                  value: $(POSTGRES_PASSWORD)
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  memory: 512Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+                  readOnly: true
+                - name: scripts
+                  mountPath: /scripts
+                - name: drill
+                  mountPath: /drill
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: pg-backups
+            - name: scripts
+              configMap:
+                name: backup-scripts
+            - name: drill
+              emptyDir:
+                sizeLimit: 2Gi
+            - name: tmp
+              emptyDir: {}
+# endregion: drill-cronjob

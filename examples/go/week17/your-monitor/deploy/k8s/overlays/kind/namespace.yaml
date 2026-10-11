@@ -1,0 +1,13 @@
+# region: namespace
+# The namespace holds every object of the monitor. With the label, the API
+# server refuses any pod in it that breaks the restricted Pod Security
+# Standard: a root user, privilege escalation, extra capabilities, no
+# seccomp profile, or a volume from the node filesystem.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: your-monitor
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.33
+# endregion: namespace

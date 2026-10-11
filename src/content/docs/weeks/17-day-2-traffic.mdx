@@ -1,17 +1,22 @@
 ---
 title: "Week 17: Day 2 and Traffic"
+description: Run the live monitor past its first day. Scale the api and the worker with autoscalers, roll changes out and back, limit each client in the api and at Traefik, and back up Postgres every night with a timed restore drill.
 week: 17
 phase: run
-hours: [5, 8]
+hours: [6, 8]
 aiStage: 3
 tracks: [load-balancing, backups, automation]
 done:
-  - id: item-1
-    text: "Placeholder item 1: this week is not written yet"
-  - id: item-2
-    text: "Placeholder item 2: this week is not written yet"
-  - id: item-3
-    text: "Placeholder item 3: this week is not written yet"
+  - id: rate-limit-tests-pass
+    text: The rate limiter tests pass under go test -race, the spoofed X-Forwarded-For cases included, and you can say why the api walks the header from the right.
+  - id: client-address-in-log
+    text: Behind Traefik on your server, the request lines of the api show your own public address as client, and a burst from your laptop gets 429 answers.
+  - id: hpa-scaled
+    text: kubectl get hpa shows a CPU percentage for the api and the worker, and you watched the api scale up under load and back down after the five-minute window.
+  - id: rollout-and-undo
+    text: You rolled out a change with kubectl rollout status, found it in kubectl rollout history, took it back with kubectl rollout undo, and can say why the next deploy.yml run undoes an undo.
+  - id: timed-restore-drill
+    text: The pg-backup CronJob wrote a dump, and a restore drill you started by hand restored it into a new, empty server and printed how long the restore took.
 ---
 
 import WeekHeader from '../../../components/WeekHeader.astro';
@@ -21,43 +26,532 @@ import AiThisWeek from '../../../components/AiThisWeek.astro';
 import SideLab from '../../../components/SideLab.astro';
 import ReadWith from '../../../components/ReadWith.astro';
 import DoneWhen from '../../../components/DoneWhen.astro';
+import Diagram from '../../../components/Diagram.astro';
+import CodeFrom from '../../../components/CodeFrom.astro';
+import { weekHref, trackHref } from '../../../lib/links';
 
 <WeekHeader />
 
+In <a href={weekHref(16)}>Week 16</a>, your monitor went live on a k3s server with a real domain and a certificate. That is day 1. **Day 2** is everything after it: traffic that rises and falls, changes that go out and come back when they break, visitors who send too much, and a database that must survive a bad morning. This week, the cluster adds pods when the api gets busy, every change rolls out without a gap and rolls back with one command, the api and Traefik each limit what one client can send, and Postgres gets a nightly backup that a weekly drill restores.
+
 ## Goals
 
-This section is not written yet.
+- Scale the api and the worker with a HorizontalPodAutoscaler that reads CPU from metrics-server, and say what CPU cannot tell you about the worker.
+- Tune a rolling update, follow it with `kubectl rollout status`, and take it back with `kubectl rollout undo`.
+- Limit requests per client in the api with token buckets from `golang.org/x/time/rate`, and find the real client address behind Traefik without trusting what the client writes.
+- Put a second limit at the edge with a Traefik Middleware.
+- Back up Postgres with a CronJob, and time a restore drill into a new, empty server.
 
 ## Concepts
 
-This section is not written yet.
+### Scaling Out with the HorizontalPodAutoscaler
+
+**Scaling out** adds copies of a program; **scaling up** gives one copy a bigger machine. A **HorizontalPodAutoscaler**, HPA for short, scales a Deployment out and back in. It needs one number per pod, and the simplest one is CPU.
+
+k3s ships **metrics-server**, a small program that collects the CPU and memory use of every pod from the kubelet on each node every 15 seconds, and serves the latest numbers through the Kubernetes API. `kubectl top pods` reads them, and the HPA controller does too. The controller divides the CPU use of each pod by its CPU **request**, the share of a CPU that the pod asked for in <a href={weekHref(15)}>Week 15</a>, and averages the percentages. Every 15 seconds, it computes:
+
+```txt
+desired replicas = ceil(current replicas × current average / target average)
+```
+
+With two api pods at 140% of their request and a target of 70%, it asks for four. A pod without a CPU request has no percentage: the HPA shows `<unknown>` and does nothing.
+
+Two defaults shape what you see. Scaling up happens at once, by up to four pods or double the count every 15 seconds. Scaling down waits for a **stabilization window** of 300 seconds and uses the highest count it computed in that window, which keeps the count from jumping with every spike.
+
+<Diagram
+  id="hpa-loop"
+  title="How the HPA sets the replica count of the api"
+  code={`direction: down
+kubelet: "kubelet\\n(on the node)"
+ms: metrics-server
+hpa: HPA controller
+dep: Deployment api
+rs: ReplicaSet
+pods: api pods
+
+kubelet -> ms: CPU per pod
+hpa -> ms: every 15 s
+hpa -> dep: replicas
+dep -> rs: replicas
+rs -> pods: create, delete
+`}
+  steps={[
+    { hl: ['kubelet', 'ms', 'kubelet->ms'], caption: 'The kubelet on each node measures the CPU and memory of every container. metrics-server collects those numbers every 15 seconds and keeps only the latest.' },
+    { hl: ['hpa', 'ms', 'hpa->ms'], caption: 'Every 15 seconds, the HPA controller reads the CPU of each api pod, divides it by the CPU request of that pod, and averages the percentages.' },
+    { hl: ['hpa', 'dep', 'hpa->dep'], caption: 'It writes the count it computed, kept between minReplicas and maxReplicas, into the scale of the Deployment. That is the same field that a replicas line in your manifest sets.' },
+    { hl: ['dep', 'rs', 'pods', 'dep->rs', 'rs->pods'], caption: 'The Deployment passes the count to its ReplicaSet, which starts or stops pods. A new pod gets traffic once its readiness probe passes.' },
+  ]}
+/>
+
+That shared field causes the classic mistake. When your manifest says `replicas: 2` and the HPA has scaled to four, the next `kubectl apply` sets two again, and the HPA scales back up 15 seconds later. Remove `replicas` from every Deployment that an HPA scales.
+
+CPU is a good signal for the api: every request costs CPU. It is a weak signal for the worker. A worker spends most of a check waiting on the network, and a long queue of slow sites leaves its CPU low. <a href={weekHref(13)}>Week 13</a> gave you the honest number, `monitor_jobs_oldest_seconds`. Scaling on a Prometheus metric needs an adapter that serves it through the Kubernetes API, such as prometheus-adapter or KEDA. This week, the worker scales on CPU, and you watch the queue age to judge whether CPU is enough.
+
+### Rolling Updates and Rollbacks
+
+Every change to the pod template of a Deployment, such as a new image tag or a new environment variable, creates a new **ReplicaSet** and a new **revision**. A **rolling update** moves the pods from the old ReplicaSet to the new one in steps. Two settings bound each step:
+
+- `maxSurge`: how many pods above the wanted count can exist during the rollout.
+- `maxUnavailable`: how many pods below the wanted count the rollout allows.
+
+With `maxSurge: 1` and `maxUnavailable: 0`, the controller starts one new pod, waits until it is **available**, then stops one old pod, and repeats. Available means ready, and ready for `minReadySeconds` in a row: a pod that passes its first probe and crashes 5 seconds later never counts. When no step succeeds for `progressDeadlineSeconds`, Kubernetes marks the rollout as failed. The old pods keep serving, because none of them stops before a new one is available.
+
+<Diagram
+  id="rolling-update"
+  title="A rolling update of two api pods with maxSurge 1 and maxUnavailable 0"
+  code={`shape: sequence_diagram
+ctl: "Deployment\\ncontroller"
+new: "new\\nReplicaSet"
+old: "old\\nReplicaSet"
+tr: Traefik
+
+ctl -> new: scale to 1
+new -> ctl: pod available
+ctl -> old: scale to 1
+old -> tr: one old pod leaves the endpoints
+ctl -> new: scale to 2
+new -> ctl: pod available
+ctl -> old: scale to 0
+`}
+  steps={[
+    { hl: ['ctl', 'new', 'ctl->new'], caption: 'maxSurge 1: the controller starts one new pod next to the two old ones. Three pods exist for a moment.' },
+    { hl: ['ctl', 'new', 'new->ctl'], caption: 'The new pod passes its readiness probe and stays ready for minReadySeconds, 10 seconds here. Only then does it count as available.' },
+    { hl: ['ctl', 'old', 'tr', 'ctl->old', 'old->tr'], caption: 'maxUnavailable 0: only now does one old pod stop. Kubernetes removes it from the endpoints of the Service, and Traefik stops sending it requests.' },
+    { hl: ['ctl', 'new', 'old', 'ctl->new#1', 'new->ctl#1', 'ctl->old#1'], caption: 'The same step again for the second pod. The old ReplicaSet stays, at zero pods, as a revision you can roll back to.' },
+  ]}
+/>
+
+One race remains. When a pod is told to stop, the kubelet sends `SIGTERM` while the news of the endpoint removal is still on its way to Traefik and to nginx. For a moment, new requests still arrive at a pod that is shutting down, and they fail. A **preStop hook** runs before `SIGTERM`: a 5-second pause there keeps the pod serving while the rest of the cluster catches up. The `sleep` action of a hook, stable since Kubernetes 1.34, needs no `sleep` program in the image, which matters for images built `FROM scratch`, as yours are.
+
+`kubectl rollout undo` switches the Deployment back to the pod template of the previous revision, as a new rolling update. It restores the pod template only: ConfigMaps, the HPA and the Services stay as they are. And it changes the cluster, not your repository. The next `deploy.yml` run from <a href={weekHref(14)}>Week 14</a> applies the manifests and the image tag it is given, and the bad version comes back. Use `undo` to stop the damage in seconds, then run `deploy.yml` with the commit SHA of the last good version to make the rollback stick.
+
+### Rate Limits and Token Buckets
+
+A **rate limit** caps how many requests of one client get answered in a span of time. The api needs one for three reasons: one visitor with a loop must not slow the status page for everyone, a scanner must not fill your logs, and each login guess costs a bcrypt check of about 0.3 seconds of CPU, which <a href={weekHref(11)}>Week 11</a> left uncapped across email addresses.
+
+A **token bucket** holds up to `burst` tokens and refills at `rate` tokens per second. Each request takes one token. A request that finds the bucket empty gets `429 Too Many Requests` and a `Retry-After` header that says when a token is back. The burst absorbs a status page that loads twenty results at once; the rate caps a loop. The `golang.org/x/time/rate` package implements one bucket, and Traefik uses the same package inside its own rate limiter.
+
+The hard part is the key. A per-client limit needs the client address, and behind proxies the api sees only the last proxy. Each proxy appends the address it received the request from to the `X-Forwarded-For` header, XFF for short. A client can send that header too, with any text in it. Only the entries that your own proxies appended are true, and they sit at the right end. The api trusts a list of networks, here the k3s pod network `10.42.0.0/16`, and walks the header from the right while each address belongs to one of them. The first address outside is the client.
+
+<Diagram
+  id="client-address"
+  title="Where the client address comes from on its way to the api"
+  code={`direction: down
+client: "browser\\n203.0.113.7"
+node: "node\\n(kube-proxy)"
+tr: "Traefik\\n10.42.0.9"
+web: "nginx in web\\n10.42.0.12"
+api: api
+
+client -> node: "XFF: 198.51.100.1, made up"
+node -> tr: "peer 203.0.113.7"
+tr -> web: "XFF: 203.0.113.7"
+web -> api: "XFF: 203.0.113.7, 10.42.0.9"
+`}
+  steps={[
+    { hl: ['client', 'node', 'client->node'], caption: 'A client sends its own X-Forwarded-For with an address it made up, to get a fresh bucket on every request.' },
+    { hl: ['node', 'tr', 'node->tr'], caption: 'With externalTrafficPolicy Local, the node passes the connection to Traefik with the client address intact. With the default, Cluster, the node rewrites it to an address of its own, and every visitor looks the same.' },
+    { hl: ['tr', 'web', 'tr->web'], caption: 'Traefik trusts no incoming X-Forwarded-For by default: it deletes the made-up one, then appends the address of its peer, 203.0.113.7.' },
+    { hl: ['web', 'api', 'web->api'], caption: 'nginx appends the address of its own peer, the Traefik pod. The api starts from its peer, 10.42.0.12, walks the header from the right, skips 10.42.0.9 as one of its own proxies, and stops at 203.0.113.7.' },
+  ]}
+/>
+
+Each api pod keeps its buckets in its own memory. With four replicas, a client whose requests Traefik spreads over all of them gets up to four times the limit. That is why the edge gets a limit too: Traefik sees every request before it spreads them. k3s runs one Traefik pod, which makes the Traefik limit the one for the whole cluster.
+
+### Backups You Have Restored
+
+<a href={weekHref(8)}>Week 8</a> set two rules: keep a backup on another machine, and restore it on a schedule. Two numbers describe a backup plan. The **recovery point objective**, RPO, is how much data you accept to lose: with a nightly dump, up to 24 hours of check results. The **recovery time objective**, RTO, is how long you accept the monitor to stay down while you restore. You do not know how long a restore takes until you time one. A **restore drill** does exactly that, on a schedule, into a new, empty server, and fails loudly when the newest dump is missing, too old or broken. The <a href={trackHref('backups')}>Backups track</a> covers physical backups with write-ahead log (WAL) archiving, which brings the RPO down to minutes.
 
 ## Build
 
-This section is not written yet.
+By the end of this section, the api limits each client and logs its real address, Traefik limits each client at the edge, and the prod overlay has autoscalers, rollout settings, a backup CronJob and a drill CronJob, every one checked by `kubeconform`. The code comes from `examples/go/week17/your-monitor`, which mirrors your repository from Week 16. Its imports start with `fsp/examples/week17/your-monitor`, and yours with `github.com/<user>/your-monitor`:
+
+```txt
+your-monitor/
+├── internal/ratelimit/               new: ClientIP, Key, Limiter
+├── internal/api/ratelimit.go         new: RateLimits, Limit; log.go logs the client
+├── cmd/api/limits.go                 new: -rate-limit, -rate-burst, -trusted-proxies
+└── deploy/
+    ├── deploy_test.go                new: checks the files below against each other
+    ├── backup_test.go                new: runs both backup scripts
+    ├── vps/k3s/traefik-config.yaml   new: keeps the client address
+    ├── k8s/cluster/ci-deployer.yaml  grants CI the new kinds
+    ├── k8s/load/load.yaml            new: the pod for the load drill
+    └── k8s/overlays/prod/            adds hpa, rollout, singletons, api,
+                                      ratelimit, ingress-middleware, backup
+```
+
+Every `kubectl` command on this page runs against your server, with no `-n`: the current context of your kubeconfig sets the namespace, as Week 16 set it up. Outputs from the cluster are examples. Outputs of the Go code and the scripts come from real runs of the example code.
+
+### Step 1: Add the Rate Package
+
+```sh
+go get golang.org/x/time@latest
+```
+
+Take `@latest`. The site examples pin `golang.org/x/time` v0.14.0, the newest release that builds with Go 1.24, because the site tests its examples with Go 1.24. Your `go.mod` names the newer Go you installed in <a href={weekHref(0)}>Week 0</a>, and the newer releases build with it.
+
+### Step 2: Find the Client Address
+
+Add a package `internal/ratelimit`. It starts with the walk from the diagram:
+
+<CodeFrom file="go/week17/your-monitor/internal/ratelimit/ratelimit.go" region="client-ip" lang="go" title="internal/ratelimit/ratelimit.go" />
+
+`netip.Addr` is the Go value type for an IP address: it compares with `==` and works as a map key. `Unmap` turns `::ffff:203.0.113.7`, the IPv6 form of an IPv4 address, back into `203.0.113.7`, which keeps one client in one bucket. When the direct peer is not a trusted proxy, `ClientIP` ignores the header entirely. Never take the leftmost entry, as many examples on the web do: the leftmost entry is whatever the client wrote.
+
+### Step 3: Give Each Client a Bucket
+
+<CodeFrom file="go/week17/your-monitor/internal/ratelimit/ratelimit.go" region="key" lang="go" title="internal/ratelimit/ratelimit.go" />
+
+<CodeFrom file="go/week17/your-monitor/internal/ratelimit/ratelimit.go" region="limiter" lang="go" title="internal/ratelimit/ratelimit.go" />
+
+`rate.NewLimiter(limit, burst)` is one bucket. `ReserveN(now, 1)` takes a token and says how long the caller has to wait for it. The api never waits: when the delay is above zero, `CancelAt` puts the token back and `Allow` returns the delay, which becomes `Retry-After`. Every method takes `now` as a value, which gives the tests a clock they control.
+
+A map that grows with every new address is a memory leak that an attacker controls. The sweep has an exact rule: a bucket that has gone `refill` without a request is full again, and a full bucket is the same as a new one. Deleting it changes nothing for the client. `MaxBuckets` caps the map at 100,000 buckets, which took 18 MB in a test on the machine that built this page. Past that, new clients wait one refill time, until the sweep frees room.
+
+### Step 4: Test the Address and the Buckets
+
+<CodeFrom file="go/week17/your-monitor/internal/ratelimit/ratelimit_test.go" region="client-ip-test" lang="go" title="internal/ratelimit/ratelimit_test.go" />
+
+This table is where your QA background pays off: every row is an attack or an accident. A client that reaches the api directly and writes the header, a client that writes a trusted address into it, a header split over two lines, garbage from a proxy. Break the walk on purpose: when the peer is trusted, make `ClientIP` return the leftmost entry of the header, and four rows fail.
+
+<CodeFrom file="go/week17/your-monitor/internal/ratelimit/ratelimit_test.go" region="limiter-test" lang="go" title="internal/ratelimit/ratelimit_test.go" />
+
+### Step 5: Put the Limits in Front of the API
+
+`internal/api/ratelimit.go` holds the configuration and the login limits:
+
+<CodeFrom file="go/week17/your-monitor/internal/api/ratelimit.go" region="rate-config" lang="go" title="internal/api/ratelimit.go" />
+
+<CodeFrom file="go/week17/your-monitor/internal/api/ratelimit.go" region="limit" lang="go" title="internal/api/ratelimit.go" />
+
+Logins get two buckets of their own, and the second one closes the gap from Week 11. The per-email limit of Week 11 stops guesses at one account. The per-client login bucket stops one address from guessing at many accounts. The shared bucket, keyed to `everyone`, caps the bcrypt work of the whole pod at one login a second after a burst of three: on the machine that built this page, one bcrypt check took 0.29 seconds of CPU, which keeps logins under a third of a core however many addresses attack. During such a flood, your own login waits too, while the status page and the checks keep running. With four api replicas, the cap is four logins a second for the cluster.
+
+`Limit` passes the client address on in the request context, and `LogRequests` adds it to each request line as `client`. Refused requests write no log line: each one costs a map lookup and one count in `http_requests_limited_total`, labeled with the limit it hit. Client addresses in a log count as personal data under the GDPR in the EU: keep the log for weeks, not years.
+
+The test that matters most sends a new made-up address with every request, straight to the api:
+
+<CodeFrom file="go/week17/your-monitor/internal/api/ratelimit_test.go" region="spoof-test" lang="go" title="internal/api/ratelimit_test.go" />
+
+### Step 6: Wire the Limits Into the API Command
+
+<CodeFrom file="go/week17/your-monitor/cmd/api/limits.go" region="limits" lang="go" title="cmd/api/limits.go" />
+
+<CodeFrom file="go/week17/your-monitor/cmd/api/main.go" region="wrap-limits" lang="go" title="cmd/api/main.go" />
+
+`Limit` wraps the handler from Week 13 from the outside, which puts it before the span, the log line and the metrics. Run the api on your machine, trust `127.0.0.1` in place of Traefik, and send 60 requests from one made-up client, 20 at a time:
+
+```sh
+go run ./cmd/api -addr 127.0.0.1:8080 -metrics-addr 127.0.0.1:2112 -trusted-proxies 127.0.0.1
+seq 60 | xargs -P 20 -I{} curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Forwarded-For: 203.0.113.7' localhost:8080/api/monitors | sort | uniq -c
+```
+
+```txt
+     47 200
+     13 429
+```
+
+The burst of 40 passes, plus the tokens that refill while the rest arrive, seven on this run. One more request shows the answer:
+
+```txt
+$ curl -i -H 'X-Forwarded-For: 203.0.113.7' localhost:8080/api/monitors
+HTTP/1.1 429 Too Many Requests
+Content-Type: application/json
+Retry-After: 1
+
+{"error":"too many requests"}
+```
+
+Run `make test`. In Compose, nginx stands in front of the api and nobody sets `TRUSTED_PROXIES`, which puts every browser into the bucket of nginx. On your laptop, the only browser is yours.
+
+### Step 7: Keep the Client Address at the Node
+
+The walk in the api ends at whatever address Traefik saw, and on k3s that is not the client by default. The Traefik Service uses `externalTrafficPolicy: Cluster`, and the node rewrites the source of every incoming connection to an address of its own. With `Local`, the node hands each connection to a Traefik pod on the same node, unchanged. On a one-node cluster, that costs nothing. k3s changes its bundled Traefik through a `HelmChartConfig`:
+
+<CodeFrom file="go/week17/your-monitor/deploy/vps/k3s/traefik-config.yaml" region="traefik-config" lang="yaml" title="deploy/vps/k3s/traefik-config.yaml" />
+
+This file lives in `kube-system`, which the CI ServiceAccount of Week 16 cannot touch. Copy it to the VPS the way Week 16 copied the k3s configuration, then check the Service:
+
+```sh
+scp deploy/vps/k3s/traefik-config.yaml ada@203.0.113.10:
+ssh -t ada@203.0.113.10 'sudo install -m 600 traefik-config.yaml /var/lib/rancher/k3s/server/manifests/ && rm traefik-config.yaml'
+kubectl -n kube-system get svc traefik -o jsonpath='{.spec.externalTrafficPolicy}{"\n"}'
+```
+
+The last command prints `Local` once k3s has redeployed Traefik. The k3s documentation warns that `Local` breaks when a server behind NAT sets the k3s option `node-external-ip`; Week 16 sets no such option.
+
+### Step 8: Limit at the Edge with Traefik
+
+Traefik reads Middleware objects from a custom resource, and its API group depends on the Traefik version. Traefik 3 reads `traefik.io/v1alpha1`; it dropped the `traefik.containo.us` group of Traefik 2. Check what your k3s runs:
+
+```sh
+kubectl -n kube-system get deploy traefik -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+kubectl get crd middlewares.traefik.io -o jsonpath='{.spec.versions[*].name}{"\n"}'
+```
+
+The first prints the image with its tag, such as `rancher/mirrored-library-traefik:3.7.14`. The second prints `v1alpha1`. This page checked its Middleware against the CRD of the Traefik chart that the k3s 1.36 branch ships, chart 40.1.0 with Traefik 3.7.14, read from the k3s and Traefik source repositories. Add the Middleware:
+
+<CodeFrom file="go/week17/your-monitor/deploy/k8s/overlays/prod/ratelimit.yaml" region="middleware" lang="yaml" title="deploy/k8s/overlays/prod/ratelimit.yaml" />
+
+`average` divided by `period` is the refill rate, and `burst` is the bucket size. With no `depth` in `ipStrategy`, Traefik keys by the address of its peer, which Step 7 made the client. Traefik also smooths: a request that finds no token waits up to `1 / (2 × rate)`, 10 ms here, before Traefik answers 429 with a `Retry-After` header. The edge limit sits above the api limit on purpose. It stops floods before they reach nginx and leaves the finer work to the api, which knows about logins.
+
+Attach it to the Ingress of Week 16. Its annotation already names the redirect to https, and a patch replaces the whole value: the new value lists both, in the order Traefik runs them:
+
+<CodeFrom file="go/week17/your-monitor/deploy/k8s/overlays/prod/ingress-middleware.yaml" region="ingress-middleware" lang="yaml" title="deploy/k8s/overlays/prod/ingress-middleware.yaml" />
+
+Each entry reads `<namespace>-<name>@kubernetescrd`. When one names a Middleware that does not exist, Traefik drops the whole route and the site answers 404. `deploy_test.go` checks that every entry names a Middleware of the overlay, and that the redirect of Week 16 is still there.
+
+### Step 9: Roll Out Without a Gap
+
+<CodeFrom file="go/week17/your-monitor/deploy/k8s/overlays/prod/rollout.yaml" region="rollout" lang="yaml" title="deploy/k8s/overlays/prod/rollout.yaml" />
+
+The scheduler and the alerter are different. Two schedulers side by side race to queue the same jobs, and two alerters can send one alert twice. Stop the old pod before the new one starts:
+
+<CodeFrom file="go/week17/your-monitor/deploy/k8s/overlays/prod/singletons.yaml" region="singletons" lang="yaml" title="deploy/k8s/overlays/prod/singletons.yaml" />
+
+The api gets its limits, the proxies it trusts and the preStop pause. `10.42.0.0/16` is the default pod network of k3s; `kubectl get nodes -o jsonpath='{.items[0].spec.podCIDR}'` prints the part your node uses. Trusting the whole pod network means that any pod in your cluster can name any client address, which is fine on a cluster where every pod is yours.
+
+<CodeFrom file="go/week17/your-monitor/deploy/k8s/overlays/prod/api.yaml" region="api-patch" lang="yaml" title="deploy/k8s/overlays/prod/api.yaml" />
+
+The grace period of 30 seconds covers the 5-second pause plus the 5 seconds that `serve` gives the requests in flight. The overlay ties it together:
+
+<CodeFrom file="go/week17/your-monitor/deploy/k8s/overlays/prod/kustomization.yaml" region="kustomization" lang="yaml" title="deploy/k8s/overlays/prod/kustomization.yaml" />
+
+The JSON patch at the end removes `replicas` from the api and the worker. Week 15 gave each of them two. Before the first deploy with this overlay, run `kubectl apply edit-last-applied deployment/api` and delete the `replicas` line in the editor, then do the same for `deployment/worker`. Otherwise `kubectl apply` reads the missing field as a request for the default of one, and one pod of each stops before the HPA adds it back.
+
+### Step 10: Add the Autoscalers
+
+<CodeFrom file="go/week17/your-monitor/deploy/k8s/overlays/prod/hpa.yaml" region="hpa" lang="yaml" title="deploy/k8s/overlays/prod/hpa.yaml" />
+
+The api keeps at least two pods: one can roll or crash while the other serves. Each api and worker pod opens its own `pgxpool`, which holds up to four connections, or one per CPU on a machine with more than four. Postgres allows 100 connections by default, and four api pods plus three workers stay far below that.
+
+The HPA computes against the CPU requests of Week 15. Print them:
+
+```sh
+kubectl get deploy api worker -o jsonpath='{range .items[*]}{.metadata.name} {.spec.template.spec.containers[0].resources.requests.cpu}{"\n"}{end}'
+```
+
+A request far below what the pod uses at rest keeps the HPA at its maximum all day. Compare it with `kubectl top pods` on a quiet hour.
+
+### Step 11: Back Up Nightly and Drill Weekly
+
+The backup script writes to a `.partial` name first: a dump that dies halfway never looks finished.
+
+<CodeFrom file="go/week17/your-monitor/deploy/k8s/overlays/prod/backup/backup.sh" region="backup-script" lang="sh" title="deploy/k8s/overlays/prod/backup/backup.sh" />
+
+The drill starts a server of its own inside its pod, restores into it and compares:
+
+<CodeFrom file="go/week17/your-monitor/deploy/k8s/overlays/prod/backup/restore-drill.sh" region="drill-script" lang="sh" title="deploy/k8s/overlays/prod/backup/restore-drill.sh" />
+
+A new server, rather than a new database on the live one, proves more: the dump restores with no roles, no extensions and no settings from production. `MAX_AGE_HOURS` of 26 turns a backup CronJob that silently stopped into a failed drill. Both scripts run in the `postgres:17` image, from the ConfigMap that the `configMapGenerator` builds:
+
+<CodeFrom file="go/week17/your-monitor/deploy/k8s/overlays/prod/backup.yaml" region="backup-pvc" lang="yaml" title="deploy/k8s/overlays/prod/backup.yaml" />
+
+<CodeFrom file="go/week17/your-monitor/deploy/k8s/overlays/prod/backup.yaml" region="backup-cronjob" lang="yaml" title="deploy/k8s/overlays/prod/backup.yaml" />
+
+The pod reads the user, the database and the password from the `monitor-config` ConfigMap and the `postgres` Secret, as the programs of Week 15 do, and turns them into the `PG` variables that `pg_dump` reads. It runs as user 999, the `postgres` user of the image, with the restrictions of Week 15, which the namespace of Week 16 enforces: no root, no extra rights, a read-only image with an empty `/tmp`. `deploy_test.go` checks both pods against the restricted standard. `timeZone` makes 03:17 mean UTC, whatever the clock of the server says. `concurrencyPolicy: Forbid` skips a run while the previous one still works. The drill CronJob in the same file mounts the claim read-only, adds an `emptyDir` for its server, and runs on Sundays at 04:17 UTC with `backoffLimit: 0`: a failed drill is a finding to read, not a glitch to retry.
+
+`backup_test.go` runs both scripts against servers that the test starts itself. `TestRestoreDrill` also breaks the drill three ways, with no dump, a dump older than the limit and a dump cut short, and checks that each one fails with its own message. Against a Postgres that held three monitors and 12 results of a short local run, the drill printed:
+
+```txt
+dump:     monitor-20261011-084441.dump, 16 KiB, 0 hours old
+          monitors results incidents schema
+restored: 3 12 0 3
+live:     3 12 0 3
+restore drill: ok, restore 0 s, whole drill 1 s
+```
+
+The dumps on the claim share a disk with the database. Pull a copy to your laptop every week, the way Week 8 did in Compose:
+
+```sh
+mkdir -p backups
+kubectl exec statefulset/postgres -- pg_dump -U monitor -d monitor --format=custom > backups/monitor-$(date -u +%Y%m%d).dump
+```
+
+### Step 12: Validate and Ship
+
+Build the overlay and check every object against the schemas of Kubernetes 1.36 before the cluster sees it. `kubeconform` knows the built-in kinds. For the Middleware, give it a JSON schema made from the CRD in your cluster, with the `openapi2jsonschema.py` script from the `kubeconform` repository. It needs Python 3 with PyYAML:
+
+```sh
+mkdir -p schemas
+kubectl get crd middlewares.traefik.io -o yaml > schemas/middlewares.yaml
+curl -sSL -o schemas/openapi2jsonschema.py https://raw.githubusercontent.com/yannh/kubeconform/master/scripts/openapi2jsonschema.py
+(cd schemas && python3 openapi2jsonschema.py middlewares.yaml)
+```
+
+The script writes `schemas/middleware_v1alpha1.json`. Add `schemas/` to `.gitignore`, then validate:
+
+```sh
+kubectl kustomize deploy/k8s/overlays/prod > /tmp/prod.yaml
+kubeconform -strict -summary -kubernetes-version 1.36.0 -schema-location default \
+  -schema-location 'schemas/{{ .ResourceKind }}_{{ .ResourceAPIVersion }}.json' /tmp/prod.yaml
+```
+
+For the example tree, it prints:
+
+```txt
+Summary: 19 resources found in 1 file - Valid: 19, Invalid: 0, Errors: 0, Skipped: 0
+```
+
+`-strict` rejects unknown fields: a typo such as `secondz` under `preStop.sleep` fails here, not in the cluster. Next, the Role of your CI ServiceAccount from Week 16. It grants `deploy.yml` only the kinds Week 16 applied, and this week adds three more: HorizontalPodAutoscalers, CronJobs and a PersistentVolumeClaim. The new Middleware and the ConfigMap are kinds the Role already names. Without the new rules, the deploy stops halfway with `Forbidden`. Add them with the same three verbs:
+
+<CodeFrom file="go/week17/your-monitor/deploy/k8s/cluster/ci-deployer.yaml" region="role" lang="yaml" title="deploy/k8s/cluster/ci-deployer.yaml" />
+
+`deploy_test.go` reads every kind the prod overlay holds and fails when the Role misses one, the same check as Week 16. CI cannot change its own Role, which is the point of it: apply the cluster setup yourself, as administrator, then confirm:
+
+```sh
+kubectl apply -k deploy/k8s/cluster
+kubectl auth can-i patch cronjobs --as=system:serviceaccount:your-monitor:deployer
+```
+
+The second command prints `yes`. Commit, push, wait for CI to push the images, and start the deploy with `gh workflow run deploy.yml`. Its last step runs `kubectl rollout status` for all five Deployments.
 
 ## Observe It
 
 <ObserveIt>
-This section is not written yet.
+
+**The autoscalers.** Watch them update every 15 seconds:
+
+```txt
+$ kubectl get hpa --watch
+NAME     REFERENCE           TARGETS       MINPODS   MAXPODS   REPLICAS   AGE
+api      Deployment/api      cpu: 4%/70%   2         4         2          3m
+worker   Deployment/worker   cpu: 9%/70%   1         3         1          3m
+```
+
+`cpu: <unknown>/70%` means the HPA has no number: metrics-server is not running, which `kubectl top pods` confirms with an error, or the container has no CPU request. `kubectl describe hpa api` lists each scaling decision with its reason under **Events**.
+
+**The worker queue.** CPU does not see the queue; the scheduler metrics from Week 13 do. Forward its port and read the age:
+
+```sh
+kubectl port-forward deploy/scheduler 2112:2112 &
+curl -s localhost:2112/metrics | grep '^monitor_jobs_oldest_seconds'
+```
+
+An age that climbs while the worker HPA sits at one replica means CPU is the wrong signal for your sites, and the queue age is the number to scale on.
+
+**Rollouts.** `kubectl rollout status deployment/api` follows one rollout to its end:
+
+```txt
+Waiting for deployment "api" rollout to finish: 1 out of 2 new replicas have been updated...
+Waiting for deployment "api" rollout to finish: 1 old replicas are pending termination...
+deployment "api" successfully rolled out
+```
+
+**Limits.** Each refused request counts in `http_requests_limited_total`, under the limit it hit: `client` for a busy visitor, `login` for guesses from one address, `login_all` for guesses from many. A steady rise of `login_all` is an attack on your login, not a busy visitor. Traefik refusals never reach the api; they show as `429` in the Traefik access log once you add `logs.access.enabled: true` to the values in the same `HelmChartConfig`.
+
+**Backups.** `kubectl get cronjob` shows `LAST SCHEDULE` for each CronJob, and `kubectl get jobs` lists the recent runs with their completions. `kubectl logs job/<name>` prints the line of `backup.sh` or the report of the drill. <a href={weekHref(18)}>Week 18</a> turns a missed backup into an alert.
+
 </ObserveIt>
 
 ## Operate It
 
 <OperateIt>
-This section is not written yet.
+
+**Load drill: watch the api scale.** The api limit stops a load test from one address, which is the point of it. Turn it off for the drill with a change that rolls out like any other:
+
+```sh
+kubectl annotate deployment/api kubernetes.io/change-cause="load drill: RATE_LIMIT=0" --overwrite
+kubectl set env deployment/api RATE_LIMIT=0
+kubectl rollout status deployment/api
+```
+
+The load comes from a pod inside the cluster, which talks to the api Service directly, past Traefik. The `httpd` image carries `ab`, the Apache HTTP server benchmarking tool. A plain `kubectl run` fails here: the namespace enforces the restricted Pod Security Standard of Week 16, and the image starts as root. The pod file sets what restricted asks for:
+
+<CodeFrom file="go/week17/your-monitor/deploy/k8s/load/load.yaml" region="load-pod" lang="yaml" title="deploy/k8s/load/load.yaml" />
+
+```sh
+kubectl apply -f deploy/k8s/load/load.yaml
+kubectl wait --for=condition=Ready pod/load --timeout=2m
+kubectl logs -f pod/load
+```
+
+In a second terminal, `kubectl get hpa api --watch` shows the CPU climb past 70% and the replicas go to three, then four. When `ab` ends, the count stays at four for the five-minute window, then drops. Delete the pod with `kubectl delete pod load`.
+
+**Roll it back.** The drill change is revision 2 of the api:
+
+```txt
+$ kubectl rollout history deployment/api
+deployment.apps/api
+REVISION  CHANGE-CAUSE
+1         <none>
+2         load drill: RATE_LIMIT=0
+
+$ kubectl rollout undo deployment/api
+deployment.apps/api rolled back
+```
+
+The undo starts a rolling update to the template of revision 1, and the history lists it again as revision 3. `kubectl set env deployment/api --list` shows `RATE_LIMIT=10` again.
+
+**A bad image.** `deploy.yml` with a SHA that CI never built leaves the new pod in `ImagePullBackOff`. With `maxUnavailable: 0`, the two old pods keep serving. After `progressDeadlineSeconds`, 180, `kubectl rollout status` ends with `error: deployment "api" exceeded its progress deadline`, and the workflow fails. Run `kubectl rollout undo deployment/api`, then run `deploy.yml` again with the last good SHA, which the run summary of Week 14 lists.
+
+**Everyone shares one bucket.** Visitors get 429 after a handful of requests, and `kubectl logs deploy/api | grep '"client"'` shows the same `10.42.x.x` address on every line. The client address dies at the node: `externalTrafficPolicy` is still `Cluster`, or the `HelmChartConfig` landed in the wrong folder. When `externalTrafficPolicy` reads `Local`, compare `TRUSTED_PROXIES` with the pod network of your node.
+
+**The restore drill.** Run it now, without waiting for Sunday:
+
+```sh
+kubectl create job --from=cronjob/restore-drill drill-now
+kubectl wait --for=condition=complete job/drill-now --timeout=15m
+kubectl logs job/drill-now
+```
+
+Write the restore time down next to the size of the dump: that is how long a restore of your data takes, today. The drill fails in three named ways. `FAILED: no dump` means the backup CronJob never wrote one: `kubectl logs` of its last job says why, such as a wrong password in the Secret. `FAILED: ... hours old` means the backups stopped. `FAILED: pg_restore` means the dump is broken: keep the older dumps, which `KEEP_DAYS` holds for 14 days, and find out what cut it short.
+
+| What you see | What it points to |
+| --- | --- |
+| `cpu: <unknown>/70%` in `kubectl get hpa` | No metrics-server, or no CPU request on the container |
+| HPA replicas drop and climb back after each deploy | A `replicas` field in the manifest still fights the HPA |
+| New pod in `ImagePullBackOff`, rollout fails at 180 s | The image tag does not exist: undo, then redeploy the last good SHA |
+| `502` answers during every rollout | No preStop pause: requests reach pods after `SIGTERM` |
+| Visitors get 429 together, one `client` address in the log | `externalTrafficPolicy` is `Cluster`: the node hides the client |
+| The site answers 404 after the Middleware change | The annotation names a Middleware that does not exist |
+| The drill fails with `hours old` | The backup CronJob stopped writing dumps |
+
 </OperateIt>
 
 ## AI This Week
 
 <AiThisWeek>
-This section is not written yet.
+
+Stage 3, pair partner. Use the assistant for scaffolding, configuration and as a reviewer. Architecture and incident response stay your decisions.
+
+**Do:** paste `ClientIP` and its test table, and ask the assistant to attack it: which `X-Forwarded-For` value, `RemoteAddr` or trusted network gets a client a fresh bucket on every request. Turn each attack it names into a row of the table, and let the test decide whether it is real. Ask it also to review your CronJobs for the fields that change what happens on failure: `concurrencyPolicy`, `backoffLimit`, `startingDeadlineSeconds` and `activeDeadlineSeconds`.
+
+**Do not:** let it pick your limits or your trusted proxies. An assistant asked to fix 429 errors raises the limits or trusts `0.0.0.0/0`, and both make the errors go away by removing the protection. The numbers come from your own traffic: the requests one status page load sends, the logins you expect in a minute, the pod network of your node. And when a rollout goes wrong on the live box, you choose between `undo` and a fix forward, with the run history in front of you.
+
 </AiThisWeek>
 
 ## Side Lab
 
-<SideLab title="Optional lab: not written yet">
-This section is not written yet.
+<SideLab title="Time a restore of one million rows and find where the time goes">
+
+The drill on your server restores a small database in a second. Build a bigger one on your laptop to see how restore time grows, and which part grows. Use the Postgres of Compose from <a href={weekHref(8)}>Week 8</a>, with `PGHOST`, `PGUSER` and `PGPASSWORD` set to reach it, and the Postgres 17 tools.
+
+**1. Make a million results.** Create a database `sidelab`, restore one of your dumps into it, then add rows in `psql`:
+
+```sql
+insert into check_results (monitor_id, checked_at, up, status_code, total_ms)
+select 1 + (g % 3), now() - g * interval '10 seconds', g % 50 <> 0, 200, g % 300
+from generate_series(1, 1000000) g;
+```
+
+On the machine that built this page, the insert took 14 seconds, the database grew to 132 MB, and `pg_dump --format=custom --file=side.dump` wrote 7.9 MB in 1.5 seconds. The dump holds rows, not indexes, and compresses well.
+
+**2. Restore in three sections.** `pg_restore --section` runs one part of a dump at a time: `pre-data` creates the tables, `data` copies the rows, `post-data` builds the indexes and constraints. Time each one into an empty database `side_r`:
+
+```sh
+for s in pre-data data post-data; do
+  echo "$s"
+  time pg_restore -d side_r --no-owner --exit-on-error --section="$s" side.dump
+done
+```
+
+One run on the same machine took 0.36 seconds for `pre-data`, 3.5 for `data` and 2.7 for `post-data`. The indexes cost three quarters of the time the rows cost: Postgres rebuilds every index of `check_results` from scratch.
+
+**3. Add jobs.** Drop and recreate `side_r`, then run the full restore with `--jobs=1`, and again with `--jobs=4`. The same machine took about 4.3 and 3.7 seconds. `--jobs` runs whole tables and whole indexes in parallel, never parts of one: with one big table, the copy stays on one core and only the index builds overlap.
+
+**4. Predict.** Your live `check_results` grows by one row per monitor per interval. Compute its row count a year from now, scale the times from step 2, and decide whether a restore that long fits the RTO you accept for a status page.
+
 </SideLab>
 
 ## Done When

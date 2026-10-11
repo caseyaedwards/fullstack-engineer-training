@@ -1,0 +1,64 @@
+# region: serviceaccount
+# The identity that deploy.yml uses. No pod runs as it, so no pod gets
+# its token mounted.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: deployer
+  namespace: your-monitor
+automountServiceAccountToken: false
+# endregion: serviceaccount
+---
+# region: role
+# What deploy.yml needs, in this namespace only: kubectl apply reads each
+# object, then creates or patches it, and kubectl rollout status watches
+# the Deployments. No delete, no Secrets, no Roles: CI cannot read the
+# database password or give itself more rights.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deployer
+  namespace: your-monitor
+rules:
+  - apiGroups: [""]
+    resources: [configmaps, services]
+    verbs: [get, create, patch]
+  - apiGroups: [apps]
+    resources: [statefulsets]
+    verbs: [get, create, patch]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, watch, create, patch]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses]
+    verbs: [get, create, patch]
+  - apiGroups: [traefik.io]
+    resources: [middlewares]
+    verbs: [get, create, patch]
+  # Week 17: the autoscalers, the backup CronJobs and their claim.
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, create, patch]
+  - apiGroups: [batch]
+    resources: [cronjobs]
+    verbs: [get, create, patch]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, create, patch]
+# endregion: role
+---
+# region: rolebinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deployer
+  namespace: your-monitor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: deployer
+subjects:
+  - kind: ServiceAccount
+    name: deployer
+    namespace: your-monitor
+# endregion: rolebinding

@@ -1,0 +1,52 @@
+# region: kustomization
+# The VPS: the base manifests, plus the way in from the internet. Two
+# Secrets are not here, because they never enter Git: postgres, with the
+# database password, and ghcr-pull, with a token that can read your
+# images. You create both on the cluster by hand. Week 17 adds the parts
+# under "Week 17".
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: your-monitor
+resources:
+  - ../../base
+  - ingress.yaml
+  - redirect-https.yaml
+  # Week 17
+  - hpa.yaml
+  - ratelimit.yaml
+  - backup.yaml
+patches:
+  # GHCR packages start out private. Every Deployment pulls its image from
+  # GHCR with the credentials in the ghcr-pull Secret.
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/imagePullSecrets
+        value:
+          - name: ghcr-pull
+  # Week 17: how each Deployment rolls out, the api limits, the Traefik
+  # limit on the Ingress, and no replicas field where an HPA sets the count.
+  - path: rollout.yaml
+    target:
+      kind: Deployment
+      name: api|worker|web
+  - path: singletons.yaml
+    target:
+      kind: Deployment
+      name: scheduler|alerter
+  - path: api.yaml
+  - path: ingress-middleware.yaml
+  - target:
+      kind: Deployment
+      name: api|worker
+    patch: |-
+      - op: remove
+        path: /spec/replicas
+configMapGenerator:
+  # Week 17: the backup and restore-drill scripts, mounted into the CronJobs.
+  - name: backup-scripts
+    files:
+      - backup/backup.sh
+      - backup/restore-drill.sh
+# endregion: kustomization
