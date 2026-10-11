@@ -1,36 +1,182 @@
 ---
 title: "TLS and PKI"
+description: How certificates prove who a server is, how a client walks the chain from a leaf to a root it trusts, and how ACME issues and renews certificates without a human.
 track: tls-pki
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+TLS (Transport Layer Security) encrypts a connection and proves that the server at the other end owns the name you asked for. The proof rests on a **public key infrastructure** (PKI): certificates, the certificate authorities (CAs) that sign them, and the lists of authorities that every operating system and browser trusts. Every HTTPS request your monitor makes or answers depends on it, and an expired or misissued certificate takes a site down as surely as a crashed server.
+
 ## What It Is
 
-This section is not written yet.
+### Keys and Signatures
+
+**Public-key cryptography** works with a key pair. The **private key** stays secret with its owner. The **public key** goes to anyone. Data signed with the private key verifies with the public key, and nobody without the private key can produce a valid signature. That is the whole basis of a certificate: a trusted party signs a statement that a public key belongs to a name.
+
+In TLS 1.3, the certificate key only signs. During the handshake, both sides create a fresh key pair for this one connection and combine them in a **key exchange** to agree on a session key. The server signs the handshake with its certificate key, in the **CertificateVerify** message, to prove it holds the private key. Because the session key comes from throwaway keys, a stolen certificate key later cannot decrypt traffic recorded today. This property is **forward secrecy**. The <TrackLink slug="networking">Networking track</TrackLink> and <WeekLink n={4} anchor="tls-making-the-connection-private">Week 4</WeekLink> walk through the handshake itself.
+
+### What a Certificate Holds
+
+A certificate is a small file in the **X.509** format, spelled `x509` in the name of the Go package and in its error messages. Its fields:
+
+- **Subject**: who the certificate is for. For a CA, its name.
+- **Subject alternative names** (SANs): the Domain Name System (DNS) names the certificate covers, such as `status.example.com`, or Internet Protocol (IP) addresses for a certificate issued to an address. Clients compare the host name against this list only. Go has ignored the older common name field for host names since Go 1.15.
+- **Public key**: the key the server proves it holds.
+- **Issuer**: the name of the CA that signed it.
+- **Validity**: `NotBefore` and `NotAfter`. Outside those dates, clients reject it.
+- **Serial number**: unique per CA, which names one certificate in a revocation.
+- **Key usage** and **extended key usage**: what the key can do. A server certificate carries `serverAuth`. A CA certificate carries `certSign`.
+- **Basic constraints**: whether the certificate belongs to a CA, and how many CAs can sit below it.
+- **Signature**: the issuer signature over all of the above.
+
+Certificates travel in **PEM** files, Privacy-Enhanced Mail in full, a name left over from its first use: base64 text between `-----BEGIN CERTIFICATE-----` and `-----END CERTIFICATE-----` lines. `openssl x509 -in cert.pem -noout -text` prints every field.
+
+### The Chain of Trust
+
+A **certificate authority** is an organization that checks who controls a name and signs certificates for it. Your operating system and your browser ship a **trust store**: the root certificates they accept, about 150 of them from a few dozen CAs. Go reads the trust store of the system: on Linux, a file such as `/etc/ssl/certs/ca-certificates.crt`; on macOS and Windows, it asks the platform verifier.
+
+A **root certificate** signs itself, and only its presence in the trust store makes it trusted. Its private key is too valuable to keep online: the CA keeps it in a hardware security module in a locked room and uses it a few times a year, to sign an **intermediate certificate**. The intermediate signs the **leaf**, the certificate your server uses. When an intermediate key leaks, the CA revokes that intermediate and keeps the root.
+
+The server sends its leaf plus the intermediates, not the root. The client builds a path from the leaf, through each issuer, to a root in its own store, and checks every signature on the way. A server that forgets the intermediate works in browsers that cache or fetch intermediates and fails in `curl` and Go, which do neither.
+
+### What a Client Checks
+
+For every connection, a TLS client checks:
+
+1. **The name.** The host it dialed appears in the SANs, with a wildcard such as `*.example.com` matching one label only.
+2. **The dates.** The current time lies between `NotBefore` and `NotAfter`, by the clock of the client. A wrong clock breaks every certificate.
+3. **The chain.** Each signature verifies with the public key of the next certificate up, and the path ends at a trusted root.
+4. **The usage.** Each CA certificate in the path has the right to sign certificates, and the leaf has the right to authenticate a server.
+
+In Go, each failure has its own type: `x509.HostnameError`, `x509.CertificateInvalidError` with the reason `x509.Expired`, and `x509.UnknownAuthorityError`.
+
+### Revocation and Short Lifetimes
+
+A CA **revokes** a certificate when its key leaks or when the CA finds that it issued the certificate by mistake. Clients learn about revocations from **certificate revocation lists** (CRLs), which the CA publishes, or from **OCSP**, the Online Certificate Status Protocol, which answers for one certificate at a time. Neither works well in practice: browsers fetch CRLs in compressed batches, and an OCSP check leaks which sites you visit. Let's Encrypt stopped running OCSP in 2025 and publishes CRLs only.
+
+The industry answer is short lifetimes. A stolen key is useful only until the certificate expires. The CA/Browser Forum, where CAs and browser makers set the rules, cut the maximum lifetime of a public certificate from 398 days to 200 days in March 2026, and lowers it to 100 days in March 2027 and to 47 days in March 2029. Let's Encrypt issues 90-day certificates today, and moves to 64 days in February 2027 and 45 days in 2028. At 45 days, a person renewing by hand renews about nine times a year per site, and misses one. Automation is the only option.
+
+### ACME and Certificate Transparency
+
+**ACME**, the Automatic Certificate Management Environment protocol, automates issuance. Request for Comments (RFC) 8555, the specification of the Internet Engineering Task Force (IETF) for ACME, defines it. An ACME client creates an **account** with a key pair of its own and signs every request with that account key. It places an **order** for a list of names. For each name, the CA returns an **authorization** with one or more **challenges**, ways to prove control:
+
+- **HTTP-01**: serve a token at `http://<name>/.well-known/acme-challenge/<token>`, on port `80`. It cannot issue a wildcard certificate.
+- **DNS-01**: publish a token in a TXT record, a DNS record that holds free text, at `_acme-challenge.<name>`. It works for wildcards and for servers that the internet cannot reach, and it needs an API key for your DNS provider.
+- **TLS-ALPN-01**: answer a special TLS handshake on port `443`. ALPN, Application-Layer Protocol Negotiation, is the TLS extension that names the protocol inside the connection, and this challenge asks for a protocol name of its own.
+
+Once every authorization is valid, the client sends a **certificate signing request** (CSR): its new public key and the names, signed with the matching private key. The CA signs the certificate, and the client downloads it with the chain.
+
+Every certificate a public CA issues goes into public, append-only **Certificate Transparency** (CT) logs, and Chrome, Safari and Firefox reject a certificate without proof of logging. Anyone can search the logs at `crt.sh`, which means a CA that misissues a certificate for your domain leaves evidence you can find. It also means every name you put in a certificate is public.
+
+### Private PKI and Mutual TLS
+
+Not every certificate needs a public CA. A company runs its own **private CA** for internal services, and installs its root on its own machines only. With **mutual TLS** (mTLS), the client also presents a certificate, and the server checks it against the private CA: each service proves its identity to the other. For local development, `mkcert` creates a private CA, adds it to the trust store of your laptop and issues certificates for `localhost`.
 
 ## Diagrams
 
-This section is not written yet.
+<Diagram
+  id="chain"
+  title="The chain from a root in the trust store to the leaf on your server"
+  code={`direction: down
+store: "trust store\\non the client"
+root: "root CA\\nself-signed, key offline"
+inter: "intermediate CA\\nsigned by the root"
+leaf: "leaf: status.example.com\\nsigned by the intermediate"
+srv: "your server\\nsends leaf + intermediate"
+
+store -> root: "holds"
+root -> inter: "signs"
+inter -> leaf: "signs"
+srv -> leaf: "presents"
+`}
+  steps={[
+    { hl: ['srv', 'leaf', 'srv->leaf'], caption: 'In the TLS handshake, the server sends its leaf certificate and the intermediate that signed it. It does not send the root: the client must already have it.' },
+    { hl: ['leaf', 'inter', 'inter->leaf'], caption: 'The client checks the leaf: the name it dialed is in the subject alternative names, today lies inside the dates, and the signature verifies with the public key of the intermediate.' },
+    { hl: ['inter', 'root', 'root->inter'], caption: 'The client checks the intermediate the same way: valid dates, allowed to sign certificates, and a signature that verifies with the public key of the root.' },
+    { hl: ['store', 'root', 'store->root'], caption: 'The root signs itself, which proves nothing. The client trusts it only because the root is in its trust store. If no root there matches, the result is an unknown authority error.' },
+  ]}
+/>
+
+The walkthrough follows one ACME order with an HTTP-01 challenge, as the protocol sees it. <WeekLink n={16} anchor="a-certificate-from-lets-encrypt">Week 16</WeekLink> shows the same exchange from inside the cluster, with cert-manager, Traefik and a solver pod.
+
+<Diagram
+  id="acme"
+  title="An ACME order for status.example.com with the HTTP-01 challenge"
+  code={`shape: sequence_diagram
+client: ACME client
+ca: "Let's Encrypt"
+web: "port 80 of the name"
+
+client -> ca: "account key, order: status.example.com"
+ca -> client: "authorization: http-01, token T"
+client -> web: "serve T and key thumbprint"
+client -> ca: "challenge ready"
+ca -> web: "GET the token URL, expect T.thumbprint"
+client -> ca: "finalize: CSR"
+ca -> client: "certificate and chain"
+`}
+  steps={[
+    { hl: ['client', 'ca', 'client->ca'], caption: 'The client generates an account key pair, registers the public half and orders a certificate for status.example.com. It signs every request with the account key, which tells the CA which account asks.' },
+    { hl: ['client', 'ca', 'ca->client'], caption: 'The CA answers with an authorization for that name and a set of challenges, among them http-01 with a random token T.' },
+    { hl: ['client', 'web', 'client->web'], caption: 'The client publishes the key authorization, the token plus a thumbprint of the account public key, at /.well-known/acme-challenge/T on port 80. The thumbprint ties the proof to this account and no other.' },
+    { hl: ['client', 'ca', 'web', 'client->ca#1', 'ca->web'], caption: 'The client tells the CA the challenge is ready. Let\'s Encrypt fetches the URL from several vantage points on the internet, which defeats an attacker who controls one network path. Nearly all of them must get T.thumbprint back: one failed vantage point is tolerated, a hijacked path to most of them is not.' },
+    { hl: ['client', 'ca', 'client->ca#2', 'ca->client#1'], caption: 'The authorization is valid. The client generates the certificate key pair and sends a CSR. The CA logs a precertificate in Certificate Transparency, signs the 90-day certificate with the proof of logging inside, and returns it with the intermediate.' },
+  ]}
+/>
 
 ## Example
 
-This section is not written yet.
+The example builds a two-level PKI with the Go standard library: a root CA that signs a leaf directly, and the checks a TLS client runs on that leaf. Every function takes the time as a parameter, which keeps the tests independent of the clock.
+
+<CodeFrom file="go/tracks/tlspki/tlspki.go" region="ca" lang="go" title="tlspki.go" />
+
+The Elliptic Curve Digital Signature Algorithm (ECDSA) with the P-256 curve gives small keys and fast signatures, and every current TLS client supports it. `x509.CreateCertificate` takes a template, the parent certificate, the public key to certify and the private key that signs. For a root, the template is its own parent. `BasicConstraintsValid` makes Go write the basic constraints extension, without which `IsCA` stays out of the certificate, and `MaxPathLenZero` forbids intermediates below this CA. Serial numbers come from 128 random bits, which makes a collision practically impossible without a counter to store.
+
+<CodeFrom file="go/tracks/tlspki/tlspki.go" region="leaf" lang="go" title="tlspki.go" />
+
+The leaf names `status.example.com` in `DNSNames`, the SAN list that clients check, and limits its key to server authentication. The parent is now the CA certificate, and the CA key signs. A real CA never generates the leaf key: it receives a CSR, and the private key never leaves the server that uses it.
+
+<CodeFrom file="go/tracks/tlspki/tlspki.go" region="verify" lang="go" title="tlspki.go" />
+
+`x509.VerifyOptions` names the trusted roots, the host name and the time. Leaving `CurrentTime` at its zero value uses the system clock, which is what `crypto/tls` does in a real handshake. Without `Roots`, Go uses the trust store of the system. `DaysLeft` rounds down with `math.Floor`: a certificate that expired an hour ago reads `-1`, not `0`.
+
+<CodeFrom file="go/tracks/tlspki/tlspki_test.go" region="test" lang="go" title="tlspki_test.go" />
+
+`errors.As` finds the typed error inside whatever wraps it, the way your monitor tells an expired certificate from a wrong name. The tests fix the clock at October 11, 2026, at 12:00 UTC: no test depends on the day it runs. The region calls helpers from the top of the test file: `issue` makes a CA and a 90-day leaf for `status.example.com`, `now` is the fixed clock, and `day` is 24 hours. Two more tests check that a leaf from another CA fails with `x509.UnknownAuthorityError`, and that the root can sign certificates while the leaf cannot.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={4} anchor="tls-making-the-connection-private">Week 4, TLS: Making the Connection Private</WeekLink>: your monitor times the TLS handshake of every check, and in Operate It you meet the `x509: certificate has expired or is not yet valid` error from `expired.badssl.com`. The error names the same check as `x509.Expired` in the example above.
+
+<WeekLink n={11} anchor="what-each-cookie-attribute-blocks">Week 11, What Each Cookie Attribute Blocks</WeekLink>: the session cookie carries `Secure`, which keeps it off plain HTTP. That protection is only as good as the TLS underneath: a certificate that the browser accepts for the wrong server hands the cookie to that server.
+
+<WeekLink n={16} anchor="a-certificate-from-lets-encrypt">Week 16, A Certificate from Let's Encrypt</WeekLink>: cert-manager runs ACME with the HTTP-01 challenge for your status page, against the Let's Encrypt staging environment first, then production. It stores the certificate and key in a Secret that Traefik serves, and renews when a third of the lifetime remains. In <WeekLink n={18} anchor="step-3-alert-on-burn-rates">Week 18</WeekLink>, an alert opens a ticket when the certificate that the public probe sees has fewer than 14 days left, the same number `DaysLeft` computes.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **Turning off verification.** `InsecureSkipVerify: true` in Go, or `curl -k`, accepts any certificate, including one from an attacker in the middle. It also hides the real error. Fix the trust instead: add your private root to `RootCAs`, or fix the chain on the server.
+- **A missing intermediate.** The server sends only the leaf. Chrome works because it fetched the intermediate before, and Go and `curl` fail with an unknown authority error. Serve the full chain file, which cert-manager and most ACME clients write for you.
+- **Renewal that nobody watches.** The certificate renews by itself until the day someone closes port `80` or moves the DNS record. Then it expires within 30 days. Alert on days left, from outside the server.
+- **A wrong clock.** A machine whose clock is a day off rejects valid certificates and accepts expired ones. Run NTP, the Network Time Protocol, on every server. The <TrackLink slug="time-ntp">Time and NTP track</TrackLink> covers why.
+- **Burning Let's Encrypt rate limits.** Five failed validations per name per hour, and five certificates for the same names per week. Get everything working against the staging environment first.
+- **Private keys in Git or in images.** A key in a repository is public for good, even after you delete the commit. Keep keys in Kubernetes Secrets or a secret manager, and issue a new certificate when a key leaks.
 
 ## Going Deeper
 
-This section is not written yet.
+- **The TLS 1.3 handshake in detail.** RFC 8446 explains the key schedule, session resumption and early data, which saves a round trip at the price of a replay risk.
+- **Post-quantum key exchange.** Go 1.24 enables the hybrid X25519MLKEM768 key exchange by default. It pairs the classic X25519 exchange with ML-KEM, the Module-Lattice-Based Key-Encapsulation Mechanism, a United States federal standard since 2024, which protects recorded traffic from future quantum computers.
 
 ## Further Reading
 
-This section is not written yet.
+- [RFC 8446: TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446): the protocol itself, with readable sections on the handshake and authentication.
+- [RFC 5280: X.509 Certificates and CRLs](https://www.rfc-editor.org/rfc/rfc5280): every certificate field and the path validation algorithm that clients run.
+- [RFC 8555: ACME](https://www.rfc-editor.org/rfc/rfc8555): accounts, orders, authorizations and challenges, as Let's Encrypt implements them.
+- [Let's Encrypt: Challenge Types](https://letsencrypt.org/docs/challenge-types/): HTTP-01, DNS-01 and TLS-ALPN-01 compared, with their limits.
+- [Go crypto/x509 reference](https://pkg.go.dev/crypto/x509): `CreateCertificate`, `Verify` and the error types used in the example.

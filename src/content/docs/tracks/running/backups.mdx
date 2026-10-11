@@ -1,36 +1,165 @@
 ---
 title: "Backups"
+description: What a backup protects against, logical and physical Postgres backups, the 3-2-1 rule, and how checksums and restore drills prove that a backup restores.
 track: backups
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+A **backup** is a copy of your data that you can restore after a mistake, a broken disk, an attacker or a lost server. Every service with a database needs one, and a backup that nobody has restored is a guess, not a backup. This page covers what to copy, where to keep it, and how to prove that it restores before the day you need it.
+
 ## What It Is
 
-This section is not written yet.
+### What a Backup Protects Against
+
+Name the failures first, because each one rules out one type of copy:
+
+- **A broken disk or a lost server.** A copy on the same disk, or on the same virtual private server (VPS), goes with it.
+- **A mistake.** A `DELETE` without a `WHERE`, a migration that drops the wrong column, a `kubectl delete namespace` in the wrong cluster. The mistake happens in the live database first, and every copy that follows it in real time copies the mistake.
+- **An attacker or ransomware.** Anyone with the keys of the server can delete or encrypt the copies those keys reach.
+- **A lost account.** A provider that closes or locks your account takes every copy it stores.
+
+A **replica**, a second Postgres that applies every change of the first within milliseconds, survives a broken disk. It does not survive a mistake: it applies the `DELETE` too. A replica gives availability. A backup gives recovery. A production database needs both.
+
+### Recovery Point and Recovery Time
+
+Two numbers describe a backup plan. The **recovery point objective** (RPO) is how much data you accept to lose, measured in time: with one copy a night, up to 24 hours. The **recovery time objective** (RTO) is how long the service can stay down while you restore. The RPO is the interval between two copies that leave the machine. The RTO depends on the size of the data, the speed of the restore and how practiced you are, and you learn it only by timing a restore.
+
+### Logical and Physical Backups
+
+Postgres offers two kinds of backup, and Postgres 17 ships the tools for both.
+
+A **logical backup** holds the schema and the rows of one database as SQL statements or in a compressed archive. `pg_dump` writes one from a single consistent snapshot while the programs keep writing, and `pg_restore` reads it back into an empty database. A logical backup restores into a newer major version of Postgres, and you can restore one table from it. It holds no index data, only the `CREATE INDEX` statements: a restore rebuilds every index, which makes it slow for a database of hundreds of gigabytes. Its RPO is the interval between dumps.
+
+A **physical backup** copies the data files of the whole Postgres server, called a **cluster**, as they lie on disk. `pg_basebackup` takes one from a running server. Files copied one by one while Postgres writes come from different moments, which is where the write-ahead log (WAL) comes in. Postgres appends every change to the WAL before it touches the table files, in **segments** of 16 MB. With **WAL archiving**, Postgres copies each finished segment to backup storage, through the `archive_command` or `archive_library` settings. A restore takes the base backup and replays the archived WAL on top of it, up to any moment you choose. This is **point-in-time recovery** (PITR): restore to 14:31:59, one second before the bad `DELETE`. With `archive_timeout` set to 60 seconds, Postgres closes a segment at least once a minute when there are writes, which brings the RPO down to about a minute.
+
+A physical backup restores only into the same major version, on the same central processing unit (CPU) architecture. Since Postgres 17, `pg_basebackup --incremental` copies only the blocks that changed since an earlier backup, and `pg_combinebackup` merges the chain back into a full one. Tools such as pgBackRest, Barman and WAL-G manage base backups, WAL archives, retention and encryption for you.
+
+| | Logical, `pg_dump` | Physical, `pg_basebackup` and WAL |
+| --- | --- | --- |
+| Covers | One database | The whole cluster |
+| Restores to | The moment of the dump | Any moment the WAL covers |
+| Restores into | The same or a newer major version | The same major version |
+| Restore speed | Rebuilds every index | Copies files, replays WAL |
+| Fits | Small databases, one table, upgrades | Large databases, an RPO of minutes |
+
+### The 3-2-1 Rule
+
+The **3-2-1 rule** sets a minimum: keep **three** copies of the data, the live one included, on **two** different kinds of storage, with **one** copy in another place. Different storage means different failure modes: a disk and an object store, not two folders on one disk. Another place means another building and, for a cloud server, another provider or at least another account.
+
+Two additions answer the attacker. Keep one copy **immutable**: object storage with **Object Lock** in compliance mode refuses to delete or overwrite an object until its retention period ends, whatever key asks. In governance mode, a key with the bypass permission can still delete it. And give the server only the keys it needs to add a backup, never the keys to read, list or delete the old ones.
+
+### Encryption and Keys
+
+A backup holds everything the database holds, password hashes and emails included, and it leaves the machine that protects the database. Encrypt it before it leaves. With **public-key encryption**, such as **age**, the server holds only the public key, which can encrypt and never decrypt. The private key stays offline. An attacker on the server cannot read the backups, and neither can the storage provider. The price: without the private key, every backup is noise. Keep two copies of the key, in different places.
+
+### Retention
+
+**Retention** decides how long each backup stays. Keeping only the newest copy fails when you notice a mistake a week late. A common scheme keeps seven daily backups, four weekly and 12 monthly. Retention also decides how long deleted data lives on: a row you delete on request stays in old backups until they expire.
+
+### Verification
+
+Two checks answer two different questions. A **checksum** proves that a copy holds the same bytes as the original: you hash every file when you write the backup, store the hashes in a **manifest**, and compare after every copy and before every restore. A **restore drill** proves that the original is worth copying: it restores the newest backup into an empty server, on a schedule, and checks what comes back. A backup that passes its checksum can still hold the wrong database or a dump that stopped halfway. Only a restore shows that.
 
 ## Diagrams
 
-This section is not written yet.
+<Diagram
+  id="three-two-one"
+  title="The 3-2-1 rule: three copies, two kinds of storage, one elsewhere"
+  code={`direction: right
+site: "VPS" {
+  live: "copy 1\\nlive database"
+  disk: "copy 2\\ndump on a second volume"
+}
+cloud: "another provider" {
+  bucket: "copy 3\\nencrypted, in object storage"
+}
+site.live -> site.disk: "nightly dump"
+site.live -> cloud.bucket: "upload, encrypted"
+`}
+/>
+
+The walkthrough follows one night of the Week 17 setup, from the dump to the drill on your laptop.
+
+<Diagram
+  id="backup-cycle"
+  title="Back up, copy off the box, drill the restore"
+  code={`shape: sequence_diagram
+job: "backup CronJob"
+pg: Postgres
+bucket: "object storage"
+lap: "your laptop"
+fresh: "empty Postgres"
+
+job -> pg: "pg_dump of one snapshot"
+job -> job: "age: encrypt to the public key"
+job -> bucket: "rclone: upload .dump.age and .counts"
+lap -> bucket: "read key: fetch the newest pair"
+lap -> lap: "age: decrypt with the private key"
+lap -> fresh: "pg_restore"
+fresh -> lap: "row counts, schema version"
+`}
+  steps={[
+    { hl: ['job', 'pg', 'job->pg'], caption: 'At 03:17 UTC, the CronJob opens one read-only transaction, exports its snapshot and runs pg_dump on that snapshot. The row counts come from the same snapshot, which makes them describe exactly this dump.' },
+    { hl: ['job', 'job->job'], caption: 'age encrypts the dump to your public key. The plaintext dump exists only in the scratch volume of the pod, between pg_dump and age.' },
+    { hl: ['job', 'bucket', 'job->bucket'], caption: 'rclone uploads the encrypted dump, then the counts. The upload key cannot list or read the bucket, and versioning and lifecycle rules limit what it can hide or overwrite. This copy sets the RPO: 24 hours.' },
+    { hl: ['lap', 'bucket', 'lap->bucket'], caption: 'On your laptop, the drill lists the bucket with a separate read key and takes the newest dump and its counts. A newest dump older than 26 hours fails the drill: the CronJob has stopped.' },
+    { hl: ['lap', 'lap->lap'], caption: 'age decrypts with the private key, which never leaves your laptop. age detects a changed or cut-off file and fails here.' },
+    { hl: ['lap', 'fresh', 'fresh->lap', 'lap->fresh'], caption: 'The drill restores into a new, empty server and compares its row counts with the counts file and with the live monitor count. The time it takes is your RTO for today.' },
+  ]}
+/>
 
 ## Example
 
-This section is not written yet.
+The example writes a checksum manifest for a folder of backup files and checks a copy against it, the same job that `pg_verifybackup` does for the `backup_manifest` file that `pg_basebackup` writes.
+
+<CodeFrom file="go/tracks/backups/backups.go" region="manifest" lang="go" title="backups.go" />
+
+SHA-256, from the Secure Hash Algorithm 2 family, is a **cryptographic hash**: it turns any file into 32 bytes, written as 64 hexadecimal characters, and changing one bit of the file changes about half the bits of the hash. Nobody has found two different files with the same SHA-256. `hashFile` streams the file through the hash with `io.Copy`, which keeps memory flat for a dump of any size. `WriteManifest` writes the result in the format of the `sha256sum` command: on a copy without Go, `sha256sum --check SHA256SUMS` checks the same files. A manifest is only as safe as its own copy: keep one where the backup files are not, or sign it.
+
+<CodeFrom file="go/tracks/backups/backups.go" region="verify" lang="go" title="backups.go" />
+
+`Verify` walks the folder once to find what is on disk, then reports three kinds of problem: a listed file that is gone, a file whose hash differs, and a file nobody listed. An extra file is not damage, but it means the folder is not the backup you wrote: a leftover from an earlier run, or a file someone planted. A file that cannot be read counts as changed, because the check cannot confirm its content. The sort makes the output stable for tests and for diffs.
+
+<CodeFrom file="go/tracks/backups/backups_test.go" region="test" lang="go" title="backups_test.go" />
+
+`b[0] ^= 0x01` flips the lowest bit of the first byte: the file keeps its size, which defeats any check that compares sizes. Two more tests check the manifest file byte for byte against a known hash and run the real `sha256sum --check` over it, which fails in continuous integration (CI) when `sha256sum` is missing and skips elsewhere. The region builds its folder with `tree`, a helper at the top of the test file that writes a dump, its counts file and one WAL segment in a subfolder.
+
+In the Week 17 setup, age already detects a changed `.dump.age`: it uses authenticated encryption, and decryption fails on a single changed byte. A manifest earns its place for files that travel unencrypted, such as a folder of WAL segments on an internal disk, or for checking many files at once before a long restore.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={8} anchor="backups">Week 8, Backups</WeekLink>: you meet logical backups and the two rules that decide whether a backup is worth anything: keep it on another machine, and restore it on a schedule. In <WeekLink n={8} anchor="step-11-back-up-and-check-the-restore">Step 11</WeekLink>, `make backup` runs `pg_dump --format=custom` against the Compose database, and `make restore-check` restores the newest dump into a new database and counts the rows.
+
+<WeekLink n={17} anchor="backups-you-have-restored">Week 17, Backups You Have Restored</WeekLink>: on the VPS, a CronJob runs `pg_dump` every night, encrypts the dump with age to a public key, and uploads it with rclone to object storage at another provider. The cluster holds only an upload key that cannot list or read the bucket, and versioning and lifecycle rules keep what that key overwrites or hides for 30 days. <WeekLink n={17} anchor="step-12-drill-the-restore-on-your-laptop">Step 12</WeekLink> runs the restore drill on your laptop, the one place that holds the private key: it restores the newest dump into an empty server and fails when the dump is missing, older than 26 hours, unreadable, incomplete or not the live database. <WeekLink n={18} anchor="step-8-on-call-and-the-runbook">Week 18</WeekLink> makes the drill weekly: a healthchecks.io check with a period of 7 days and a grace time of 1 day alerts you when no drill passes in that time. The live database and the bucket make two copies; a third, such as a second bucket under another account, completes the 3-2-1 rule.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **A backup on the same disk.** The disk failure, the lost VPS or the deleted namespace takes it too. Copy every backup off the machine as part of the job that makes it, and measure the RPO from that copy.
+- **Never restoring.** A dump that fails halfway, a CronJob that stopped in March, a backup of the test database: each one looks like a backup until the restore. Drill on a schedule, into an empty server, and fail on an old or incomplete backup.
+- **Server keys that can delete.** An attacker on the server uses the same key to delete every backup. Give the server an upload key only, and turn on versioning or Object Lock.
+- **One copy of the private key.** A laptop that dies takes the only key, and every encrypted backup becomes noise. Keep the key in a password manager and on offline media.
+- **Copying the data folder of a running Postgres.** `cp -r` of the data folder while Postgres writes gives files from different moments, which do not form a consistent database. Use `pg_dump`, or `pg_basebackup` with the WAL.
+- **No alert on a failed backup.** A backup job that fails quietly for a month leaves you with a month-old backup. Alert when the newest backup is older than one interval plus a margin, as the 26-hour limit of the drill does.
 
 ## Going Deeper
 
-This section is not written yet.
+- **WAL archiving and point-in-time recovery.** The next step for your monitor: it brings the RPO from a day to a minute and undoes a mistake to the second.
+- **pgBackRest.** It manages full, differential and incremental backups, WAL archives, retention, encryption and parallel restore, with its own verification.
+- **Postgres 17 incremental backups.** `summarize_wal`, `pg_basebackup --incremental` and `pg_combinebackup` cut the size of each base backup to the changed blocks.
+- **Object Lock in compliance mode.** Not even the account owner can delete a locked object before its date, which protects against a stolen account too.
+- **Disaster recovery plans.** A written, tested runbook for restoring the whole service, not only the database: Domain Name System (DNS) records, certificates, secrets and the cluster itself. Site reliability engineering (SRE) treats runbooks as tested code, and the <TrackLink slug="sre">SRE and Incident Response track</TrackLink> covers them.
 
 ## Further Reading
 
-This section is not written yet.
+- [PostgreSQL 17: Backup and Restore](https://www.postgresql.org/docs/17/backup.html): the chapter on SQL dumps, file system backups and continuous archiving.
+- [PostgreSQL 17: Continuous Archiving and Point-in-Time Recovery](https://www.postgresql.org/docs/17/continuous-archiving.html): how to set up WAL archiving, take a base backup and recover to a moment.
+- [PostgreSQL 17: pg_dump](https://www.postgresql.org/docs/17/app-pgdump.html): every option of `pg_dump`, including `--snapshot` and the archive formats.
+- [The age format specification](https://age-encryption.org/v1): how age encrypts a file to a public key and authenticates every chunk.
+- [rclone documentation](https://rclone.org/docs/): remotes, configuration through environment variables, and the options that the upload-only setup of Week 17 uses.
