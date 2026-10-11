@@ -86,8 +86,9 @@ func main() {
 	}()
 	if *debugAddr != "" {
 		// Prometheus scrapes this address from another container.
+		mux := metricsMux()
 		go func() {
-			slog.Error("debug server stopped", "err", obs.NewServer(*debugAddr, metricsMux()).ListenAndServe())
+			slog.Error("debug server stopped", "err", obs.NewServer(*debugAddr, mux).ListenAndServe())
 		}()
 	}
 	if *pprofAddr != "" {

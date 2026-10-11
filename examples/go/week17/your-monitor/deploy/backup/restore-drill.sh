@@ -5,8 +5,8 @@
 # standard input), restores it into a new, empty Postgres server in
 # DRILL_DIR, and checks the row counts against the counts that backup.sh
 # wrote beside the dump. LIVE_MONITORS, the monitor count of the live
-# database, catches a backup of the wrong or an empty database: it must
-# be set, and a number.
+# database, catches a backup of an empty database: it must be set, and a
+# number.
 set -eu
 work=${DRILL_DIR:-/tmp/drill}
 backups=${BACKUP_DIR:-$work}
@@ -16,7 +16,7 @@ start=$(date +%s)
 fail() { echo "restore drill: FAILED: $*"; exit 1; }
 
 # An empty value is what a failed kubectl in $(...) leaves behind, and
-# the drill would then pass a backup of the wrong database.
+# without this check the drill passes a backup of an empty database.
 live=${LIVE_MONITORS-}
 case $live in
   '' | *[!0-9]*) fail "LIVE_MONITORS must be the monitor count of the live database, a number; got '$live'" ;;

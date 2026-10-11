@@ -8,18 +8,25 @@ X-Content-Type-Options, X-Frame-Options and a frame-ancestors policy.
 secureHeaders adds all three. TestSecureHeaders checks four routes,
 including the JSON 404.
 ---
- internal/api/api.go          |  2 +-
+ internal/api/api.go          |  6 +++---
  internal/api/headers.go      | 20 ++++++++++++++++++++
  internal/api/headers_test.go | 25 +++++++++++++++++++++++++
- 3 files changed, 46 insertions(+), 1 deletion(-)
+ 3 files changed, 48 insertions(+), 3 deletions(-)
  create mode 100644 internal/api/headers.go
  create mode 100644 internal/api/headers_test.go
 
 diff --git a/internal/api/api.go b/internal/api/api.go
-index f68068c..3f4c787 100644
+index 6fced56..34456ef 100644
 --- a/internal/api/api.go
 +++ b/internal/api/api.go
-@@ -57,3 +57,3 @@ func NewHandler(store monitor.Store, results monitor.ResultStore, incidents Inci
+@@ -51,4 +51,4 @@ func (h *handler) routes() map[string]http.HandlerFunc {
+ // from the monitors in store, the check results in results and the
+-// incidents in incidents, with logins checked by auth. sameOrigin stands
+-// in front of every route.
++// incidents in incidents, with logins checked by auth. secureHeaders and
++// sameOrigin stand in front of every route.
+ func NewHandler(store monitor.Store, results monitor.ResultStore, incidents Incidents, auth Auth) http.Handler {
+@@ -59,3 +59,3 @@ func NewHandler(store monitor.Store, results monitor.ResultStore, incidents Inci
  	}
 -	return sameOrigin(jsonFallback(mux))
 +	return secureHeaders(sameOrigin(jsonFallback(mux)))
@@ -94,16 +101,23 @@ The status page polls GET /api/monitors, the results and the open
 incidents. Five minutes in the browser cache takes that load off the
 api and Postgres.
 ---
- internal/api/api.go   |  2 +-
+ internal/api/api.go   |  6 +++---
  internal/api/cache.go | 18 ++++++++++++++++++
- 2 files changed, 19 insertions(+), 1 deletion(-)
+ 2 files changed, 21 insertions(+), 3 deletions(-)
  create mode 100644 internal/api/cache.go
 
 diff --git a/internal/api/api.go b/internal/api/api.go
-index 3f4c787..d8974da 100644
+index 34456ef..6d61711 100644
 --- a/internal/api/api.go
 +++ b/internal/api/api.go
-@@ -57,3 +57,3 @@ func NewHandler(store monitor.Store, results monitor.ResultStore, incidents Inci
+@@ -51,4 +51,4 @@ func (h *handler) routes() map[string]http.HandlerFunc {
+ // from the monitors in store, the check results in results and the
+-// incidents in incidents, with logins checked by auth. secureHeaders and
+-// sameOrigin stand in front of every route.
++// incidents in incidents, with logins checked by auth. secureHeaders,
++// cacheControl and sameOrigin stand in front of every route.
+ func NewHandler(store monitor.Store, results monitor.ResultStore, incidents Incidents, auth Auth) http.Handler {
+@@ -59,3 +59,3 @@ func NewHandler(store monitor.Store, results monitor.ResultStore, incidents Inci
  	}
 -	return secureHeaders(sameOrigin(jsonFallback(mux)))
 +	return secureHeaders(cacheControl(sameOrigin(jsonFallback(mux))))

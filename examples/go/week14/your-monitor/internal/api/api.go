@@ -53,8 +53,8 @@ func (h *handler) routes() map[string]http.HandlerFunc {
 
 // NewHandler returns the API: every route, with JSON error bodies, served
 // from the monitors in store, the check results in results and the
-// incidents in incidents, with logins checked by auth. sameOrigin stands
-// in front of every route.
+// incidents in incidents, with logins checked by auth. secureHeaders,
+// cacheControl and sameOrigin stand in front of every route.
 func NewHandler(store monitor.Store, results monitor.ResultStore, incidents Incidents, auth Auth) http.Handler {
 	h := &handler{store: store, results: results, incidents: incidents, auth: auth}
 	mux := http.NewServeMux()
