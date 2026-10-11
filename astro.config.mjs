@@ -55,6 +55,9 @@ export default defineConfig({
         useStarlightDarkModeSwitch: true,
         useStarlightUiThemeColors: true,
         minSyntaxHighlightingColorContrast: 5.5,
+        // Keep tabs: a Makefile recipe copied with spaces fails with
+        // "missing separator". CSS sets how wide a tab looks.
+        tabWidth: 0,
       },
     }),
   ],
