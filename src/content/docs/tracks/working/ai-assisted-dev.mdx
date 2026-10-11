@@ -1,36 +1,252 @@
 ---
 title: "AI-Assisted Development"
+description: How to use AI assistants as you grow as an engineer, why the course holds them back early, and how the three stages loosen from explain only to pair partner.
 track: ai-assisted-dev
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+An AI assistant is a large language model, or LLM, that you talk to in a chat window, your editor or the terminal: you describe what you want, and it answers with an explanation, a command or code. It writes a plausible Go function in seconds, and that speed is the risk while you learn. This page explains the three stages of AI use on this course, why the struggle they protect is the part that teaches you, and the habits that keep generated code honest.
+
 ## What It Is
 
-This section is not written yet.
+### What an Assistant Does
+
+An LLM predicts the next piece of text from everything before it: your prompt, the files you share and its own answer so far. Two facts follow, and every habit on this page rests on them:
+
+- The answer is **fluent whether or not it is right**. A wrong answer reads as confidently as a right one, because the model produces plausible text, not checked facts.
+- The model **sees only what a tool gives it**. In a chat window, it knows your code from what you paste. An **agent**, an assistant that runs commands and edits files itself, such as Claude Code, can read your repository and run your tests.
+
+A **hallucination** is an answer that sounds right and is false: a function that does not exist, an option no version of the tool accepts, a package nobody publishes. Exact names are where they hit hardest, because `http.Server.ShutdownGracefully` is plausible text while the real method is `http.Server.Shutdown`.
+
+### Why the Struggle Builds Skill
+
+When your Go program fails to compile and you work out why, you build a model of how Go thinks: what a type is, why an unused variable is an error, how `err` travels back up the calls. A month later, that model is what you debug unfamiliar code with. When an assistant writes the program, the program exists, and the model in your head does not.
+
+Anthropic measured this in a randomized trial published in January 2026. Its 52 engineers, most of them junior, learned Trio, a Python library new to all of them, and half of them worked with an assistant. On the quiz afterward, the assistant group averaged 50% and the hand-coding group 67%, with the widest gap on debugging questions. The assistant group finished about two minutes faster, a difference the study found not statistically significant. The participants who scored well used the assistant for conceptual questions and explanations, and fixed their own errors.
+
+Early on, you need the skill more than the speed, because every later week assumes you can read Go, a stack trace and a diff. Once you can judge the output, the speed is worth having.
+
+### The Three Stages
+
+AI use on this course loosens in three stages. The **AI This Week** box on every week page names the current stage and gives one do and one do-not for that week.
+
+| Stage | Weeks | Allowed | Not allowed |
+| --- | --- | --- | --- |
+| 1: Explain only | 0 to 5 | Ask it to explain errors, concepts and documentation. Ask for hints. | Pasting generated code into the project |
+| 2: Review everything | 6 to 12 | Generate code, then read every line, write or extend the tests, and explain the code back | Merging code you cannot explain or that has no test |
+| 3: Pair partner | 13 to 18 | Use it for scaffolding, configuration, refactors, and as a reviewer of your own code | Letting it decide architecture or incident response for you |
+
+**Stage 1, explain only**, starts in <WeekLink n={0} anchor="the-ai-rules-for-this-course">Week 0</WeekLink>. You write every line of Go, Git and shell yourself. The assistant explains a compiler error, a man page or a `git status` output, and gives a hint when you ask. Week 0 also turns off inline suggestions in VS Code: accepting gray ghost text pastes generated code without a decision.
+
+**Stage 2, review everything**, starts in <WeekLink n={6} anchor="ai-this-week">Week 6</WeekLink>. The assistant writes code, and you own every line as if you typed it. You run the tests, read the diff, break the code on purpose to watch a test catch it, and explain it in the pull request in your own words.
+
+**Stage 3, pair partner**, starts in <WeekLink n={13} anchor="ai-this-week">Week 13</WeekLink>. You hand it work where you already know what right looks like: a refactor, a review of your own pull request, a panel for the Grafana dashboard you build that week, and the Week 15 configuration files that follow the pattern of the first file you write yourself. Those files configure Kubernetes, the system that runs your containers. The decisions stay with you.
+
+### Ask for Explanations and Hints
+
+A good stage 1 prompt says what you are learning, what you see, and which help you want. Tell it not to write the code, and ask for the smallest hint:
+
+```txt
+I am learning Go and must write this function myself. Do not show code.
+go test prints: panic: runtime error: index out of range [3] with length 3
+Explain what the message means, then ask me one question that
+points me at the line to check.
+```
+
+Other prompts that keep the work with you: ask what your own code does wrong for one input, without the fix; paste `go doc` output and ask what each field controls; ask it to compare a Go idea with the TypeScript one you know. Then check the answer: run the command, read the documentation, find the line it blames. An explanation you have checked is knowledge. One you have only read is a guess.
+
+### Review Generated Code Line by Line
+
+In stage 2, review generated code like a pull request from a colleague you do not know yet:
+
+- Run `go doc` on every function you have not used, such as `go doc http.Server.Shutdown`. A name it does not find is a hallucination.
+- For every branch, name the input that reaches it and the test that covers that input.
+- Look for what is missing: a timeout, a closed response body, a checked error, a limit on input size.
+- Change one line at a time and run the tests. When no test fails, the line does nothing or no test covers it.
+
+If you cannot explain a line, you cannot merge it.
+
+### Write the Tests First
+
+Write the test cases before you ask for the code. A test that the model writes after its own code asserts what that code does, bugs included: a mirror, not a check. Cases you write first come from the problem: the empty input, the boundary, the value that must stay unchanged. Choosing them is the skill you bring from quality assurance (QA), and the <TrackLink slug="testing">Testing track</TrackLink> covers it.
+
+### Hallucinated APIs and Packages
+
+Treat every exact identifier in an answer as unverified until you check it at the source:
+
+- A Go function or method: `go doc` prints it, or it does not exist.
+- A module or npm package: open its page on `pkg.go.dev` or `npmjs.com`, and check who publishes it and since when. Attackers register names that models invent and fill them with malware, an attack called **slopsquatting**.
+- A commit SHA, a version or a checksum: read it from the source. SHA stands for Secure Hash Algorithm. Week 14 reads every action SHA with `git ls-remote`, because a model writes 40 hexadecimal characters that look right and point at nothing.
+- A command-line option: run the tool with `--help`.
+
+### Secrets and Private Code in Prompts
+
+With a hosted assistant, everything you paste leaves your machine. Your plan and its settings decide whether the provider stores it, for how long, and whether it trains models on it: read the data policy before you paste code. At work, your employer decides which tools can see company code.
+
+Never paste a secret: an API key, a password, a session token, a private key, a kubeconfig, which is the file that holds the credentials for a Kubernetes cluster, or `.env`. Replace each with `REDACTED` first. When a secret leaks anyway, revoke it at the service that issued it and create a new one, as with a secret pushed to GitHub. Keep secrets out of the folders an agent works in, too.
+
+### What Stays Human at Stage 3
+
+At stage 3, the assistant writes most of the boilerplate. Two kinds of decision stay with you:
+
+- **Architecture**: which programs exist, what they own, how they talk, which details each metric records, which limits protect the service. Week 13 shows how one extra detail on a metric multiplies its storage. An assistant optimizes for the prompt in front of it, without the constraints you know from running the system.
+- **Incident response**: when production breaks, you follow the **runbook**, the page that tells the person on call what to do for each alert, read your graphs and choose the **mitigation**, the action that stops the damage before the real fix. A model handed a pasted log suggests the most common fix for that error text, not the fix for your system.
+
+Use it around those decisions: to list options before you decide, to review the record where you write down a decision and its reasons, and to check the timeline of a **postmortem**, the write-up after an incident, for gaps.
 
 ## Diagrams
 
-This section is not written yet.
+The three stages map onto the weeks of the course. Each stage keeps the rules of the one before it: in stage 3, you still read every line and test every change.
+
+<Diagram
+  id="ai-ladder"
+  title="The three AI stages by week"
+  code={`direction: right
+s1: "Stage 1\\nExplain only\\nWeeks 0 to 5"
+s2: "Stage 2\\nReview everything\\nWeeks 6 to 12"
+s3: "Stage 3\\nPair partner\\nWeeks 13 to 18"
+s1 -> s2: "Week 6"
+s2 -> s3: "Week 13"
+`}
+  steps={[
+    { hl: ['s1'], caption: 'Weeks 0 to 5: you learn Go, Linux and networking by hand. The assistant explains errors and documentation and gives hints. No generated code enters the project.' },
+    { hl: ['s1', 's2', 's1->s2'], caption: 'Week 6: the app grows to several programs, Docker and a web page. The assistant can draft code now, and nothing merges until you can explain every line and a test covers it.' },
+    { hl: ['s2', 's3', 's2->s3'], caption: 'Week 13: the assistant drafts scaffolding, configuration and refactors, and reviews your code. You hand it the work where you know what right looks like, and you keep architecture and incident response for yourself.' },
+  ]}
+/>
+
+In stage 2 and stage 3, every piece of generated code goes through the same loop before it merges. The loop starts with your tests, not with the prompt.
+
+<Diagram
+  id="review-loop"
+  title="The review loop for generated code"
+  code={`grid-rows: 3
+grid-columns: 3
+horizontal-gap: 130
+vertical-gap: 90
+gen: "the assistant\\ndrafts the code"
+run: "go test -race"
+gap1: "" {style.opacity: 0}
+spec: "you write the spec\\nand the test cases"
+read: "you read every line\\nand run go doc"
+mutate: "break it on purpose"
+gap2: "" {style.opacity: 0}
+merge: merge
+explain: "explain it back\\nin the pull request"
+spec -> gen
+gen -> run
+run -> spec: "red: paste\\nthe failure"
+run -> read: green
+read -> spec: "a line you\\ncannot explain"
+read -> mutate
+mutate -> explain: "the right\\ntest fails"
+explain -> merge
+`}
+  steps={[
+    { hl: ['spec'], caption: 'You write down what the code must do and the test cases that prove it, before any code exists. The cases come from the problem, not from an implementation.' },
+    { hl: ['spec', 'gen', 'spec->gen'], caption: 'You give the assistant the spec and the tests. It drafts the code.' },
+    { hl: ['gen', 'run', 'spec', 'gen->run', 'run->spec'], caption: 'You run the tests. A red test comes back to you: paste the failure output into your next prompt, and read the fix the assistant proposes before you accept it.' },
+    { hl: ['run', 'read', 'run->read', 'read->spec'], caption: 'Green is where review starts. Read every line, run go doc on every name you do not know, and look for what is missing. A line you cannot explain sends you back to the spec.' },
+    { hl: ['read', 'mutate', 'read->mutate', 'mutate->explain'], caption: 'Break the code on purpose, one change at a time: return the wrong value, drop a check. The test that covers that line must fail. When none fails, write the test.' },
+    { hl: ['explain', 'merge', 'explain->merge'], caption: 'Explain the code in your own words in the pull request, then merge. Anyone who reads the pull request later sees that a person understood the change.' },
+  ]}
+/>
 
 ## Example
 
-This section is not written yet.
+The example follows one stage 2 task through the review loop. The monitor needs the 95th percentile of check latencies, the duration that 95% of checks stay under. You ask an assistant for a percentile function, and you write the test cases first.
+
+### The Draft
+
+This draft has the shape that an assistant returns for the prompt "write a Go function that returns the p-th percentile of a slice of float64":
+
+<CodeFrom file="go/tracks/aiassisted/draft_test.go" region="draft" lang="go" title="draft_test.go" />
+
+It compiles, and the median of `1` to `5` comes out as `3`. Read it line by line, though, and three questions come up: what happens to the slice the caller passes in, what `values[i]` does when `i` equals `len(values)`, and why the error is always `nil`.
+
+### The Cases You Write First
+
+Before you read the draft, write down what a percentile function must do. Each case is a fact about percentiles, not about an implementation:
+
+<CodeFrom file="go/tracks/aiassisted/percentile_test.go" region="cases" lang="go" title="percentile_test.go" />
+
+Each check takes the function under test as an argument, and the same cases run against any function with this signature. `wantError` and `wantValue` sit at the end of the same file. A helper, `run`, recovers a panic and turns it into a failure message, which keeps one crash from hiding the other cases:
+
+<CodeFrom file="go/tracks/aiassisted/percentile_test.go" region="run" lang="go" title="percentile_test.go" />
+
+The test runs each case as a subtest:
+
+<CodeFrom file="go/tracks/aiassisted/percentile_test.go" region="test" lang="go" title="percentile_test.go" />
+
+Two cases need Go knowledge. **NaN**, short for not a number, is the float value that `math.NaN()` returns, and every comparison with it is false: a check written as `p < 0 || p > 100` passes NaN through. And a Go slice shares its array with the caller: sorting it in place reorders the data of the caller.
+
+### What the Cases Catch
+
+Run the cases against the draft:
+
+<CodeFrom file="go/tracks/aiassisted/draft_test.go" region="caught" lang="go" title="draft_test.go" />
+
+```txt
+$ go test -v -run TestDraftFailsTheCases ./tracks/aiassisted/
+=== RUN   TestDraftFailsTheCases
+    draft_test.go:33: draft: no values is an error: panics: runtime error: index out of range [0] with length 0
+    draft_test.go:33: draft: p below 0 is an error: p -1: want an error, got 1 and nil
+    draft_test.go:33: draft: p above 100 is an error: panics: runtime error: index out of range [3] with length 3
+    draft_test.go:33: draft: p NaN is an error: panics: runtime error: index out of range [-9223372036854775808]
+    draft_test.go:33: draft: p 100 is the maximum: panics: runtime error: index out of range [3] with length 3
+    draft_test.go:33: draft: p 50 of an even count interpolates: p 50 of [10 20 30 40]: got 30, want 25
+    draft_test.go:33: draft: the input stays unsorted: input changed to [10 20 30]
+--- PASS: TestDraftFailsTheCases (0.00s)
+```
+
+Seven of nine cases fail. Four crash, which in the monitor means a crashed worker. The sorted input corrupts the data of the caller with no error at all, and no happy-path test notices. The draft passes only the two cases a quick manual check covers: p 0 and a single value.
+
+The NaN line shows a huge negative index on amd64 processors. On arm64, Go converts NaN to `0`, and the draft returns the minimum with no error. The case fails on both, because it checks for an error, not for a panic.
+
+### The Version You Keep
+
+<CodeFrom file="go/tracks/aiassisted/percentile.go" region="percentile" lang="go" title="percentile.go" />
+
+`slices.Clone` copies the input before `slices.Sort` sorts the copy. The **rank** is the position of the percentile in the sorted copy, counted from `0`: for p 50 of four values, `1.5`. The function interpolates between the values on either side, which gives `25` for 10, 20, 30 and 40. Tools define percentiles in different ways: the doc comment names this one, and the cases pin it down.
+
+At stage 1, you write `Percentile` yourself and ask the assistant why NaN slips through `p < 0 || p > 100`. At stage 2, the assistant drafts it, and your cases decide whether the draft merges.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={0} anchor="the-ai-rules-for-this-course">Week 0</WeekLink> sets out the three stages and turns off inline suggestions. Its <WeekLink n={0} anchor="ai-this-week">AI This Week box</WeekLink> shows the stage 1 pattern: paste the full error, ask what each line means, then check the answer against `git status` before you act. <WeekLink n={4} anchor="ai-this-week">Week 4</WeekLink> asks for a walk through `dig +trace` output, and for a hint about one `httptrace` hook instead of the code.
+
+<WeekLink n={6} anchor="ai-this-week">Week 6</WeekLink> starts stage 2: the assistant writes the api stub and a test, and you break the handler on purpose, add the missing cases and explain each function. <WeekLink n={11} anchor="ai-this-week">Week 11</WeekLink> keeps `.env`, session tokens and password hashes out of the chat.
+
+<WeekLink n={13} anchor="ai-this-week">Week 13</WeekLink> starts stage 3. The assistant builds a panel for Grafana, the dashboard tool of that week, and you choose the labels on each metric: every distinct label value creates one more series that Prometheus, the metrics database, stores. The p95 latency on that dashboard is the 95th percentile from the example, which Prometheus estimates from counts of requests per duration range. <WeekLink n={14} anchor="step-7-read-every-sha-yourself">Week 14</WeekLink> reads every action SHA from `git ls-remote`. <WeekLink n={18} anchor="ai-this-week">Week 18</WeekLink> keeps the incident drill in your hands and asks the assistant afterward to check the postmortem for gaps.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **Accepting inline suggestions in stage 1.** One key press pastes generated code and skips the struggle. Keep **Editor › Inline Suggest: Enabled** off, as Week 0 sets it, until stage 2.
+- **Asking for the fix instead of the cause.** You get working code and no idea why the old code failed, and the bug returns. Ask what the error means and where to look, then fix it yourself.
+- **Letting the assistant test its own code.** The tests assert what the code does, and the suite turns green on a broken function. Write the cases and expected values yourself, first.
+- **Trusting a name without checking it.** A hallucinated method fails to compile, the cheap case. A hallucinated package that someone registered compiles and runs their code. Check every new name and package at its source.
+- **Making a flaky test pass with a suggested `time.Sleep`.** The race stays and returns in production. Find which job runs twice and why, as the <WeekLink n={9} anchor="ai-this-week">Week 9 AI box</WeekLink> asks.
+- **Merging code you cannot explain.** Its first bug lands in code nobody understands, in the middle of an incident. Get an explanation, check it against the documentation, and rewrite what you still cannot explain.
 
 ## Going Deeper
 
-This section is not written yet.
+- **Fuzz testing**: `go test -fuzz`, in Go 1.18 and later, generates inputs you did not think of. Fuzz `Percentile` and check that every result lies between the minimum and the maximum.
+- **Mutation testing**: tools change one operator at a time and report each change no test catches, which automates the break-it-on-purpose step.
+- **Prompt injection**: an agent that reads untrusted text, such as an issue or a web page, can follow instructions hidden in it. Know what your agent can do before you point it at text you did not write.
+- **Supply chain checks**: `govulncheck` reports known vulnerabilities in the modules your code calls. Run it on every dependency an assistant suggests.
 
 ## Further Reading
 
-This section is not written yet.
+- [How AI assistance impacts the formation of coding skills](https://www.anthropic.com/research/AI-assistance-coding-skills): the January 2026 Anthropic trial, with the interaction patterns that kept learning high.
+- [Best practices for Claude Code](https://code.claude.com/docs/en/best-practices): giving an agent tests to verify its work, and the trust-then-verify gap.
+- [Reduce hallucinations](https://platform.claude.com/docs/en/test-and-evaluate/strengthen-guardrails/reduce-hallucinations): prompting techniques that cut invented facts.
+- [Claude Code security](https://code.claude.com/docs/en/security): prompt injection, permissions and untrusted content in an agent.
+- [The Go testing package: fuzzing](https://pkg.go.dev/testing#hdr-Fuzzing): the reference for `go test -fuzz` and `testing.F`.
+- [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck): the Go tool that checks dependencies against the Go vulnerability database.

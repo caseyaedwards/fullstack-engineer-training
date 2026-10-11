@@ -1,36 +1,216 @@
 ---
 title: "Git"
+description: How Git stores your project as content-addressed objects, what branches, merges and remotes really are, and how to recover when a command goes wrong.
 track: git
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+Git is the version control system that records every change to your project as a snapshot, on your laptop and on GitHub. Every pull request, every continuous integration (CI) run and, from Week 14, every container image, the packaged program that Docker runs, names a Git commit. Once you know the handful of objects Git stores and that a branch is only a name pointing at one of them, commands such as `merge`, `rebase` and `reset` stop being spells and become moves on a graph you can draw.
+
 ## What It Is
 
-This section is not written yet.
+### Objects and Content Addressing
+
+Git keeps your history in an **object database** under `.git/objects`. It stores four kinds of object:
+
+- A **blob** holds the bytes of one file, and nothing else: no name, no permissions, no date.
+- A **tree** is one directory: a list of entries, each with a mode, an object ID and a name. A tree points at blobs for files and at other trees for subdirectories.
+- A **commit** points at one tree, the snapshot of the whole project, and at its **parent** commits. It adds an author, a committer, two times and a message. The first commit has no parent. A merge commit has two.
+- An **annotated tag** names one object, such as a commit, and adds a tagger, a date and a message.
+
+Every object gets an ID that Git computes from its content with a **hash function**: a calculation that turns any number of bytes into a fixed-size fingerprint. The same bytes always give the same ID, and changing one byte gives a different one. Git calls that property **content addressing**: Git finds an object by what it holds, not by where it sits.
+
+Git 2.x hashes with SHA-1, short for Secure Hash Algorithm 1, which gives 40 hexadecimal characters. Researchers produced two different files with the same SHA-1 in 2017, and Git now uses a hardened SHA-1 that detects that attack. A repository that `git init --object-format=sha256` creates uses SHA-256 and 64-character IDs instead. The Git project plans to make SHA-256 the default for new repositories in Git 3.0, which has no release date yet.
+
+Content addressing gives Git three properties you rely on every day:
+
+- **Integrity**: a commit ID covers its tree, which covers every blob, and its parent, which covers the whole history before it. Change one old file, and every later commit ID changes. Nobody can rewrite history quietly.
+- **Deduplication**: a file that stays the same between commits keeps the same blob ID, and Git stores it once.
+- **Cheap comparison**: two trees with the same ID hold the same files. Git compares directories by comparing IDs, without reading the files.
+
+### Branches, HEAD and Tags
+
+A **branch** is a name that points at one commit. Git stores it as a small file such as `.git/refs/heads/main` that holds a commit ID, or as a line in `.git/packed-refs`. A new commit on a branch moves the name forward to the new commit. Creating a branch writes one ID and copies no files, which is why branches cost nothing.
+
+**HEAD** names where you are. On a branch, `.git/HEAD` holds `ref: refs/heads/main`: you are on `main`, and your next commit moves `main`. When HEAD holds a commit ID instead, Git calls it a **detached HEAD**: new commits belong to no branch, and switching away leaves them with no name.
+
+A **tag** is a name that never moves. A **lightweight tag** is a name file, as a branch is. An annotated tag is a full object with its own ID. `git ls-remote` shows an annotated tag twice: the tag object, and a second line ending in `^{}` that **peels** the tag to the commit it names.
+
+### The Working Tree, the Index and Commits
+
+Three places hold versions of your files:
+
+- The **working tree**: the files you edit.
+- The **index**, also called the staging area: the snapshot your next commit records. `git add` copies a file from the working tree into the index.
+- The **repository**: the commits. `git commit` turns the index into a tree, then writes a commit that points at it.
+
+`git diff` compares the working tree with the index. `git diff --staged` compares the index with the last commit. `git status` summarizes both.
+
+### Remotes, Fetch and Push
+
+A **remote** is another copy of the repository, such as the one on GitHub that `git clone` names `origin`. Git keeps a local record of each remote branch, such as `origin/main`, which `git fetch` updates. `git pull` runs `git fetch`, then fast-forwards your branch. When both sides have new commits, Git stops and asks you to choose: `git pull --no-rebase` merges, `git pull --rebase` rebases, and the `pull.rebase` setting makes the choice permanent. `git push` sends your commits and asks the remote to move its branch to your commit. Without `--force`, the remote accepts only a **fast-forward**: a move where the old commit is an ancestor of the new one, which loses nothing.
+
+`git push --force` skips that check, and the remote branch drops every commit that only it holds. `git push --force-with-lease` refuses when the remote branch has moved since your last fetch, which makes it the safe form for your own branches. Never force-push `main`.
+
+### Merge, Rebase and Squash
+
+Three ways bring the commits of a branch into `main`:
+
+- A **merge** writes a merge commit with two parents: the tip of `main` and the tip of the branch. History keeps every commit as it happened. When `main` has not moved since the branch started, Git fast-forwards instead and writes no merge commit.
+- A **rebase** replays each commit of the branch on top of the new tip of `main`. Each replayed commit gets a new parent, and with it a new ID: the old commits stay in the database with no branch name. Rebase only commits that nobody else has.
+- A **squash merge**, a GitHub option, writes one new commit on `main` with the combined change. The branch commits never join the history of `main`.
+
+When both sides change the same lines, Git stops with a **merge conflict** and writes both versions into the file between `<<<<<<<`, `=======` and `>>>>>>>` markers. Edit the file to the version you want, remove the markers, `git add` it and continue with `git commit`, or `git rebase --continue` during a rebase.
+
+### Nothing Is Lost Until Garbage Collection
+
+`reset`, `rebase` and `branch -D` move or delete names, and none of them deletes an object. The **reflog** records every position of HEAD and of each branch on your laptop: `git reflog` lists them. By default, Git keeps an entry for 90 days, and for 30 days when no branch reaches its commit any more. After a bad `reset` or `rebase`, find the commit ID in the reflog and point a branch at it with `git branch rescue <id>`. Only `git gc` removes objects that nothing points at, and only once their reflog entries expire. After commands such as `git commit` and `git fetch`, Git runs `git maintenance run --auto`, which by default calls `git gc --auto`. That packs and prunes only once the loose objects pass a threshold, `6700` by default.
+
+The exception is work you never committed or staged: `git reset --hard` and `git restore` overwrite it, and no Git command brings it back.
 
 ## Diagrams
 
-This section is not written yet.
+The diagram shows the first two commits of the `week-00` branch from Week 0, with two of their three files. `HEAD` names the branch, the branch names a commit, and each commit names a tree and its parent. The `go.mod` file stays the same in both commits, and both trees point at the same blob.
+
+<Diagram
+  id="git-objects"
+  title="Commits, trees and blobs, with a branch pointer"
+  code={`grid-rows: 3
+grid-columns: 4
+horizontal-gap: 70
+vertical-gap: 50
+branch: week-00
+c2: "commit 9ffd6a3"
+t2: tree
+r2: "blob\\nREADME.md, second version"
+head: HEAD
+gap1: "" {style.opacity: 0}
+gap2: "" {style.opacity: 0}
+gm: "blob\\ngo.mod"
+gap3: "" {style.opacity: 0}
+c1: "commit e39097c"
+t1: tree
+r1: "blob\\nREADME.md, first version"
+head -> branch
+branch -> c2
+c2 -> t2
+c2 -> c1: parent
+c1 -> t1
+t2 -> r2
+t2 -> gm
+t1 -> gm
+t1 -> r1
+`}
+  steps={[
+    { hl: ['head', 'branch', 'c2', 'head->branch', 'branch->c2'], caption: 'HEAD holds ref: refs/heads/week-00, and week-00 holds the ID of the newest commit. Committing writes a new commit and moves week-00 to it. HEAD follows, because it names the branch and not a commit.' },
+    { hl: ['c2', 'c1', 'c2->c1'], caption: 'Each commit names its parent by ID. The ID of 9ffd6a3 covers the ID of e39097c, which is why changing an old commit changes every commit after it.' },
+    { hl: ['c2', 't2', 'r2', 'gm', 'c2->t2', 't2->r2', 't2->gm'], caption: 'A commit points at one tree, the full snapshot. The tree lists each file by name, mode and blob ID.' },
+    { hl: ['t1', 't2', 'gm', 't1->gm', 't2->gm'], caption: 'go.mod has the same bytes in both commits, and with them the same blob ID. Both trees point at one stored blob. Only the README changes, and only it gets a new blob.' },
+  ]}
+/>
+
+One week of the course, from branch to merge. Arrows point from each commit to its parent, the way Git stores them.
+
+<Diagram
+  id="feature-branch"
+  title="A feature branch from creation to merge"
+  code={`direction: left
+a: A
+b: B
+c: C
+d: D
+e: E
+m: "M, merge commit"
+main: main
+feat: week-01
+b -> a
+c -> b
+d -> c
+e -> b
+m -> e: first parent
+m -> d: second parent
+main -> m
+feat -> d
+`}
+  steps={[
+    { hl: ['a', 'b', 'b->a'], caption: 'main points at B. git switch -c week-01 writes a new name that points at B too, and switches HEAD to it. No file changes.' },
+    { hl: ['c', 'c->b'], caption: 'You commit C on week-01. Its parent is B, and week-01 moves to C. main stays at B.' },
+    { hl: ['d', 'd->c', 'feat', 'feat->d'], caption: 'You commit D, push week-01 and open a pull request. GitHub shows the diff between B, where the branch started, and D.' },
+    { hl: ['e', 'e->b'], caption: 'Meanwhile, another pull request merges, and main moves to E. Your branch and main have diverged: neither tip is an ancestor of the other.' },
+    { hl: ['m', 'm->e', 'm->d', 'main', 'main->m'], caption: 'Merging the pull request writes M with two parents: E, the old tip of main, and D, the tip of your branch. main moves to M.' },
+    { hl: ['feat', 'c', 'd'], caption: 'Deleting week-01 removes only the name. C and D stay in the history, reachable from M through its second parent.' },
+  ]}
+/>
 
 ## Example
 
-This section is not written yet.
+A blob ID is easy to compute yourself, and doing it once makes content addressing concrete. Git hashes a short header followed by the file content: the word `blob`, a space, the length in bytes written in decimal, and a zero byte.
+
+<CodeFrom file="go/tracks/git/blob.go" region="blob" lang="go" title="blob.go" />
+
+`sha1.New` returns a hash that accepts bytes in pieces: the header first, then the content, without joining them into one slice. `h.Sum(nil)` returns the 20 bytes of the result, and `hex.EncodeToString` writes them as the 40 characters Git prints. `crypto/sha1` is in the standard library. Use SHA-1 here only because Git does: for anything new, `crypto/sha256` is the right choice.
+
+The test pins two IDs that every SHA-1 repository agrees on. The ID of the empty blob, `e69de29…`, shows up in every repository that holds an empty file:
+
+<CodeFrom file="go/tracks/git/blob_test.go" region="test" lang="go" title="blob_test.go" />
+
+The second test asks the real `git` for the same IDs, through `git hash-object --stdin`, for inputs that include binary bytes and 80,000 bytes of text:
+
+<CodeFrom file="go/tracks/git/blob_test.go" region="against-git" lang="go" title="blob_test.go" />
+
+The test creates a fresh repository with `--object-format=sha1` first, because `git hash-object` inside a repository hashes with the function of that repository. A machine without `git` skips the test, and CI, where `CI=true`, fails it instead: CI must run every test.
+
+The same IDs show up in a real repository. This one holds a `README.md` with the line `hello` and an empty `empty.txt`, in one commit:
+
+```txt
+$ printf 'hello\n' | git hash-object --stdin
+ce013625030ba8dba906f756967f9e9ca394464a
+$ git cat-file -p 'HEAD^{tree}'
+100644 blob ce013625030ba8dba906f756967f9e9ca394464a	README.md
+100644 blob e69de29bb2d1d6434b8b29ae775ad8c2e48c5391	empty.txt
+```
+
+`git cat-file -p` prints any object by ID. It prints each tree entry as a mode, a type that it derives from the mode, a blob ID and a name: the name lives in the tree, which is why renaming a file leaves its blob ID unchanged.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={0} anchor="git-commits-branches-and-remotes">Week 0</WeekLink> introduces commits, branches, remotes and pull requests, and sets up the rhythm that every later week follows: <WeekLink n={0} anchor="the-weekly-rhythm-one-branch-and-one-pull-request">one branch and one pull request per week</WeekLink>, `week-01` to `week-18`, merged into `main` with a merge commit. Its <WeekLink n={0} anchor="side-lab">side lab</WeekLink> opens `.git`, reads a commit and a tree with `git cat-file -p`, and proves with `git hash-object` that a one-line change gives a new ID, the same calculation as the example.
+
+<WeekLink n={14} anchor="pin-actions-to-a-commit">Week 14</WeekLink> relies on content addressing for security. A tag such as `v7` can move to any commit, and a full commit SHA cannot. Every `uses:` line in the workflows pins an action to a commit SHA, and <WeekLink n={14} anchor="step-7-read-every-sha-yourself">Step 7</WeekLink> reads each SHA with `git ls-remote`, peeling annotated tags with `^{}`. The images job tags every container image with the commit SHA, which names the code inside it. The <WeekLink n={14} anchor="side-lab">Week 14 side lab</WeekLink> adds a pre-push hook: a script that Git runs before `git push` and that cancels the push when it exits with a non-zero status.
+
+The <TrackLink slug="ci-cd">CI/CD track</TrackLink>, short for continuous integration and continuous delivery, covers what runs on each push, and the <TrackLink slug="work-tracking">Ticket and Work Tracking track</TrackLink> covers how a branch links back to the ticket it serves.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **Committing on `main` by accident.** GitHub rejects the next push, or your change skips review. Run `git status` before every commit. To move the commit, run `git branch week-01` to keep it, then `git reset --hard origin/main` on `main`, as Week 0 shows.
+- **Force-pushing a shared branch.** The remote drops the commits that others pushed, and their next pull fails or loses work. Never force-push `main`. On your own branch, use `git push --force-with-lease`.
+- **Rebasing commits that someone else has.** The rebased commits get new IDs, and anyone who built on the old ones now has two copies of the same change. Rebase only commits that exist on your laptop or on a branch nobody else uses.
+- **Committing a secret, then deleting it in the next commit.** The blob stays in history, and anyone who clones the repository can read it. Revoke the secret at its service, issue a new one, and add the file to `.gitignore`.
+- **Running `git reset --hard` with uncommitted work.** Git overwrites the files, and changes you never staged never reached the object database. Commit or stash first: `git stash push -m "before reset"` keeps a named copy.
+- **Panicking after a bad rebase or reset.** The old commits still exist. Run `git reflog`, find the line before the mistake, and run `git branch rescue <id>`.
+- **Writing messages such as `fix` or `wip`.** `git log` and `git blame` then tell you nothing six months later. Write what the commit changes in a subject line of 50 characters or fewer, and why in the body below it.
+- **Committing generated files.** `bin/`, `node_modules/` and coverage profiles bloat every clone and conflict on every merge. List them in `.gitignore` before the first commit.
 
 ## Going Deeper
 
-This section is not written yet.
+- **git bisect**: a binary search through history for the commit that broke a test. With `git bisect run go test ./...`, Git finds it without you.
+- **Packfiles**: Git stores new objects as single compressed files, then `git gc` packs them into one file with deltas between similar objects. This explains why a clone downloads much less than the sum of all snapshots.
+- **Signed commits and tags**: `git commit -S` and `git tag -s` add a signature that proves who created the object. GitHub shows a **Verified** badge for them.
+- **Worktrees**: `git worktree add` checks out a second branch in another folder from the same object database, to work on two branches at once without cloning twice.
+- **The SHA-256 transition**: how Git plans to move repositories from SHA-1 to SHA-256, and how a repository maps between the two while the ecosystem catches up.
 
 ## Further Reading
 
-This section is not written yet.
+- [Pro Git, Git Objects](https://git-scm.com/book/en/v2/Git-Internals-Git-Objects): the Git internals chapter of the free Pro Git book, which builds blobs, trees and commits by hand.
+- [The Git user manual](https://git-scm.com/docs/user-manual): the manual from the Git project, from first clone to the object database.
+- [git hash-object](https://git-scm.com/docs/git-hash-object): the reference page for the command that the example matches.
+- [Everyday Git](https://git-scm.com/docs/giteveryday): the Git project guide to everyday Git in about 20 commands, grouped by role.
+- [Hash function transition](https://git-scm.com/docs/hash-function-transition): the design document for moving Git from SHA-1 to SHA-256.
+- [crypto/sha1](https://pkg.go.dev/crypto/sha1): the Go package the example uses, with its warning about SHA-1 for new designs.

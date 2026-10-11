@@ -1,36 +1,223 @@
 ---
 title: "Documentation"
+description: The kinds of documentation a project needs, from the README to Go doc comments, tested examples and architecture decision records, and how to keep each one true.
 track: documentation
 ---
 
 import UsedInWeeks from '../../../../components/UsedInWeeks.astro';
+import Diagram from '../../../../components/Diagram.astro';
+import CodeFrom from '../../../../components/CodeFrom.astro';
+import WeekLink from '../../../../components/WeekLink.astro';
+import TrackLink from '../../../../components/TrackLink.astro';
 
 <UsedInWeeks />
 
+Documentation is everything a person reads to use, run or change your code without asking you: the README, the comments above each function, the API contract, the runbook and the record of why the system looks the way it does. The first reader is you, a month from now, with no memory of today. On a team, good documentation is the difference between a new engineer shipping in their first week and one who waits for answers.
+
 ## What It Is
 
-This section is not written yet.
+### Four Kinds of Documentation
+
+**Diátaxis**, a framework by Daniele Procida, sorts documentation by what the reader needs at that moment. It crosses two questions. Does the reader want to act or to understand? Is the reader studying, or at work on a task? The answers give four kinds:
+
+- A **tutorial** teaches by doing, for a reader who is learning. It picks the path, and every step works. The week pages of this course are tutorials.
+- A **how-to guide** gives the steps to one goal, for a reader with a job to do who already knows the basics: restore a backup, rotate a secret, add a monitor.
+- **Reference** states facts to look up: every option of a command, every route of an API, every function of a package. It describes and does not teach.
+- **Explanation** says why: the design, the trade-offs, the history. The track pages of this site are explanation and reference.
+
+Each kind fails when it does the job of another. A tutorial that stops to list every option loses the learner. A reference page that tells a story hides the one fact the reader came for. When a page feels hard to write, check which reader it serves and split it.
+
+### The README
+
+The **README**, `README.md` at the top of the repository, is the page GitHub shows under the file list and the first file anyone opens. For a service such as the uptime monitor, it answers five questions:
+
+- What the project does, in two or three sentences.
+- What you need installed, with versions: Go 1.24 or newer, Node 22.12 or newer, Docker with Compose.
+- How to run it, as commands to copy, such as `make up`.
+- How to test it, such as `make test`.
+- Where things live: a short map of the folders, and links to the deeper documents in `docs/`.
+
+Test the README the way you test code: clone the repository into an empty folder, follow it word for word, and fix every step that fails. A README that nobody runs drifts from the truth within weeks.
+
+### Comments and Go Doc Comments
+
+A comment inside a function explains **why**, because the code already says what. `// Retry once: the first connect after a deploy can reach the old pod` earns its place. `// increment i` does not.
+
+A **doc comment** is the comment directly above a package, type, function, constant or variable, with no blank line between them. Go tools turn it into reference documentation: `go doc` prints it in the terminal, editors show it on hover through gopls, and `pkg.go.dev` publishes it for every public module. The Go conventions:
+
+- Start with the name of the thing: `// FormatDuration formats d ...`. A reader scanning a list sees the name and its purpose together.
+- Write full sentences that say what the function returns or does, for which inputs, and what it does with bad input.
+- Name concrete values: `1500 milliseconds gives "1.5s"` beats `formats durations nicely`.
+- Link another name in square brackets, such as `[time.Duration.String]`. Since Go 1.19, `pkg.go.dev` renders it as a link, and `go doc` prints the plain name.
+- Put a **package comment**, starting with `// Package name`, above one `package` clause in the package.
+
+### Examples That Run
+
+A Go **example** is a function in a `_test.go` file whose name starts with `Example`, followed by the name it documents: `ExampleFormatDuration` documents `FormatDuration`. It ends with an `// Output:` comment that lists what it prints. `go doc` and `pkg.go.dev` show the example next to the function, and `go test` runs it and fails when the printed lines differ from the comment. The example is documentation that cannot drift from the code, because the test suite checks it on every run. An example without an `// Output:` comment compiles but never runs.
+
+The same idea runs this site: every code block that a week shows through `CodeFrom` comes from a file whose tests pass in continuous integration (CI).
+
+### Architecture Decision Records
+
+An **architecture decision record**, or ADR, is a short file that records one significant decision: why the job queue lives in Postgres, why the status page has no login, why the server runs k3s, the small Kubernetes distribution of Week 16. Michael Nygard proposed the format in 2011: a numbered title, then four sections.
+
+- **Status**: proposed, accepted, deprecated or superseded by a later record. Many teams add rejected, to keep the proposals they turned down.
+- **Context**: the forces at the time of the decision, with numbers: the load, the deadline, the options.
+- **Decision**: what the team chose, in one paragraph.
+- **Consequences**: what gets easier, what gets harder, and what tells you to revisit it.
+
+The records live in the repository, in `docs/adr/`, numbered in order, and the team reviews each one in a pull request like code. An accepted record never changes, apart from its status line. When the team changes its mind, it writes a new record that supersedes the old one, and the old one keeps the reasons that made sense at the time. A year later, the record answers the question that the code cannot: why it is this way, and whether the reason still holds.
+
+### Documentation as Code
+
+Keep documentation in the repository, in Markdown, next to the code it describes, and change it in the same pull request as the code. A reviewer then sees a new environment variable in the diff and asks where the README mentions it. Documents in a separate wiki drift, because nothing ties them to the change that makes them wrong.
+
+Two more documents complete the set for a service. A **runbook** tells the person on call what to do for each alert, and the <TrackLink slug="sre">site reliability engineering (SRE) track</TrackLink> covers it with the postmortem. An **API contract**, such as an OpenAPI file, describes every route, request and response, and tools check it against the code.
 
 ## Diagrams
 
-This section is not written yet.
+The Diátaxis map crosses what the reader wants to do with where the reader is. Each of the four kinds answers one corner.
+
+<Diagram
+  id="diataxis"
+  title="The Diátaxis map of tutorials, how-to guides, reference and explanation"
+  code={`grid-rows: 3
+grid-columns: 3
+corner: " " {style.opacity: 0}
+act: "action:\\nthe reader wants to do"
+know: "cognition:\\nthe reader wants to understand"
+study: "study:\\nthe reader is learning"
+tut: "tutorial\\nlearning by doing"
+exp: "explanation\\nwhy it is this way"
+work: "work:\\nthe reader has a task"
+how: "how-to guide\\nsteps to one goal"
+ref: "reference\\nfacts to look up"
+`}
+  steps={[
+    { hl: ['act', 'study', 'tut'], caption: 'A tutorial serves a reader who is learning by doing. It picks the path and promises that every step works, as each week page of this course does.' },
+    { hl: ['act', 'work', 'how'], caption: 'A how-to guide serves a reader at work with a goal, such as restoring the backup from last night. It assumes the basics and lists only the steps.' },
+    { hl: ['know', 'work', 'ref'], caption: 'Reference serves a reader at work who needs one fact: a route, an option, a function signature. go doc output is reference.' },
+    { hl: ['know', 'study', 'exp'], caption: 'Explanation serves a reader who wants to understand why: the design and the trade-offs. Track pages and ADRs are explanation.' },
+  ]}
+/>
+
+An architecture decision record moves through a few states, and its text stops changing once the team accepts it. Only the status line changes after that.
+
+<Diagram
+  id="adr-lifecycle"
+  title="An architecture decision record from proposal to superseded"
+  code={`direction: right
+draft: "0002 proposed\\nin a pull request"
+acc: "0002 accepted\\nmerged to main"
+rej: "0002 rejected\\nkept with its reasons"
+newer: "0007 accepted\\nsupersedes 0002"
+sup: "0002 superseded\\nby 0007"
+draft -> acc: review approves
+draft -> rej: review declines
+acc -> newer: "the context changes"
+newer -> sup: "status line only"
+`}
+  steps={[
+    { hl: ['draft'], caption: 'You write 0002 with the status proposed and open a pull request. The team reviews the context, the options and the consequences like code.' },
+    { hl: ['draft', 'acc', 'draft->acc'], caption: 'The review approves it, and you merge it with the status accepted. From now on, its context, decision and consequences never change.' },
+    { hl: ['draft', 'rej', 'draft->rej'], caption: 'A declined proposal merges too, with the status rejected. It records an option the team considered and why it lost, which saves the next person from proposing it blind.' },
+    { hl: ['acc', 'newer', 'acc->newer'], caption: 'A year later, the load passes the threshold that 0002 named in its consequences. You write 0007 with the new context and decision, and it names 0002 as the record it supersedes.' },
+    { hl: ['newer', 'sup', 'newer->sup'], caption: 'In the same pull request, the status line of 0002 changes to superseded by 0007. The rest of 0002 stays as written, with the reasons that held at the time.' },
+  ]}
+/>
 
 ## Example
 
-This section is not written yet.
+The example shows the two documents a reader of Go code meets first: a doc comment with a tested example, and an ADR.
+
+### A Doc Comment
+
+`FormatDuration` formats a duration for a log line or the status page. Its doc comment states the rounding, the format and what happens at zero and below, with concrete values for each:
+
+<CodeFrom file="go/tracks/documentation/duration.go" region="format" lang="go" title="duration.go" />
+
+`time.Duration.String` already writes `1.5s` and `1m30s`. `FormatDuration` adds two things: it rounds `1.234567s` to `1.235s`, which keeps log lines short, and it trims `2m0s` to `2m`. `go doc` prints the comment as the reader sees it in the terminal:
+
+```txt
+$ go doc ./tracks/documentation FormatDuration
+package docs // import "fsp/examples/tracks/documentation"
+
+func FormatDuration(d time.Duration) string
+    FormatDuration formats d for a log line or the status page: rounded to the
+    millisecond, or to the microsecond below one millisecond, and written the
+    way time.Duration.String writes it, without the zero units at the end.
+    1500 milliseconds gives "1.5s", 90 seconds gives "1m30s" and two minutes
+    gives "2m" instead of "2m0s". Zero gives "0s", and a negative duration keeps
+    its minus sign.
+```
+
+The package name is `docs`, while its folder is `documentation`: the go command ignores every file whose package clause names the package `documentation`, a name it reserves for documentation-only files.
+
+### An Example That Go Tests
+
+<CodeFrom file="go/tracks/documentation/duration_test.go" region="example" lang="go" title="duration_test.go" />
+
+`go test` runs `ExampleFormatDuration`, captures what it prints, and compares it line by line with the `// Output:` comment. Delete the line that trims `m0s`, and the documentation fails as a test. The table test fails too, and this is the part of the output for the example:
+
+```txt
+--- FAIL: ExampleFormatDuration (0.00s)
+got:
+1.5s
+1m30s
+1.235s
+2m0s
+want:
+1.5s
+1m30s
+1.235s
+2m
+```
+
+A table test, `TestFormatDuration`, covers the cases that make poor reading in an example: zero, a value under one millisecond, a whole hour and a negative duration.
+
+### An ADR Template
+
+The ADR lives in Markdown, and its template is the file a new record starts from:
+
+<CodeFrom file="go/tracks/documentation/adr-template.md" region="template" lang="md" title="adr-template.md" />
+
+The same file holds a filled-in record for the decision that Week 9 makes, a job queue in a Postgres table. Note how the context names numbers, and how the last consequence names the condition that reopens the decision:
+
+<CodeFrom file="go/tracks/documentation/adr-template.md" region="record" lang="md" title="adr-template.md" />
+
+`TestADRTemplate` checks that both the template and the record keep the four sections in order. A test on a Markdown file is cheap, and it stops a template from losing a section in an edit nobody reviews closely.
 
 ## In the Uptime Monitor
 
-This section is not written yet.
+<WeekLink n={6} anchor="step-9-document-it-and-commit">Week 6</WeekLink> writes the first real README of the monitor, at the moment the repository grows from one program to several: what you need installed, how to start the stack with `make up`, how to test it with `make test`, and how to run the api and the page without Docker. From then on, every week that adds a command or an environment variable updates the README in the same pull request.
+
+<WeekLink n={7} anchor="openapi-the-contract">Week 7</WeekLink> adds reference documentation for the API: `api/openapi.yaml` describes every route, and a test fails when the handler serves a route the file does not document. <WeekLink n={18} anchor="step-8-on-call-and-the-runbook">Week 18</WeekLink> writes `docs/runbook.md`, a how-to guide with a section for each alert, and a test checks that every alert links to its section. The week closes with <WeekLink n={18} anchor="step-10-write-the-postmortem">a postmortem</WeekLink> of the incident drill.
+
+The decision in the example ADR, the queue in Postgres, is the one that Week 9 explains in its concepts. Writing it as `docs/adr/0002-keep-the-job-queue-in-postgres.md` in your own repository takes ten minutes and keeps the reasons next to the code. The <TrackLink slug="system-design">System Design track</TrackLink> covers how to weigh such decisions.
 
 ## Common Mistakes
 
-This section is not written yet.
+- **A README that nobody runs.** A renamed Make target or a new environment variable breaks the first step, and a new contributor gives up. Follow the README in a fresh clone after each change to setup, and update it in the same pull request.
+- **Comments that repeat the code.** They add reading time and drift when the code changes, which leaves a comment that lies. Comment the why, and let names say the what.
+- **A doc comment that does not start with the name.** `go doc` lists still show it, but a reader scanning them cannot tell which comment belongs to which function, and linters such as `revive` report it. Start with the name: `// FormatDuration formats ...`.
+- **An example without an `// Output:` comment.** It compiles and never runs, and it drifts like any other comment. Add the comment with the exact lines, and let `go test` check them.
+- **Mixing the kinds of documentation.** A tutorial full of reference tables loses the learner, and a reference page full of story hides the fact. Decide which reader a page serves before you write it.
+- **Editing an accepted ADR when the decision changes.** The reasons that held at the time disappear, and the history no longer explains the code that still follows them. Write a new record that supersedes it.
+- **Documentation in a wiki apart from the code.** Nothing ties it to the change that makes it wrong, and it falls behind within weeks. Keep it in the repository, next to the code, reviewed in the same pull request.
 
 ## Going Deeper
 
-This section is not written yet.
+- **Diátaxis in full**: the framework has a page for each kind and a compass for sorting an existing page. Read it before you restructure a documentation set.
+- **OpenAPI and generated reference**: generate API reference pages from `api/openapi.yaml`, which keeps the reference and the contract the same file.
+- **Runbooks and postmortems**: the documents that matter most at three in the morning. The <TrackLink slug="sre">SRE track</TrackLink> covers both.
+- **Docs linting**: tools such as Vale check prose against a style guide in CI, the way this site checks its own pages with a prose lint.
+- **Changelogs and release notes**: a file that tells users what changed in each version, written for them and not as a list of commits.
 
 ## Further Reading
 
-This section is not written yet.
+- [Go Doc Comments](https://go.dev/doc/comment): the Go guide to doc comments, with the syntax for links, lists and code blocks.
+- [The testing package: examples](https://pkg.go.dev/testing#hdr-Examples): the reference for `Example` functions, `// Output:` and `// Unordered output:`.
+- [go/doc/comment](https://pkg.go.dev/go/doc/comment): the package that parses doc comments for `go doc` and `pkg.go.dev`, with the full syntax.
+- [ADR 0001: Record architecture decisions](https://github.com/npryce/adr-tools/blob/master/doc/adr/0001-record-architecture-decisions.md): the first record of the adr-tools project, which adopts the Nygard format and links his original post.
+- [Architecture decision record examples](https://github.com/joelparkerhenderson/architecture-decision-record/blob/main/README.md): a collection of ADR templates and examples, with advice on when to write one.
+- [Diátaxis](https://diataxis.fr/): the full framework by Daniele Procida, with a page for each of the four kinds and the compass for sorting a page.
