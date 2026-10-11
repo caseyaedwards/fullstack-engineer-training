@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,8 @@ import (
 	"fsp/examples/week08/your-monitor/internal/db/dbtest"
 	"fsp/examples/week08/your-monitor/internal/monitor"
 )
+
+// region: memhandler
 
 // memHandler is the api over in-memory stores, for the tests that need a
 // running api but no database.
@@ -29,6 +33,8 @@ func (noResults) Insert(context.Context, monitor.Result) error { return nil }
 func (noResults) Recent(context.Context, int64, int) ([]monitor.Result, error) {
 	return nil, nil
 }
+
+// endregion: memhandler
 
 // region: checkhealth
 
@@ -138,6 +144,15 @@ func TestAPIOnPostgres(t *testing.T) {
 	}
 	if got[0].DNSMs != nil {
 		t.Errorf("dns_ms = %d, want null: the insert left it out", *got[0].DNSMs)
+	}
+	// The JSON names are a contract with every client that reads them:
+	// check the raw keys, not only what the same struct decodes back.
+	var raw []map[string]any
+	getJSON(t, srv.URL+location+"/results?limit=1", http.StatusOK, &raw)
+	wantKeys := []string{"checked_at", "connect_ms", "dns_ms", "error", "first_byte_ms",
+		"monitor_id", "status_code", "tls_ms", "total_ms", "up"}
+	if keys := slices.Sorted(maps.Keys(raw[0])); !slices.Equal(keys, wantKeys) {
+		t.Errorf("result keys = %v, want %v", keys, wantKeys)
 	}
 
 	// Deleting the monitor deletes its results too: on delete cascade.

@@ -155,6 +155,34 @@ func TestRunDoesNotStoreCancelledChecks(t *testing.T) {
 	}
 }
 
+// TestRunStopsWaitingWhenCancelled is the Week 3 test, with the fakes:
+// SIGTERM arrives while run waits an hour for the next round.
+func TestRunStopsWaitingWhenCancelled(t *testing.T) {
+	captureLog(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(50*time.Millisecond, cancel) // SIGTERM arrives between rounds
+
+	var calls atomic.Int64
+	checkOne := func(ctx context.Context, target string) check.Result {
+		calls.Add(1)
+		return check.Result{URL: target, Status: 200}
+	}
+	results := &fakeResults{}
+	start := time.Now()
+	run(ctx, monitors("https://example.com"), results, time.Hour, 2, checkOne)
+
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("run returned after %v, want it to stop waiting at once", elapsed)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("calls = %d, want 1", got)
+	}
+	if len(results.rows) != 1 {
+		t.Errorf("stored %d rows, want 1 for the finished check", len(results.rows))
+	}
+}
+
 // endregion: shutdown
 
 // region: toresult
